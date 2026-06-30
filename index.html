@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TimberMaster — Pre-Contabilità</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside id="sidebar" role="navigation" aria-label="Navigazione principale">
+
+    <div class="sidebar-logo">
+      🌲 TimberMaster
+      <span>Pre-Contabilità</span>
+    </div>
+
+    <div class="sidebar-section">Modulo</div>
+
+    <button class="nav-item" data-page="setup">
+      <span aria-hidden="true">⚙️</span>
+      <span>Setup</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="movimenti">
+      <span aria-hidden="true">📋</span>
+      <span>Da classificare</span>
+      <span class="nav-badge" id="nav-badge-movimenti" aria-live="polite" aria-label="0 da classificare">0</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="inserimento">
+      <span aria-hidden="true">➕</span>
+      <span>Inserimento manuale</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="export">
+      <span aria-hidden="true">📤</span>
+      <span>Export &amp; consegna</span>
+    </button>
+
+    <div id="sidebar-user" class="sidebar-user" style="display:none">
+      <span id="sidebar-user-email" class="sidebar-user-email"></span>
+      <button onclick="doLogout()" class="logout-btn" aria-label="Esci dall'account">
+        <span aria-hidden="true">🚪</span> Esci
+      </button>
+    </div>
+
+    <div class="sidebar-footer">
+      Carpenteria Ticinese Sàgl<br>
+      v1 · Giugno 2026
+    </div>
+
+  </aside>
+
+  <!-- ── Contenuto principale ─────────────────────────────────────────────── -->
+  <main id="content">
+
+    <!-- ══ PAGINA: Login ══════════════════════════════════════════════════ -->
+    <div id="page-login" class="page">
+      <div class="login-wrap">
+        <div class="login-card card">
+          <div class="login-logo" aria-hidden="true">🌲</div>
+          <div class="login-title">TimberMaster — Pre-Contabilità</div>
+          <div class="login-subtitle">Accedi con il tuo account</div>
+
+          <div id="login-error" role="alert" aria-live="assertive" class="fase-banner err" style="display:none; margin-bottom:16px">
+            <span class="icon" aria-hidden="true">❌</span>
+            <div class="msg" id="login-error-msg"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="login-email" class="form-label">Email</label>
+            <input
+              type="email" id="login-email" class="form-input"
+              placeholder="email@esempio.com"
+              autocomplete="email"
+              onkeydown="if(event.key==='Enter') doLogin()"
+            />
+          </div>
+          <div class="form-group">
+            <label for="login-password" class="form-label">Password</label>
+            <input
+              type="password" id="login-password" class="form-input"
+              placeholder="••••••••"
+              autocomplete="current-password"
+              onkeydown="if(event.key==='Enter') doLogin()"
+            />
+          </div>
+
+          <button onclick="doLogin()" class="btn-primary" id="login-btn" style="width:100%; margin-top:4px">
+            Accedi
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ PAGINA: Setup (Fase 1) ════════════════════════════════════════ -->
+    <div id="page-setup" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Fase 1 — Fondamenta</div>
+          <div class="page-subtitle">
+            Verifica connessione Supabase · Tabelle tm_conta_* · Pacchetto paese CH
+          </div>
+        </div>
+        <button
+          onclick="runSetupCheck()"
+          class="btn-secondary"
+          aria-label="Ricontrolla setup"
+        >
+          🔄 Ricontrolla
+        </button>
+      </div>
+
+      <div id="fase1-banner" role="status" aria-live="polite"></div>
+      <div class="card">
+        <div class="card-title">🔍 Verifica infrastruttura</div>
+        <div id="fase1-checks"></div>
+      </div>
+      <div id="fase1-sql"></div>
+      <div id="fase1-stats"></div>
+      <div id="fase1-pdc"></div>
+      <div id="fase1-iva"></div>
+
+    </div>
+
+    <!-- ══ PAGINA: Da classificare (Fase 2 — lista) ════════════════════ -->
+    <div id="page-movimenti" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">
+            Da classificare
+            <span class="badge badge-warn" id="movimenti-count-badge" style="margin-left:8px; font-size:14px"></span>
+          </div>
+          <div class="page-subtitle">
+            Canale A (App Cantieri: spese + regia) e Canale B (inseriti manualmente).
+            Clicca «Classifica» per assegnare conto + IVA — ogni proposta è modificabile.
+          </div>
+        </div>
+        <button onclick="loadDaClassificare()" class="btn-secondary" aria-label="Aggiorna lista">
+          🔄 Aggiorna
+        </button>
+      </div>
+
+      <div id="movimenti-banner" role="status" aria-live="polite"></div>
+      <div id="movimenti-sorgenti"></div>
+      <div id="movimenti-lista"></div>
+
+    </div>
+
+    <!-- ══ PAGINA: Inserimento manuale (Fase 2 — Canale B) ═════════════ -->
+    <div id="page-inserimento" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Inserimento manuale</div>
+          <div class="page-subtitle">
+            Canale B — Costi aziendali non presenti in App Cantieri (banca, tasse, assicurazioni, affitto, abbonamenti…)
+          </div>
+        </div>
+      </div>
+
+      <div id="inserimento-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+      <div class="grid-2" style="align-items:start">
+
+        <!-- Colonna sx: form -->
+        <div class="card">
+          <div class="card-title" id="inserimento-card-title">➕ Nuovo movimento</div>
+
+          <div id="edit-mode-bar" class="edit-mode-bar" style="display:none">
+            <span aria-hidden="true">✏️</span>
+            <div class="edit-mode-msg">
+              Stai modificando un movimento esistente
+              <small id="edit-mode-desc"></small>
+            </div>
+            <button type="button" class="edit-mode-exit" onclick="exitEditMode()" aria-label="Esci dalla modifica">
+              Esci da modifica
+            </button>
+          </div>
+
+          <form id="form-inserimento" onsubmit="handleInserimentoSubmit(event)" novalidate>
+
+            <div class="form-group">
+              <label for="f-data" class="form-label">
+                Data <span class="req" aria-hidden="true">*</span>
+              </label>
+              <input type="date" id="f-data" class="form-input" required />
+            </div>
+
+            <div class="form-group">
+              <label for="f-descrizione" class="form-label">
+                Descrizione <span class="req" aria-hidden="true">*</span>
+              </label>
+              <input
+                type="text" id="f-descrizione" class="form-input"
+                required maxlength="500"
+                placeholder="es. Quota annua assicurazione RC, Spese bancarie febbraio…"
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="f-ente" class="form-label">Ente / Fornitore</label>
+              <input
+                type="text" id="f-ente" class="form-input"
+                maxlength="200"
+                placeholder="es. AXA Assicurazioni, UBS, Swisscom…"
+              />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:2">
+                <label for="f-importo" class="form-label">
+                  Importo <span class="req" aria-hidden="true">*</span>
+                </label>
+                <input
+                  type="number" id="f-importo" class="form-input"
+                  required min="0.01" step="0.01"
+                  placeholder="0.00"
+                />
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="f-valuta" class="form-label">Valuta</label>
+                <select id="f-valuta" class="form-input">
+                  <option value="CHF" selected>CHF</option>
+                  <option value="EUR">EUR</option>
+                  <option value="USD">USD</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label-check">
+                <input
+                  type="checkbox" id="f-ricorrente"
+                  onchange="togglePeriodicita(this.checked)"
+                />
+                <span>Spesa ricorrente (affitto, abbonamento, assicurazione…)</span>
+              </label>
+            </div>
+
+            <div class="form-group" id="f-periodicita-group" style="display:none">
+              <label for="f-periodicita" class="form-label">
+                Periodicità <span class="req" aria-hidden="true">*</span>
+              </label>
+              <select id="f-periodicita" class="form-input">
+                <option value="mensile">Mensile</option>
+                <option value="trimestrale">Trimestrale</option>
+                <option value="semestrale">Semestrale</option>
+                <option value="annuale">Annuale</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="f-allegato" class="form-label">
+                Allegato documento <span class="dim">(opzionale)</span>
+              </label>
+              <input
+                type="file" id="f-allegato" class="form-input-file"
+                accept=".pdf,.jpg,.jpeg,.png,.heic,.webp"
+              />
+              <div class="form-hint" id="allegato-hint">
+                ⚠️ Gli allegati richiedono il bucket <code>conta-allegati</code> su Supabase Storage.
+                <a href="#" onclick="showBucketInfo(event)">Istruzioni per crearlo</a>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn-primary" id="inserimento-submit-btn">
+                💾 Salva movimento
+              </button>
+              <button type="button" onclick="onAnnullaClick()" class="btn-secondary" id="inserimento-annulla-btn">
+                Annulla
+              </button>
+            </div>
+
+          </form>
+        </div>
+
+        <!-- Colonna dx: ultimi inseriti + info bucket -->
+        <div>
+          <div class="card">
+            <div class="card-title">🕐 Ultimi inseriti (Canale B)</div>
+            <div id="inserimento-recenti">
+              <div class="dim" style="padding:8px 0">Nessun movimento ancora inserito.</div>
+            </div>
+          </div>
+
+          <div class="card" id="bucket-info-card" style="display:none">
+            <div class="card-title">🪣 Istruzioni — Bucket allegati</div>
+            <p style="font-size:13px; line-height:1.7; color:var(--text2); margin-bottom:12px">
+              Per salvare gli allegati (PDF/foto scontrini) devi creare un bucket su Supabase Storage:
+            </p>
+            <ol style="padding-left:20px; font-size:13px; line-height:2; color:var(--text2)">
+              <li>Apri <strong>Supabase Dashboard</strong> → progetto <code>wgidgbauhivdctdxfjnk</code></li>
+              <li>Vai su <strong>Storage</strong> → <strong>New bucket</strong></li>
+              <li>Nome: <code>conta-allegati</code></li>
+              <li>Opzioni: <strong>Private</strong> (non pubblico)</li>
+              <li>Clicca <strong>Save</strong></li>
+            </ol>
+            <div class="sql-tip" style="margin-top:12px">
+              Poi aggiungi una RLS policy che permetta all'utente autenticato di caricare e leggere i propri file. Se vuoi, dimmelo e ti preparo la policy SQL.
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ PAGINA: Export & consegna (Fase 5) ══════════════════════════════ -->
+    <div id="page-export" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Export &amp; consegna</div>
+          <div class="page-subtitle">
+            Esporta i movimenti classificati di un periodo (Excel / CSV) e, dopo la consegna, blocca il periodo.
+            È materiale di lavoro: la contabilità ufficiale resta al commercialista.
+          </div>
+        </div>
+      </div>
+
+      <div id="export-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+      <div class="card">
+        <div class="card-title">🗓 Periodo</div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="exp-da" class="form-label">Da <span class="req" aria-hidden="true">*</span></label>
+            <input type="date" id="exp-da" class="form-input" onchange="updateExportPreview()" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="exp-a" class="form-label">A <span class="req" aria-hidden="true">*</span></label>
+            <input type="date" id="exp-a" class="form-input" onchange="updateExportPreview()" />
+          </div>
+        </div>
+
+        <div id="exp-preview" class="exp-preview"></div>
+
+        <div class="form-actions">
+          <button type="button" class="btn-primary" id="exp-xlsx-btn" onclick="exportExcel()">📊 Genera Excel (.xlsx)</button>
+          <button type="button" class="btn-secondary" id="exp-csv-btn" onclick="exportCsv()">📄 Genera CSV</button>
+        </div>
+        <div class="sql-tip" style="margin-top:14px">
+          Vengono esportati <strong>solo i movimenti classificati</strong> del periodo (con conto + IVA). I non
+          classificati e la «Regia · Da fatturare» non entrano. Il formato Banana potrà essere aggiunto in seguito.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔒 Consegna e blocco periodo</div>
+        <p style="font-size:13px; line-height:1.7; color:var(--text2); margin-bottom:14px">
+          Quando hai consegnato l'export, segna il periodo come <strong>consegnato</strong>: i movimenti diventano
+          di sola lettura (niente Riclassifica/Elimina) finché non lo riapri. Ogni cambiamento resta tracciato
+          nello storico (audit).
+        </p>
+        <div class="form-actions">
+          <button type="button" class="btn-primary" id="exp-lock-btn" onclick="lockPeriod()">🔒 Segna periodo come consegnato</button>
+          <button type="button" class="btn-secondary" id="exp-unlock-btn" onclick="unlockPeriod()">🔓 Sblocca periodo</button>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- ══ MODALE: Storia modifiche (audit) — Fase 4 ════════════════════════ -->
+  <div id="storia-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="storia-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title" id="storia-title">🕐 Storia modifiche</div>
+        <button class="modal-close" onclick="closeStoria()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="storia-summary" class="cls-summary"></div>
+        <div id="storia-body"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-note">Registro automatico delle modifiche alla classificazione (chi, cosa, quando).</div>
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="closeStoria()">Chiudi</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ MODALE: Classificazione (conto + IVA) — Fase 3 ═══════════════════ -->
+  <div id="classify-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="cls-title">
+    <div class="modal-card">
+
+      <div class="modal-header">
+        <div class="modal-title" id="cls-title">🏷 Classifica movimento</div>
+        <button class="modal-close" onclick="closeClassifyPanel()" aria-label="Chiudi">✕</button>
+      </div>
+
+      <div class="modal-body">
+
+        <div id="cls-banner" role="alert" aria-live="assertive"></div>
+
+        <!-- Riepilogo movimento/i -->
+        <div id="cls-summary" class="cls-summary"></div>
+
+        <!-- Proposta (banner suggerimento) -->
+        <div id="cls-suggest" class="cls-suggest" style="display:none"></div>
+
+        <!-- CONTO -->
+        <div class="form-group">
+          <label for="cls-conto" class="form-label">
+            Conto <span class="req" aria-hidden="true">*</span>
+            <button type="button" class="link-btn" onclick="toggleNuovoConto()" id="cls-nuovo-conto-toggle">+ Nuovo conto</button>
+          </label>
+          <input type="text" id="cls-conto-search" class="form-input" placeholder="🔍 Cerca conto (codice o descrizione)…" oninput="filterConti()" autocomplete="off" />
+          <select id="cls-conto" class="form-input" style="margin-top:8px" onchange="recalcIvaDisplay()" size="6"></select>
+        </div>
+
+        <!-- Mini-form nuovo conto -->
+        <div id="cls-nuovo-conto" class="nuovo-conto-box" style="display:none">
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="nc-codice" class="form-label">Codice</label>
+              <input type="text" id="nc-codice" class="form-input" maxlength="10" placeholder="es. 6570" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="nc-tipo" class="form-label">Tipo</label>
+              <select id="nc-tipo" class="form-input">
+                <option value="costo">Costo</option>
+                <option value="ricavo">Ricavo</option>
+                <option value="attivo">Attivo</option>
+                <option value="passivo">Passivo</option>
+                <option value="patrimonio">Patrimonio</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="nc-descrizione" class="form-label">Descrizione</label>
+            <input type="text" id="nc-descrizione" class="form-input" maxlength="200" placeholder="es. Spese veicoli aziendali" />
+          </div>
+          <div class="form-actions" style="margin-top:6px">
+            <button type="button" class="btn-primary" onclick="createCustomConto()" id="nc-save-btn">Crea conto</button>
+            <button type="button" class="btn-secondary" onclick="toggleNuovoConto()">Annulla</button>
+          </div>
+        </div>
+
+        <!-- CODICE IVA -->
+        <div class="form-group">
+          <label for="cls-iva" class="form-label">Codice IVA <span class="req" aria-hidden="true">*</span></label>
+          <select id="cls-iva" class="form-input" onchange="recalcIvaDisplay()"></select>
+        </div>
+
+        <!-- TOGGLE IVA inclusa / esclusa -->
+        <div class="form-group">
+          <label class="form-label">Importo</label>
+          <div class="toggle-group" role="group" aria-label="IVA inclusa o esclusa">
+            <button type="button" class="toggle-opt active" id="cls-incl-on"  onclick="setIvaInclusa(true)">IVA inclusa</button>
+            <button type="button" class="toggle-opt"        id="cls-incl-off" onclick="setIvaInclusa(false)">IVA esclusa</button>
+          </div>
+        </div>
+
+        <!-- CALCOLO -->
+        <div id="cls-calc" class="cls-calc"></div>
+
+        <!-- CANTIERE -->
+        <div class="form-group" id="cls-cantiere-group">
+          <label for="cls-cantiere" class="form-label">Cantiere <span class="dim">(facoltativo)</span></label>
+          <select id="cls-cantiere" class="form-input"></select>
+          <div class="form-hint">Vuoto = «Ditta (generale)». Per le spese da App Cantieri è precompilato.</div>
+        </div>
+
+        <!-- CANTIERE in blocco -->
+        <div class="form-group" id="cls-cantiere-bulk-group" style="display:none">
+          <label class="form-label-check">
+            <input type="checkbox" id="cls-cantiere-comune-chk" onchange="toggleCantiereComune(this.checked)" />
+            <span>Applica un cantiere comune a tutti (altrimenti ognuno mantiene il suo)</span>
+          </label>
+          <select id="cls-cantiere-comune" class="form-input" style="margin-top:8px; display:none"></select>
+        </div>
+
+        <!-- NOTE -->
+        <div class="form-group">
+          <label for="cls-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
+          <textarea id="cls-note" class="form-input" rows="2" maxlength="500" placeholder="Annotazione interna…"></textarea>
+        </div>
+
+      </div>
+
+      <div class="modal-footer">
+        <div class="modal-footer-note">Proposta modificabile — la validazione finale spetta al commercialista.</div>
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="closeClassifyPanel()">Annulla</button>
+          <button type="button" class="btn-primary" onclick="saveClassificazione()" id="cls-save-btn">✅ Conferma classificazione</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div><!-- fine #app -->
+
+<!-- Supabase JS v2 — UMD da CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>
