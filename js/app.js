@@ -33,6 +33,21 @@ let utentiEmailCache = {}     // id utente -> email (best-effort, per la Storia)
 let classByKey = {}           // "origine_tipo:origine_id" -> riga classificazione (con stato)
 let exportPeriodRows = []     // righe export calcolate per il periodo corrente
 
+// Fase 6 — fatture
+let fattureList       = []     // fatture caricate per la lista
+let editorFatturaId   = null   // id bozza in modifica (null = nuova)
+let editorTipo        = 'fattura'  // 'fattura' | 'nota_credito'
+let editorRifId       = null   // rif_fattura_id (per note di credito)
+let editorRifTotale   = null   // totale della fattura originale stornata (limite storno)
+let editorRifInfo     = null   // {numero, data_emissione, totale} della fattura originale
+
+// Fase 8 — rubrica IBAN per cantiere
+let ibanRubrica       = null   // [{id, etichetta, iban, attivo}]
+let editingIbanId     = null   // id voce rubrica in modifica (Impostazioni)
+let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezzo_unitario, codice_iva_id}
+let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
+let currentDetailFattura = null
+
 // Fase 3 — modifica Canale B
 let editingMovimentoId = null
 let originalEditValues = null
@@ -292,6 +307,44 @@ async function loadCanalA() {
     }
   } catch (e) {
     console.warn('Canale A / regia:', e.message)
+  }
+
+  // fatture emesse (Fase 6) → entrano nel Registratore come origine_tipo='fattura' (lato ricavo).
+  // La fattura resta la sua casa: qui si LEGGE soltanto, la classificazione la arricchisce.
+  if (currentAziendaId) {
+    try {
+      const { data, error } = await sb
+        .from('tm_conta_fatture')
+        .select('id, numero, data_emissione, cliente_nome, totale, valuta, tipo, stato')
+        .eq('azienda_id', currentAziendaId)
+        .in('stato', ['emessa', 'pagata'])
+        .order('data_emissione', { ascending: false })
+      if (error) throw error
+      for (var f = 0; f < (data || []).length; f++) {
+        var ft = data[f]
+        var isNC = ft.tipo === 'nota_credito'
+        var tot = safeNum(ft.totale)
+        var imp = tot == null ? null : (isNC ? -tot : tot)   // nota di credito = storno (negativo)
+        movimenti.push({
+          origine_tipo: 'fattura',
+          origine_id:   ft.id,
+          data:         ft.data_emissione,
+          descrizione:  (isNC ? 'Nota di credito ' : 'Fattura ') + (ft.numero || '') + ' — ' + (ft.cliente_nome || ''),
+          importo:      imp,
+          valuta:       ft.valuta || 'CHF',
+          cantiere_id:  null,
+          ente:         ft.cliente_nome || null,
+          extra:        ft.cliente_nome ? 'Cliente: ' + ft.cliente_nome : null,
+          _sorgente:    'Fatture',
+          _tipo_label:  isNC ? 'Nota di credito' : 'Fattura emessa',
+          _icon:        isNC ? '↩️' : '🧾',
+          _match_field: 'desc',
+          _match_value: ft.cliente_nome || null
+        })
+      }
+    } catch (e) {
+      console.warn('Canale A / fatture:', e.message)
+    }
   }
 
   return movimenti
@@ -1632,6 +1685,904 @@ async function unlockPeriod() {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 6 — FATTURE (emissione manuale)
+// Numerazione assegnata SOLO all'emissione (RPC DB tm_conta_emetti_fattura,
+// gap-free + concorrenza-safe). Dopo l'emissione la fattura è immutabile
+// (forzato anche da trigger DB): si corregge con una nota di credito.
+// ══════════════════════════════════════════════════════════════════════════════
+
+function showFattureView(which) {
+  var views = ['list', 'edit', 'detail']
+  for (var i = 0; i < views.length; i++) {
+    var v = el('fatture-' + views[i] + '-view')
+    if (v) v.style.display = (views[i] === which) ? 'block' : 'none'
+  }
+}
+function fattureBackToList() { showFattureView('list') }
+
+function showFattureBanner(elId, tipo, msg) {
+  var cls  = tipo === 'ok' ? 'ok' : tipo === 'warn' ? 'warn' : 'err'
+  var icon = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html(elId, '<div class="fase-banner ' + cls + '"><span class="icon" aria-hidden="true">' + icon + '</span><div class="msg">' + esc(msg) + '</div></div>')
+}
+
+// Traduce i rifiuti del DB (immutabilità post-emissione) in un messaggio chiaro.
+function friendlyFatturaError(e) {
+  var m = (e && e.message) ? e.message : String(e || 'Errore sconosciuto')
+  var low = m.toLowerCase()
+  if (low.indexOf('sola lettura') !== -1 || low.indexOf('emessa') !== -1 ||
+      low.indexOf('immutabil') !== -1 || low.indexOf('cancellare') !== -1 ||
+      low.indexOf('non può') !== -1 || low.indexOf('non puo') !== -1) {
+    return 'Questa fattura è emessa e non si può modificare né eliminare: per correggere usa una nota di credito.'
+  }
+  return m
+}
+
+function statoFatturaBadge(stato) {
+  var map  = { bozza: 'info', emessa: 'warn', pagata: 'ok', annullata: 'err' }
+  var icon = { bozza: '✏️', emessa: '📨', pagata: '✅', annullata: '🚫' }
+  return badge(map[stato] || 'info', (icon[stato] || '') + ' ' + (stato || ''))
+}
+
+async function initFatturePage() {
+  fattureBackToList()
+  await loadFattureList()
+}
+
+async function loadFattureList() {
+  if (!currentAziendaId) { html('fatture-table', '<div class="dim">Accedi per vedere le fatture.</div>'); return }
+  html('fatture-table', loadingRow('Caricamento fatture…'))
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_fatture')
+      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, tipo, created_at')
+      .eq('azienda_id', currentAziendaId)
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    fattureList = data || []
+    renderFattureTable()
+  } catch (e) {
+    html('fatture-table', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
+  }
+}
+
+function fattureRowActions(f) {
+  var a = '<button class="icon-btn" onclick="event.stopPropagation(); viewFattura(\'' + f.id + '\')">👁 Apri</button>'
+  if (f.stato === 'bozza') {
+    a += '<button class="icon-btn classify" onclick="event.stopPropagation(); editFattura(\'' + f.id + '\')">✏️</button>' +
+         '<button class="icon-btn danger" onclick="event.stopPropagation(); deleteBozza(\'' + f.id + '\')">🗑️</button>'
+  }
+  return a
+}
+
+function renderFattureTable() {
+  var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : ''
+  var anno  = el('fatture-filtro-anno') ? el('fatture-filtro-anno').value : ''
+  var list = fattureList.filter(function (f) {
+    if (stato && f.stato !== stato) return false
+    if (anno && String(f.anno) !== String(anno)) return false
+    return true
+  })
+  if (!list.length) { html('fatture-table', '<div class="dim" style="padding:10px 0">Nessuna fattura.</div>'); return }
+  var rows = list.map(function (f) {
+    return '<tr class="row-clickable" onclick="viewFattura(\'' + f.id + '\')">' +
+      '<td><span class="cod">' + esc(f.numero || '— bozza —') + '</span></td>' +
+      '<td class="dim">' + esc(fmtDate(f.data_emissione)) + '</td>' +
+      '<td>' + esc(f.cliente_nome || '') + (f.tipo === 'nota_credito' ? ' ' + badge('warn', 'Nota credito') : '') + '</td>' +
+      '<td class="num">' + fmtImporto(f.totale, f.valuta) + '</td>' +
+      '<td>' + statoFatturaBadge(f.stato) + '</td>' +
+      '<td class="row-actions">' + fattureRowActions(f) + '</td>' +
+    '</tr>'
+  }).join('')
+  html('fatture-table', '<div class="table-wrap"><table><thead><tr>' +
+    '<th style="width:110px">Numero</th><th style="width:100px">Data</th><th>Cliente</th>' +
+    '<th style="width:130px;text-align:right">Totale</th><th style="width:120px">Stato</th><th style="width:150px">Azioni</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>')
+}
+
+// ── Editor bozza ─────────────────────────────────────────────────────────────
+function ivaAliquotaById(id) {
+  if (!id) return 0
+  var c = (ivaCache || []).filter(function (x) { return x.id === id })[0]
+  return c ? safeNum(c.aliquota) : 0
+}
+
+// Riga fattura: il prezzo è IVA ESCLUSA → riusa calcolaIva con ivaInclusa=false.
+// Se l'azienda NON è soggetta IVA: nessun calcolo IVA, totale = imponibile.
+function calcolaRiga(r) {
+  var qta = safeNum(r.quantita), prezzo = safeNum(r.prezzo_unitario)
+  if (qta == null || prezzo == null) return { imponibile: null, iva: null, totale: null }
+  var aliquota = isSoggettoIva() ? ivaAliquotaById(r.codice_iva_id) : 0
+  return calcolaIva(round2(qta * prezzo), aliquota, false)
+}
+
+// Mostra/nasconde le colonne IVA dell'editor e la riga IVA nei totali
+function applyIvaModeEditor() {
+  var on = isSoggettoIva()
+  var ids = ['th-riga-codiva', 'th-riga-iva', 'fatture-tot-iva-row']
+  for (var i = 0; i < ids.length; i++) {
+    var e = el(ids[i])
+    if (e) e.style.display = on ? '' : 'none'
+  }
+  var thImp = el('th-riga-imponibile')
+  if (thImp) thImp.textContent = on ? 'Imponibile' : 'Importo'
+  var lblImp = el('fatture-tot-imponibile-row')
+  if (lblImp) {
+    var lbl = lblImp.querySelector('.ft-label')
+    if (lbl) lbl.textContent = on ? 'Imponibile' : 'Somma importi'
+  }
+}
+
+async function newFattura(tipo) {
+  editorFatturaId = null
+  editorTipo = tipo || 'fattura'
+  editorRifId = null
+  editorRifTotale = null
+  editorRifInfo = null
+  fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' }]
+  el('fatture-edit-title').textContent = editorTipo === 'nota_credito' ? 'Nuova nota di credito' : 'Nuova fattura'
+  el('f-cli-nome').value = ''
+  el('f-cli-indirizzo').value = ''
+  el('f-cli-paese').value = 'CH'
+  el('f-cli-iva').value = ''
+  el('f-fat-data').value = new Date().toISOString().split('T')[0]
+  el('f-fat-valuta').value = 'CHF'
+  el('f-fat-note').value = ''
+  html('fatture-edit-banner', '')
+  showFattureView('edit')
+  await ensureContiIva()
+  await loadAziendaInfo()
+  applyIvaModeEditor()
+  renderRigheEditor()
+}
+
+async function editFattura(id) {
+  if (!currentAziendaId) return
+  html('fatture-edit-banner', '')
+  try {
+    const { data: f, error } = await sb.from('tm_conta_fatture').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    if (f.stato !== 'bozza') {
+      showFattureBanner('fatture-list-banner', 'warn', 'Solo le bozze sono modificabili. Questa fattura è «' + f.stato + '»: per correggerla usa una nota di credito.')
+      return
+    }
+    const { data: righe, error: rErr } = await sb.from('tm_conta_fatture_righe').select('*').eq('fattura_id', id).order('ordine')
+    if (rErr) throw rErr
+
+    editorFatturaId = f.id
+    editorTipo = f.tipo
+    editorRifId = f.rif_fattura_id || null
+    editorRifTotale = null
+    editorRifInfo = null
+    // Per le note di credito: carica la fattura originale (limite di storno + riferimento)
+    if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
+      try {
+        const { data: rif, error: rifErr } = await sb
+          .from('tm_conta_fatture')
+          .select('id, numero, data_emissione, totale')
+          .eq('id', f.rif_fattura_id)
+          .eq('azienda_id', currentAziendaId)
+          .single()
+        if (!rifErr && rif) { editorRifTotale = safeNum(rif.totale); editorRifInfo = rif }
+      } catch (_) { /* riferimento non disponibile: nessun limite mostrato */ }
+    }
+    fatturaRighe = (righe || []).map(function (r) {
+      return { descrizione: r.descrizione || '', quantita: r.quantita, prezzo_unitario: r.prezzo_unitario, codice_iva_id: r.codice_iva_id || '' }
+    })
+    if (!fatturaRighe.length) fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' }]
+
+    el('fatture-edit-title').textContent = (f.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura') + ' (bozza)'
+    el('f-cli-nome').value = f.cliente_nome || ''
+    el('f-cli-indirizzo').value = f.cliente_indirizzo || ''
+    el('f-cli-paese').value = f.cliente_paese || 'CH'
+    el('f-cli-iva').value = f.cliente_iva || ''
+    el('f-fat-data').value = f.data_emissione || new Date().toISOString().split('T')[0]
+    el('f-fat-valuta').value = f.valuta || 'CHF'
+    el('f-fat-note').value = f.note || ''
+    html('fatture-edit-banner', '')
+    showFattureView('edit')
+    await ensureContiIva()
+    await loadAziendaInfo()
+    applyIvaModeEditor()
+    renderRigheEditor()
+  } catch (e) {
+    showFattureBanner('fatture-list-banner', 'err', 'Apertura bozza: ' + friendlyFatturaError(e))
+  }
+}
+
+function renderRigheEditor() {
+  var tb = el('fatture-righe')
+  if (!tb) return
+  var ivaOn = isSoggettoIva()
+  var rows = ''
+  for (var i = 0; i < fatturaRighe.length; i++) {
+    var r = fatturaRighe[i]
+    var calc = calcolaRiga(r)
+    rows +=
+      '<tr>' +
+        '<td><input class="cell-input" value="' + esc(r.descrizione || '') + '" oninput="onRigaInput(' + i + ',\'descrizione\',this.value)" placeholder="Descrizione"></td>' +
+        '<td><input class="cell-input num" type="number" step="0.001" value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '" oninput="onRigaInput(' + i + ',\'quantita\',this.value)"></td>' +
+        '<td><input class="cell-input num" type="number" step="0.01" value="' + esc(r.prezzo_unitario == null ? '' : String(r.prezzo_unitario)) + '" oninput="onRigaInput(' + i + ',\'prezzo_unitario\',this.value)"></td>' +
+        (ivaOn ? '<td><select class="cell-input" onchange="onRigaInput(' + i + ',\'codice_iva_id\',this.value)">' + buildIvaOptions(r.codice_iva_id) + '</select></td>' : '') +
+        '<td class="num" id="imp-cell-' + i + '">' + fmtNum2(calc.imponibile) + '</td>' +
+        (ivaOn ? '<td class="num" id="iva-cell-' + i + '">' + fmtNum2(calc.iva) + '</td>' : '') +
+        '<td><button class="icon-btn danger" title="Rimuovi riga" onclick="removeRiga(' + i + ')">✕</button></td>' +
+      '</tr>'
+  }
+  tb.innerHTML = rows
+  recalcFatturaTotals()
+}
+
+function onRigaInput(i, field, value) {
+  if (!fatturaRighe[i]) return
+  fatturaRighe[i][field] = value
+  var calc = calcolaRiga(fatturaRighe[i])
+  var impCell = el('imp-cell-' + i), ivaCell = el('iva-cell-' + i)
+  if (impCell) impCell.textContent = fmtNum2(calc.imponibile)
+  if (ivaCell) ivaCell.textContent = fmtNum2(calc.iva)
+  recalcFatturaTotals()
+}
+
+function addRiga() {
+  fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' })
+  renderRigheEditor()
+}
+function removeRiga(i) {
+  fatturaRighe.splice(i, 1)
+  if (!fatturaRighe.length) fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' })
+  renderRigheEditor()
+}
+
+// Calcola i totali dalle righe SENZA scrivere nel DOM (usato dalle validazioni,
+// evita ricorsione con updateNcRefInfo)
+function computeCurrentTotale() {
+  var ti = 0, tv = 0
+  for (var i = 0; i < fatturaRighe.length; i++) {
+    var c = calcolaRiga(fatturaRighe[i])
+    if (c.imponibile != null) ti += c.imponibile
+    if (c.iva != null) tv += c.iva
+  }
+  return round2(round2(ti) + round2(tv))
+}
+
+// Verifica storno: la nota di credito non deve superare il totale della fattura originale
+function ncStornoCheck() {
+  if (editorTipo !== 'nota_credito' || editorRifTotale == null) return { applicable: false, exceeds: false }
+  var tot = computeCurrentTotale()
+  var max = round2(editorRifTotale)
+  return { applicable: true, exceeds: tot > max + 0.005, tot: tot, max: max }
+}
+
+function updateNcRefInfo() {
+  var box = el('fatture-nc-ref')
+  if (!box) return
+  if (editorTipo !== 'nota_credito') { box.style.display = 'none'; box.innerHTML = ''; return }
+  var rif = editorRifInfo || {}
+  var max = editorRifTotale
+  var tot = computeCurrentTotale()
+  var over = (max != null) && (tot > round2(max) + 0.005)
+  var refTxt = rif.numero
+    ? ('fattura ' + rif.numero + (rif.data_emissione ? ' del ' + fmtDate(rif.data_emissione) : ''))
+    : 'fattura originale'
+  box.style.display = 'block'
+  box.className = 'nc-ref' + (over ? ' nc-ref-over' : '')
+  box.innerHTML =
+    '↩️ Nota di credito — storno della ' + esc(refTxt) + '. ' +
+    (max != null
+      ? 'Totale originale: <strong>' + fmtNum2(round2(max)) + '</strong> · Storno corrente: <strong>' + fmtNum2(tot) + '</strong>. ' +
+        'Rimuovi righe o riduci quantità/prezzo per uno storno parziale.'
+      : '') +
+    (over ? '<div class="nc-ref-warn">⚠️ Lo storno supera il totale della fattura originale: riducilo prima di emettere.</div>' : '')
+}
+
+function recalcFatturaTotals() {
+  var ti = 0, tv = 0
+  for (var i = 0; i < fatturaRighe.length; i++) {
+    var c = calcolaRiga(fatturaRighe[i])
+    if (c.imponibile != null) ti += c.imponibile
+    if (c.iva != null) tv += c.iva
+  }
+  ti = round2(ti); tv = round2(tv)
+  var tt = round2(ti + tv)
+  if (el('fatture-tot-imponibile')) el('fatture-tot-imponibile').textContent = fmtNum2(ti)
+  if (el('fatture-tot-iva'))        el('fatture-tot-iva').textContent = fmtNum2(tv)
+  if (el('fatture-tot-totale'))     el('fatture-tot-totale').textContent = fmtNum2(tt)
+  updateNcRefInfo()
+  return { imponibile: ti, iva: tv, totale: tt }
+}
+
+function collectFatturaHeader() {
+  var nome = el('f-cli-nome') ? el('f-cli-nome').value.trim() : ''
+  if (!nome) throw new Error('Il nome cliente è obbligatorio.')
+  var dataVal = el('f-fat-data') ? el('f-fat-data').value : ''
+  var anno = dataVal ? parseInt(dataVal.slice(0, 4), 10) : new Date().getFullYear()
+  var tot = recalcFatturaTotals()
+  return {
+    azienda_id:        currentAziendaId,
+    cliente_nome:      nome,
+    cliente_indirizzo: el('f-cli-indirizzo') ? (el('f-cli-indirizzo').value.trim() || null) : null,
+    cliente_paese:     (el('f-cli-paese') && el('f-cli-paese').value.trim()) ? el('f-cli-paese').value.trim().toUpperCase().slice(0, 2) : 'CH',
+    cliente_iva:       el('f-cli-iva') ? (el('f-cli-iva').value.trim() || null) : null,
+    valuta:            el('f-fat-valuta') ? el('f-fat-valuta').value : 'CHF',
+    data_emissione:    dataVal || null,
+    anno:              anno,
+    tipo:              editorTipo,
+    rif_fattura_id:    editorRifId,
+    note:              el('f-fat-note') ? (el('f-fat-note').value.trim() || null) : null,
+    totale_imponibile: tot.imponibile,
+    totale_iva:        tot.iva,
+    totale:            tot.totale
+  }
+}
+
+async function replaceRighe(fatturaId) {
+  const del = await sb.from('tm_conta_fatture_righe').delete().eq('fattura_id', fatturaId).select()
+  if (del.error) throw del.error
+  var payload = []
+  for (var i = 0; i < fatturaRighe.length; i++) {
+    var r = fatturaRighe[i]
+    var desc = (r.descrizione || '').trim()
+    if (!desc) continue   // salta le righe vuote
+    var calc = calcolaRiga(r)
+    payload.push({
+      fattura_id:      fatturaId,
+      descrizione:     desc,
+      quantita:        safeNum(r.quantita) != null ? safeNum(r.quantita) : 0,
+      prezzo_unitario: safeNum(r.prezzo_unitario) != null ? safeNum(r.prezzo_unitario) : 0,
+      codice_iva_id:   isSoggettoIva() ? (r.codice_iva_id || null) : null,
+      imponibile_riga: calc.imponibile != null ? calc.imponibile : 0,
+      iva_riga:        calc.iva != null ? calc.iva : 0,
+      totale_riga:     calc.totale != null ? calc.totale : 0,
+      ordine:          i
+    })
+  }
+  if (payload.length) {
+    const ins = await sb.from('tm_conta_fatture_righe').insert(payload).select()
+    if (ins.error) throw ins.error
+  }
+}
+
+async function persistBozza() {
+  var header = collectFatturaHeader()
+  header.stato = 'bozza'
+  var fatturaId = editorFatturaId
+  if (fatturaId) {
+    const { error } = await sb.from('tm_conta_fatture').update(header).eq('id', fatturaId).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+  } else {
+    header.created_by = currentUser ? currentUser.id : null
+    const { data, error } = await sb.from('tm_conta_fatture').insert(header).select()
+    if (error) throw error
+    fatturaId = data && data[0] ? data[0].id : null
+    editorFatturaId = fatturaId
+  }
+  if (!fatturaId) throw new Error('ID fattura non disponibile dopo il salvataggio.')
+  await replaceRighe(fatturaId)
+  return fatturaId
+}
+
+async function saveBozza() {
+  html('fatture-edit-banner', '')
+  var btn = el('btn-salva-bozza'); if (btn) btn.disabled = true
+  try {
+    await persistBozza()
+    var ncChk = ncStornoCheck()
+    if (ncChk.applicable && ncChk.exceeds) {
+      showFattureBanner('fatture-edit-banner', 'warn',
+        'Bozza salvata, ma lo storno (' + fmtNum2(ncChk.tot) + ') supera la fattura originale (' + fmtNum2(ncChk.max) + '): riducilo prima di emettere.')
+    } else {
+      showFattureBanner('fatture-edit-banner', 'ok', 'Bozza salvata.')
+    }
+    await loadFattureList()
+  } catch (e) {
+    showFattureBanner('fatture-edit-banner', 'err', e.message)
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+async function emettiFatturaCorrente() {
+  var hasRiga = false
+  for (var i = 0; i < fatturaRighe.length; i++) {
+    if ((fatturaRighe[i].descrizione || '').trim() && safeNum(fatturaRighe[i].prezzo_unitario) != null) { hasRiga = true; break }
+  }
+  if (!hasRiga) { showFattureBanner('fatture-edit-banner', 'err', 'Aggiungi almeno una riga con descrizione e prezzo.'); return }
+  if (!el('f-cli-nome').value.trim()) { showFattureBanner('fatture-edit-banner', 'err', 'Il nome cliente è obbligatorio.'); return }
+
+  var ncChk = ncStornoCheck()
+  if (ncChk.applicable && ncChk.exceeds) {
+    showFattureBanner('fatture-edit-banner', 'err',
+      'La nota di credito (' + fmtNum2(ncChk.tot) + ') supera il totale della fattura originale (' + fmtNum2(ncChk.max) + '). Riduci righe o importi prima di emettere.')
+    return
+  }
+
+  if (!window.confirm('Emettere il documento? Verrà assegnato il numero progressivo e diventerà DEFINITIVO (sola lettura). Per correggere si usa una nota di credito.')) return
+
+  var btn = el('btn-emetti'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Emissione…' }
+  try {
+    await persistBozza()
+    const { data, error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: editorFatturaId })
+    if (error) throw error
+    var emessa = Array.isArray(data) ? data[0] : data
+    await loadFattureList()
+    try { await refreshDaClassificareCount() } catch (_) {}
+    if (emessa && emessa.id) viewFattura(emessa.id)
+    else fattureBackToList()
+  } catch (e) {
+    showFattureBanner('fatture-edit-banner', 'err', 'Emissione: ' + friendlyFatturaError(e))
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📨 Emetti (assegna numero)' }
+  }
+}
+
+async function emettiFatturaById(id) {
+  if (!window.confirm('Emettere il documento? Verrà assegnato il numero e diventerà definitivo (sola lettura).')) return
+  html('fatture-detail-banner', loadingRow('Emissione in corso…'))
+  try {
+    const { error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: id })
+    if (error) throw error
+    await loadFattureList()
+    try { await refreshDaClassificareCount() } catch (_) {}
+    await viewFattura(id)
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Emissione: ' + friendlyFatturaError(e))
+  }
+}
+
+async function deleteBozza(id) {
+  if (!window.confirm('Eliminare la bozza? Verranno cancellate la fattura e le sue righe. (Solo le bozze si possono eliminare — le fatture emesse restano.)')) return
+  html('fatture-list-banner', loadingRow('Eliminazione…'))
+  try {
+    // .eq('stato','bozza') → non tocca mai una emessa (i numeri non si riusano)
+    const { data, error } = await sb
+      .from('tm_conta_fatture')
+      .delete()
+      .eq('id', id)
+      .eq('azienda_id', currentAziendaId)
+      .eq('stato', 'bozza')
+      .select()
+    if (error) throw error
+    fattureBackToList()
+    await loadFattureList()
+    if (data && data.length) showFattureBanner('fatture-list-banner', 'ok', 'Bozza eliminata.')
+    else showFattureBanner('fatture-list-banner', 'warn', 'Nessuna bozza eliminata: la fattura potrebbe essere già emessa (in tal caso usa una nota di credito).')
+  } catch (e) {
+    fattureBackToList()
+    showFattureBanner('fatture-list-banner', 'err', 'Eliminazione: ' + friendlyFatturaError(e))
+  }
+}
+
+async function setPagata(id, toPagata) {
+  html('fatture-detail-banner', loadingRow('Aggiornamento stato…'))
+  try {
+    const { error } = await sb.from('tm_conta_fatture').update({ stato: toPagata ? 'pagata' : 'emessa' }).eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadFattureList()
+    await viewFattura(id)
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Aggiornamento stato: ' + friendlyFatturaError(e))
+  }
+}
+
+async function creaNotaCredito(id) {
+  if (!window.confirm('Creare una nota di credito che storna questa fattura? Viene creata come bozza, poi potrai emetterla con numerazione propria.')) return
+  html('fatture-detail-banner', loadingRow('Creazione nota di credito…'))
+  try {
+    const { data: f, error } = await sb.from('tm_conta_fatture').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    const { data: righe, error: rErr } = await sb.from('tm_conta_fatture_righe').select('*').eq('fattura_id', id).order('ordine')
+    if (rErr) throw rErr
+
+    var header = {
+      azienda_id:        currentAziendaId,
+      cliente_nome:      f.cliente_nome,
+      cliente_indirizzo: f.cliente_indirizzo,
+      cliente_paese:     f.cliente_paese,
+      cliente_iva:       f.cliente_iva,
+      valuta:            f.valuta,
+      data_emissione:    new Date().toISOString().split('T')[0],
+      anno:              new Date().getFullYear(),
+      tipo:              'nota_credito',
+      rif_fattura_id:    f.id,
+      stato:             'bozza',
+      note:              'Storno della fattura ' + (f.numero || ''),
+      totale_imponibile: f.totale_imponibile,
+      totale_iva:        f.totale_iva,
+      totale:            f.totale,
+      created_by:        currentUser ? currentUser.id : null
+    }
+    const { data: ins, error: insErr } = await sb.from('tm_conta_fatture').insert(header).select()
+    if (insErr) throw insErr
+    var ncId = ins && ins[0] ? ins[0].id : null
+    if (ncId && righe && righe.length) {
+      var rp = righe.map(function (r, idx) {
+        return {
+          fattura_id: ncId, descrizione: r.descrizione, quantita: r.quantita, prezzo_unitario: r.prezzo_unitario,
+          codice_iva_id: r.codice_iva_id, imponibile_riga: r.imponibile_riga, iva_riga: r.iva_riga, totale_riga: r.totale_riga, ordine: idx
+        }
+      })
+      const { error: rErr2 } = await sb.from('tm_conta_fatture_righe').insert(rp).select()
+      if (rErr2) throw rErr2
+    }
+    await loadFattureList()
+    if (ncId) await editFattura(ncId)
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Nota di credito: ' + friendlyFatturaError(e))
+  }
+}
+
+// ── Vista / stampa documento ─────────────────────────────────────────────────
+async function loadAziendaInfo() {
+  if (aziendaInfo !== null) return
+  try {
+    const { data, error } = await sb.from('tm_aziende').select('*').eq('id', currentAziendaId).single()
+    if (error) throw error
+    aziendaInfo = data || {}
+  } catch (e) { aziendaInfo = {} }
+}
+function aziendaNome() {
+  var a = aziendaInfo || {}
+  return a.nome || a.ragione_sociale || a.denominazione || a.name || 'Carpenteria Ticinese Sàgl'
+}
+function aziendaDettagli() {
+  var a = aziendaInfo || {}
+  var parts = []
+  if (a.indirizzo) parts.push(a.indirizzo)
+  var npa = a.npa || a.cap
+  var citta = a.localita || a.citta || a.luogo
+  if (npa || citta) parts.push([npa, citta].filter(Boolean).join(' '))
+  if (a.iva || a.partita_iva || a.numero_iva) parts.push('IVA ' + (a.iva || a.partita_iva || a.numero_iva))
+  return parts.join('\n')
+}
+
+async function viewFattura(id) {
+  if (!currentAziendaId) return
+  showFattureView('detail')
+  html('fatture-detail-banner', '')
+  html('fatture-print', loadingRow('Caricamento fattura…'))
+  html('fatture-detail-actions', '')
+  try {
+    const { data: f, error } = await sb.from('tm_conta_fatture').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    const { data: righe, error: rErr } = await sb.from('tm_conta_fatture_righe').select('*').eq('fattura_id', id).order('ordine')
+    if (rErr) throw rErr
+    currentDetailFattura = f
+    await ensureContiIva()
+    await loadAziendaInfo()
+    // Per la nota di credito: carica il riferimento alla fattura originale (per la stampa)
+    var rifInfo = null
+    if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
+      try {
+        const { data: rif, error: rifErr } = await sb
+          .from('tm_conta_fatture')
+          .select('numero, data_emissione')
+          .eq('id', f.rif_fattura_id)
+          .eq('azienda_id', currentAziendaId)
+          .single()
+        if (!rifErr && rif) rifInfo = rif
+      } catch (_) { /* riferimento non disponibile */ }
+    }
+    renderFatturaPrint(f, righe || [], rifInfo)
+    renderDetailActions(f)
+  } catch (e) {
+    html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
+  }
+}
+
+function renderFatturaPrint(f, righe, rifInfo) {
+  var a = aziendaInfo || {}
+  var v = esc(f.valuta || 'CHF')
+  var isNC = f.tipo === 'nota_credito'
+  var titolo = isNC ? 'NOTA DI CREDITO' : 'FATTURA'
+  var ivaOn = isSoggettoIva()   // interruttore IVA: colonne/riepilogo/numero IVA solo se ON
+
+  // Righe (colonne IVA solo se soggetto IVA)
+  var righeHtml = ''
+  for (var i = 0; i < righe.length; i++) {
+    var r = righe[i]
+    righeHtml +=
+      '<tr>' +
+        '<td>' + esc(r.descrizione || '') + '</td>' +
+        '<td class="num">' + fmtNum2(safeNum(r.quantita)) + '</td>' +
+        '<td class="num">' + fmtNum2(safeNum(r.prezzo_unitario)) + '</td>' +
+        (ivaOn ? '<td>' + esc(ivaLabel(r.codice_iva_id)) + '</td>' : '') +
+        '<td class="num">' + fmtNum2(safeNum(r.imponibile_riga)) + '</td>' +
+        (ivaOn ? '<td class="num">' + fmtNum2(safeNum(r.iva_riga)) + '</td>' : '') +
+      '</tr>'
+  }
+  var righeHead =
+    '<th>Descrizione</th><th class="num">Q.tà</th><th class="num">Prezzo</th>' +
+    (ivaOn ? '<th>IVA</th>' : '') +
+    '<th class="num">' + (ivaOn ? 'Imponibile' : 'Importo') + '</th>' +
+    (ivaOn ? '<th class="num">IVA</th>' : '')
+
+  // Riepilogo IVA per aliquota — SOLO se soggetto IVA
+  var ivaSumHtml = ''
+  if (ivaOn) {
+    var perAliq = {}
+    for (var j = 0; j < righe.length; j++) {
+      var rj = righe[j]
+      var alq = ivaAliquotaById(rj.codice_iva_id)
+      if (alq == null) alq = 0
+      var key = String(alq)
+      if (!perAliq[key]) perAliq[key] = { alq: alq, imp: 0, iva: 0 }
+      perAliq[key].imp += safeNum(rj.imponibile_riga) || 0
+      perAliq[key].iva += safeNum(rj.iva_riga) || 0
+    }
+    var aliqKeys = Object.keys(perAliq).sort(function (x, y) { return perAliq[y].alq - perAliq[x].alq })
+    var ivaSumRows = ''
+    for (var k = 0; k < aliqKeys.length; k++) {
+      var g = perAliq[aliqKeys[k]]
+      ivaSumRows +=
+        '<tr>' +
+          '<td>IVA ' + (g.alq === 0 ? '0' : fmtNum2(g.alq)) + '%</td>' +
+          '<td>' + fmtNum2(round2(g.imp)) + ' ' + v + '</td>' +
+          '<td>' + fmtNum2(round2(g.iva)) + ' ' + v + '</td>' +
+        '</tr>'
+    }
+    if (ivaSumRows) {
+      ivaSumHtml = '<div class="inv-ivasum"><table><thead><tr><th>Riepilogo IVA</th><th>Imponibile</th><th>Importo IVA</th></tr></thead><tbody>' + ivaSumRows + '</tbody></table></div>'
+    }
+  }
+
+  // Totali: con IVA → imponibile/IVA/totale; senza IVA → solo totale documento
+  var totHtml = '<div class="inv-tot">' +
+    (ivaOn
+      ? '<div><span>Totale imponibile</span><span>' + fmtNum2(safeNum(f.totale_imponibile)) + ' ' + v + '</span></div>' +
+        '<div><span>Totale IVA</span><span>' + fmtNum2(safeNum(f.totale_iva)) + ' ' + v + '</span></div>'
+      : '') +
+    '<div class="inv-grand"><span>Totale documento</span><span>' + fmtNum2(safeNum(f.totale)) + ' ' + v + '</span></div>' +
+    '</div>'
+
+  // Logo: logo_url se presente, altrimenti img/logo.png; onerror → fallback → nascondi
+  var logoSrc = (a.logo_url && String(a.logo_url).trim()) ? a.logo_url : 'img/logo.png'
+
+  // Intestazione azienda (dati completi da tm_aziende; nome = ragione sociale)
+  var azNome = a.nome || aziendaNome()
+  var cittaRiga = [a.cap, a.citta].filter(Boolean).join(' ')
+  var contatti = [a.email, a.telefono, a.sito_web].filter(Boolean).join(' · ')
+
+  // Blocco pagamento (fattura) OPPURE riferimento alla fattura stornata (nota di credito)
+  var payHtml
+  if (isNC) {
+    var rifNum = (rifInfo && rifInfo.numero) ? rifInfo.numero : '—'
+    var rifData = (rifInfo && rifInfo.data_emissione) ? fmtDate(rifInfo.data_emissione) : '—'
+    payHtml =
+      '<div class="inv-pay">' +
+        '<div class="inv-pay-row"><span class="inv-pay-lbl">Documento di riferimento</span><span>Fattura ' + esc(rifNum) + ' del ' + esc(rifData) + '</span></div>' +
+        '<div class="inv-pay-row"><span class="inv-pay-lbl">Natura</span><span>Storno a credito del cliente</span></div>' +
+      '</div>'
+  } else {
+    var giorni = safeNum(a.termini_pagamento_giorni)
+    if (giorni == null) giorni = 30
+    var scadenza = addDays(f.data_emissione, giorni)
+    payHtml =
+      '<div class="inv-pay">' +
+        (a.iban ? '<div class="inv-pay-row"><span class="inv-pay-lbl">IBAN</span><span>' + esc(a.iban) + '</span></div>' : '') +
+        '<div class="inv-pay-row"><span class="inv-pay-lbl">Termine di pagamento</span><span>' + giorni + ' giorni</span></div>' +
+        (scadenza ? '<div class="inv-pay-row"><span class="inv-pay-lbl">Scadenza</span><span class="inv-scad">' + esc(fmtDate(scadenza)) + '</span></div>' : '') +
+      '</div>'
+  }
+
+  html('fatture-print',
+    '<div class="inv">' +
+      '<div class="inv-head">' +
+        '<div class="inv-azienda">' +
+          '<img src="' + esc(logoSrc) + '" alt="Logo azienda" class="inv-logo" onerror="logoOnError(this)">' +
+          '<div class="inv-azienda-nome">' + esc(azNome) +
+            (a.forma_giuridica ? ' <span class="inv-forma">' + esc(a.forma_giuridica) + '</span>' : '') +
+          '</div>' +
+          '<small>' +
+            (a.indirizzo ? esc(a.indirizzo) + '\n' : '') +
+            (cittaRiga ? esc(cittaRiga) + '\n' : '') +
+            (a.paese ? esc(a.paese) + '\n' : '') +
+            (a.uid ? 'UID ' + esc(a.uid) + '\n' : '') +
+            (ivaOn && a.numero_iva ? 'IVA ' + esc(a.numero_iva) + '\n' : '') +
+            (contatti ? esc(contatti) : '') +
+          '</small>' +
+        '</div>' +
+        '<div class="inv-meta">' +
+          '<div>' + titolo + '</div>' +
+          '<div class="inv-numero">' + esc(f.numero || '(bozza — non emessa)') + '</div>' +
+          '<div>Data: ' + esc(fmtDate(f.data_emissione)) + '</div>' +
+          '<div>Stato: ' + esc(f.stato) + '</div>' +
+          (isNC ? '<div class="inv-rif">Storno della fattura ' + esc((rifInfo && rifInfo.numero) ? rifInfo.numero : '—') +
+                  ((rifInfo && rifInfo.data_emissione) ? ' del ' + esc(fmtDate(rifInfo.data_emissione)) : '') + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="inv-cliente">' +
+        '<div class="inv-cliente-lbl">Cliente</div>' +
+        '<div class="inv-cliente-nome">' + esc(f.cliente_nome || '') + '</div>' +
+        (f.cliente_indirizzo ? '<div>' + esc(f.cliente_indirizzo) + '</div>' : '') +
+        (f.cliente_paese ? '<div class="dim">' + esc(f.cliente_paese) + '</div>' : '') +
+        (f.cliente_iva ? '<div class="dim">IVA: ' + esc(f.cliente_iva) + '</div>' : '') +
+      '</div>' +
+      '<table><thead><tr>' + righeHead + '</tr></thead><tbody>' + righeHtml + '</tbody></table>' +
+      ivaSumHtml +
+      totHtml +
+      payHtml +
+      (!ivaOn ? '<div class="inv-note">Non soggetto IVA.</div>' : '') +
+      (f.note ? '<div class="inv-note">' + esc(f.note) + '</div>' : '') +
+    '</div>'
+  )
+}
+
+function renderDetailActions(f) {
+  var a = '<div class="form-actions" style="margin-top:0">'
+  a += '<button class="btn-primary" onclick="printFattura()">🖨 Stampa</button>'
+  if (f.stato === 'bozza') {
+    a += '<button class="btn-secondary" onclick="editFattura(\'' + f.id + '\')">✏️ Modifica bozza</button>'
+    a += '<button class="btn-primary" onclick="emettiFatturaById(\'' + f.id + '\')">📨 Emetti</button>'
+    // Elimina SOLO sulle bozze (numero non ancora assegnato). Mai sulle emesse.
+    a += '<button class="btn-secondary" onclick="deleteBozza(\'' + f.id + '\')">🗑️ Elimina</button>'
+  } else if (f.stato === 'emessa') {
+    a += '<button class="btn-secondary" onclick="setPagata(\'' + f.id + '\', true)">✅ Segna come pagata</button>'
+    if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
+  } else if (f.stato === 'pagata') {
+    a += '<button class="btn-secondary" onclick="setPagata(\'' + f.id + '\', false)">↩️ Segna non pagata</button>'
+    if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
+  }
+  a += '<button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>'
+  a += '</div>'
+  html('fatture-detail-actions', a)
+}
+
+function printFattura() { window.print() }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 7 — IMPOSTAZIONI DITTA (dati azienda in tm_aziende)
+// tm_aziende è condivisa con TimberMaster: si aggiornano SOLO le colonne del
+// modulo, con .select(). Nessuna funzione delle fasi precedenti viene sostituita.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Fallback logo: prova img/logo.png, poi nascondi. Niente layout rotto.
+function logoOnError(img) {
+  if (img.src.indexOf('img/logo.png') === -1) {
+    img.src = 'img/logo.png'         // primo fallback: logo statico del progetto
+  } else {
+    img.onerror = null
+    img.style.display = 'none'       // fallback finale: nascondi
+  }
+}
+
+// Interruttore IVA: TRUE solo se l'azienda è registrata AFC (tm_aziende.soggetto_iva)
+function isSoggettoIva() {
+  return !!(aziendaInfo && aziendaInfo.soggetto_iva === true)
+}
+
+// Impostazioni: il campo N. IVA è editabile solo se soggetto IVA = ON
+function toggleSoggettoIva(checked) {
+  var iva = el('imp-iva')
+  if (iva) iva.disabled = !checked
+}
+
+// data 'YYYY-MM-DD' + giorni → 'YYYY-MM-DD' (per la scadenza fattura)
+function addDays(dateStr, days) {
+  if (!dateStr) return null
+  var d = new Date(dateStr + 'T00:00:00')
+  if (isNaN(d.getTime())) return null
+  d.setDate(d.getDate() + (parseInt(days, 10) || 0))
+  return d.toISOString().split('T')[0]
+}
+
+function setVal(id, val) { var e = el(id); if (e) e.value = (val == null ? '' : val) }
+function getVal(id) { var e = el(id); return e ? e.value.trim() : '' }
+
+async function initImpostazioniPage() {
+  if (!currentAziendaId) {
+    showFattureBanner('impostazioni-banner', 'err', 'Azienda non trovata: rieffettua il login.')
+    return
+  }
+  html('impostazioni-banner', loadingRow('Caricamento dati azienda…'))
+  try {
+    const { data, error } = await sb.from('tm_aziende').select('*').eq('id', currentAziendaId).single()
+    if (error) throw error
+    aziendaInfo = data || {}
+    fillImpostazioniForm(aziendaInfo)
+    html('impostazioni-banner', '')
+    var missing = impostazioniMancanti(aziendaInfo)
+    if (missing.length) {
+      showFattureBanner('impostazioni-banner', 'warn', 'Per fatture complete mancano: ' + missing.join(', ') + '. Puoi compilarli e salvare.')
+    }
+  } catch (e) {
+    showFattureBanner('impostazioni-banner', 'err', 'Caricamento impostazioni: ' + e.message)
+  }
+}
+
+function fillImpostazioniForm(a) {
+  a = a || {}
+  setVal('imp-ragione',  a.nome)                       // ragione sociale = colonna esistente "nome"
+  setVal('imp-forma',    a.forma_giuridica)
+  setVal('imp-uid',      a.uid)
+  setVal('imp-iva',      a.numero_iva)
+  setVal('imp-indirizzo', a.indirizzo)
+  setVal('imp-npa',      a.cap)                         // NPA = colonna esistente "cap"
+  setVal('imp-citta',    a.citta)
+  setVal('imp-paese',    a.paese || 'CH')
+  setVal('imp-iban',     a.iban)
+  setVal('imp-termini',  a.termini_pagamento_giorni == null ? '' : a.termini_pagamento_giorni)
+  setVal('imp-email',    a.email)
+  setVal('imp-telefono', a.telefono)
+  setVal('imp-sito',     a.sito_web)                   // sito = colonna esistente "sito_web"
+  setVal('imp-logo',     a.logo_url)
+  var chk = el('imp-soggetto-iva')
+  if (chk) chk.checked = a.soggetto_iva === true
+  toggleSoggettoIva(a.soggetto_iva === true)
+}
+
+// Ritorna la lista dei campi essenziali per fatturare che risultano vuoti
+function impostazioniMancanti(a) {
+  a = a || {}
+  var miss = []
+  if (!a.nome)       miss.push('ragione sociale')
+  if (!a.indirizzo)  miss.push('indirizzo')
+  if (!a.iban)       miss.push('IBAN')
+  // Il N. IVA serve solo se l'azienda è registrata IVA
+  if (a.soggetto_iva === true && !a.numero_iva) miss.push('N. IVA')
+  return miss
+}
+
+async function saveImpostazioni() {
+  if (!currentAziendaId) {
+    showFattureBanner('impostazioni-banner', 'err', 'Azienda non trovata: rieffettua il login.')
+    return
+  }
+  var termini = getVal('imp-termini')
+  var soggettoIva = el('imp-soggetto-iva') ? el('imp-soggetto-iva').checked : false
+  var payload = {
+    nome:            getVal('imp-ragione') || null,
+    forma_giuridica: getVal('imp-forma') || null,
+    uid:             getVal('imp-uid') || null,
+    soggetto_iva:    soggettoIva,
+    numero_iva:      getVal('imp-iva') || null,
+    indirizzo:       getVal('imp-indirizzo') || null,
+    cap:             getVal('imp-npa') || null,
+    citta:           getVal('imp-citta') || null,
+    paese:           (getVal('imp-paese') || 'CH').toUpperCase().slice(0, 2),
+    iban:            getVal('imp-iban') || null,
+    termini_pagamento_giorni: termini === '' ? null : (safeNum(termini) != null ? Math.round(safeNum(termini)) : null),
+    email:           getVal('imp-email') || null,
+    telefono:        getVal('imp-telefono') || null,
+    sito_web:        getVal('imp-sito') || null,
+    logo_url:        getVal('imp-logo') || null
+  }
+
+  var btn = el('imp-save-btn')
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
+  html('impostazioni-banner', loadingRow('Salvataggio…'))
+  try {
+    const { data, error } = await sb
+      .from('tm_aziende')
+      .update(payload)
+      .eq('id', currentAziendaId)
+      .select()
+    if (error) throw error
+    if (!data || !data.length) {
+      // Nessuna riga aggiornata: quasi sempre RLS che nega l'UPDATE
+      showFattureBanner('impostazioni-banner', 'err',
+        'Salvataggio non riuscito: il database non ha aggiornato la riga (probabile permesso RLS mancante). Applica la sezione 2 di migration_fase7.sql.')
+      return
+    }
+    aziendaInfo = data[0]
+    var missing = impostazioniMancanti(aziendaInfo)
+    if (missing.length) {
+      showFattureBanner('impostazioni-banner', 'warn', 'Salvato. ⚠️ Per fatture complete mancano ancora: ' + missing.join(', ') + '.')
+    } else {
+      showFattureBanner('impostazioni-banner', 'ok', 'Impostazioni salvate. I dati compaiono nelle nuove fatture.')
+    }
+  } catch (e) {
+    var m = e && e.message ? e.message : String(e)
+    var low = m.toLowerCase()
+    if (low.indexOf('column') !== -1 || low.indexOf('schema cache') !== -1 || m.indexOf('PGRST204') !== -1) {
+      m = 'Alcune colonne non esistono ancora nel database: applica prima migration_fase7.sql. (' + m + ')'
+    }
+    showFattureBanner('impostazioni-banner', 'err', 'Salvataggio impostazioni: ' + m)
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Salva impostazioni' }
+  }
+}
+
 // ─── CANALE B — form inserimento ─────────────────────────────────────────────
 function togglePeriodicita(checked) {
   var group = el('f-periodicita-group')
@@ -2129,6 +3080,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'movimenti')   { loadDaClassificare() }
       if (pageId === 'inserimento') { loadRecentiInseriti() }
       if (pageId === 'export')      { initExportPage() }
+      if (pageId === 'fatture')     { initFatturePage() }
+      if (pageId === 'impostazioni'){ initImpostazioniPage() }
       if (pageId === 'setup')       { /* già caricata */ }
     })
   })
@@ -2201,4 +3154,39 @@ document.addEventListener('DOMContentLoaded', function () {
     showPage('login')
   })
 
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MENU MOBILE (off-canvas) — solo layout/UI, nessuna logica dati toccata
+// ══════════════════════════════════════════════════════════════════════════════
+function toggleSidebar() {
+  var sb = document.getElementById('sidebar')
+  var ov = document.getElementById('sidebar-overlay')
+  if (!sb) return
+  var open = sb.classList.toggle('open')
+  if (ov) ov.style.display = open ? 'block' : 'none'
+  var btn = document.getElementById('hamburger-btn')
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false')
+}
+
+function closeSidebar() {
+  var sb = document.getElementById('sidebar')
+  var ov = document.getElementById('sidebar-overlay')
+  if (sb) sb.classList.remove('open')
+  if (ov) ov.style.display = 'none'
+  var btn = document.getElementById('hamburger-btn')
+  if (btn) btn.setAttribute('aria-expanded', 'false')
+}
+
+// Listener AGGIUNTIVO (non tocca l'entry point esistente): chiude il menu quando
+// si tocca una voce, si fa logout, o si torna a larghezza desktop.
+document.addEventListener('DOMContentLoaded', function () {
+  document.querySelectorAll('#sidebar .nav-item[data-page]').forEach(function (btn) {
+    btn.addEventListener('click', function () { closeSidebar() })
+  })
+  var logoutBtn = document.querySelector('#sidebar .logout-btn')
+  if (logoutBtn) logoutBtn.addEventListener('click', function () { closeSidebar() })
+  window.addEventListener('resize', function () {
+    if (window.innerWidth > 900) closeSidebar()
+  })
 })
