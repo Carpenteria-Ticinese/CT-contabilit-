@@ -10,6 +10,15 @@
 
 <div id="app">
 
+  <!-- ── Barra superiore mobile (nascosta su desktop) ──────────────────────── -->
+  <div id="mobile-topbar">
+    <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Apri/chiudi menu" aria-controls="sidebar">☰</button>
+    <span class="mobile-title">🌲 TimberMaster <span class="mobile-title-sub">Pre-Contabilità</span></span>
+  </div>
+
+  <!-- ── Overlay per sidebar a scomparsa (mobile) ──────────────────────────── -->
+  <div id="sidebar-overlay" onclick="closeSidebar()" aria-hidden="true"></div>
+
   <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
   <aside id="sidebar" role="navigation" aria-label="Navigazione principale">
 
@@ -36,9 +45,19 @@
       <span>Inserimento manuale</span>
     </button>
 
+    <button class="nav-item auth-only" data-page="fatture">
+      <span aria-hidden="true">🧾</span>
+      <span>Fatture</span>
+    </button>
+
     <button class="nav-item auth-only" data-page="export">
       <span aria-hidden="true">📤</span>
       <span>Export &amp; consegna</span>
+    </button>
+
+    <button class="nav-item auth-only nav-settings" data-page="impostazioni">
+      <span aria-hidden="true">⚙️</span>
+      <span>Impostazioni ditta</span>
     </button>
 
     <div id="sidebar-user" class="sidebar-user" style="display:none">
@@ -362,6 +381,260 @@
         <div class="form-actions">
           <button type="button" class="btn-primary" id="exp-lock-btn" onclick="lockPeriod()">🔒 Segna periodo come consegnato</button>
           <button type="button" class="btn-secondary" id="exp-unlock-btn" onclick="unlockPeriod()">🔓 Sblocca periodo</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ══ PAGINA: Fatture (Fase 6) ════════════════════════════════════════ -->
+    <div id="page-fatture" class="page">
+
+      <!-- Vista 1: Lista -->
+      <div id="fatture-list-view">
+        <div class="page-header">
+          <div>
+            <div class="page-title">🧾 Fatture</div>
+            <div class="page-subtitle">
+              Emissione manuale. Numerazione progressiva per anno, assegnata all'emissione.
+              Dopo l'emissione la fattura è di sola lettura: si corregge con una nota di credito.
+            </div>
+          </div>
+          <button class="btn-primary" onclick="newFattura('fattura')">➕ Nuova fattura</button>
+        </div>
+
+        <div id="fatture-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+        <div class="card">
+          <div class="card-title">📄 Elenco</div>
+          <div class="form-row" style="margin-bottom:12px">
+            <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="fatture-filtro-stato" class="form-label">Stato</label>
+              <select id="fatture-filtro-stato" class="form-input" onchange="renderFattureTable()">
+                <option value="">Tutti</option>
+                <option value="bozza">Bozza</option>
+                <option value="emessa">Emessa</option>
+                <option value="pagata">Pagata</option>
+                <option value="annullata">Annullata</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="fatture-filtro-anno" class="form-label">Anno</label>
+              <input type="number" id="fatture-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderFattureTable()" />
+            </div>
+          </div>
+          <div id="fatture-table"></div>
+        </div>
+      </div>
+
+      <!-- Vista 2: Editor (bozza) -->
+      <div id="fatture-edit-view" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title" id="fatture-edit-title">Nuova fattura</div>
+            <div class="page-subtitle">Bozza modificabile. Il numero viene assegnato solo all'emissione.</div>
+          </div>
+          <button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>
+        </div>
+
+        <div id="fatture-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
+
+        <div id="fatture-nc-ref" class="nc-ref" style="display:none"></div>
+
+        <div class="card">
+          <div class="card-title">👤 Cliente</div>
+          <div class="form-group">
+            <label for="f-cli-nome" class="form-label">Nome / Ragione sociale <span class="req" aria-hidden="true">*</span></label>
+            <input type="text" id="f-cli-nome" class="form-input" maxlength="200" placeholder="es. Rossi Costruzioni SA" />
+          </div>
+          <div class="form-group">
+            <label for="f-cli-indirizzo" class="form-label">Indirizzo</label>
+            <textarea id="f-cli-indirizzo" class="form-input" rows="2" maxlength="300" placeholder="Via, NPA, località"></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="f-cli-paese" class="form-label">Paese</label>
+              <input type="text" id="f-cli-paese" class="form-input" maxlength="2" value="CH" />
+            </div>
+            <div class="form-group" style="flex:2">
+              <label for="f-cli-iva" class="form-label">N. IVA cliente <span class="dim">(facoltativo)</span></label>
+              <input type="text" id="f-cli-iva" class="form-input" maxlength="40" placeholder="CHE-123.456.789 IVA" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="f-fat-data" class="form-label">Data emissione <span class="dim">(default: oggi all'emissione)</span></label>
+              <input type="date" id="f-fat-data" class="form-input" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="f-fat-valuta" class="form-label">Valuta</label>
+              <select id="f-fat-valuta" class="form-input">
+                <option value="CHF" selected>CHF</option>
+                <option value="EUR">EUR</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📦 Righe <button type="button" class="link-btn" onclick="addRiga()">+ Aggiungi riga</button></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Descrizione</th>
+                <th style="width:90px;text-align:right">Quantità</th>
+                <th style="width:120px;text-align:right">Prezzo unit.</th>
+                <th style="width:160px" id="th-riga-codiva">Codice IVA</th>
+                <th style="width:110px;text-align:right" id="th-riga-imponibile">Imponibile</th>
+                <th style="width:100px;text-align:right" id="th-riga-iva">IVA</th>
+                <th style="width:40px"></th>
+              </tr></thead>
+              <tbody id="fatture-righe"></tbody>
+            </table>
+          </div>
+
+          <div class="fattura-totali" id="fatture-totali">
+            <div id="fatture-tot-imponibile-row"><span class="ft-label">Imponibile</span> <span class="ft-val" id="fatture-tot-imponibile">0.00</span></div>
+            <div id="fatture-tot-iva-row"><span class="ft-label">IVA</span> <span class="ft-val" id="fatture-tot-iva">0.00</span></div>
+            <div class="ft-grand"><span class="ft-label">Totale</span> <span class="ft-val" id="fatture-tot-totale">0.00</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="form-group">
+            <label for="f-fat-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
+            <textarea id="f-fat-note" class="form-input" rows="2" maxlength="500" placeholder="Condizioni di pagamento, riferimenti…"></textarea>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn-secondary" id="btn-salva-bozza" onclick="saveBozza()">💾 Salva bozza</button>
+            <button type="button" class="btn-primary" id="btn-emetti" onclick="emettiFatturaCorrente()">📨 Emetti (assegna numero)</button>
+            <button type="button" class="btn-secondary" onclick="fattureBackToList()">Annulla</button>
+          </div>
+          <div class="sql-tip" style="margin-top:12px">
+            «Emetti» assegna il numero progressivo e rende la fattura definitiva (sola lettura). La fattura emessa
+            entra nel Registratore tra i movimenti «Da classificare» (lato ricavo).
+          </div>
+        </div>
+      </div>
+
+      <!-- Vista 3: Dettaglio / stampa -->
+      <div id="fatture-detail-view" style="display:none">
+        <div class="page-header no-print">
+          <div><div class="page-title">Dettaglio fattura</div></div>
+          <button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>
+        </div>
+
+        <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+        <div class="card no-print" id="fatture-detail-actions"></div>
+
+        <div class="card">
+          <div id="fatture-print"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ══ PAGINA: Impostazioni ditta (Fase 7) ═════════════════════════════ -->
+    <div id="page-impostazioni" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">⚙️ Impostazioni ditta</div>
+          <div class="page-subtitle">
+            Dati dell'azienda usati nelle fatture. Salvati in <code>tm_aziende</code> (condivisa con TimberMaster).
+          </div>
+        </div>
+      </div>
+
+      <div id="impostazioni-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
+
+      <div class="card">
+        <div class="card-title">🏢 Anagrafica</div>
+        <div class="form-group">
+          <label for="imp-ragione" class="form-label">Ragione sociale <span class="req" aria-hidden="true">*</span></label>
+          <input type="text" id="imp-ragione" class="form-input" maxlength="200" placeholder="es. Carpenteria Ticinese Sàgl" />
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="imp-forma" class="form-label">Forma giuridica</label>
+            <input type="text" id="imp-forma" class="form-input" maxlength="40" placeholder="Sàgl, SA, Ditta individuale…" />
+          </div>
+          <div class="form-group" style="flex:2">
+            <label for="imp-uid" class="form-label">IDI / UID</label>
+            <input type="text" id="imp-uid" class="form-input" maxlength="40" placeholder="CHE-489.567.138" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label-check">
+            <input type="checkbox" id="imp-soggetto-iva" onchange="toggleSoggettoIva(this.checked)" />
+            <span>Soggetto IVA (registrato AFC) — se attivo, le fatture calcolano e mostrano l'IVA</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label for="imp-iva" class="form-label">N. IVA <span class="dim">(attivo solo se soggetto IVA)</span></label>
+          <input type="text" id="imp-iva" class="form-input" maxlength="40" placeholder="CHE-489.567.138 IVA" disabled />
+        </div>
+        <div class="form-group">
+          <label for="imp-indirizzo" class="form-label">Indirizzo <span class="req" aria-hidden="true">*</span></label>
+          <input type="text" id="imp-indirizzo" class="form-input" maxlength="200" placeholder="Via e numero" />
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="imp-npa" class="form-label">NPA / CAP</label>
+            <input type="text" id="imp-npa" class="form-input" maxlength="10" placeholder="6500" />
+          </div>
+          <div class="form-group" style="flex:2">
+            <label for="imp-citta" class="form-label">Città</label>
+            <input type="text" id="imp-citta" class="form-input" maxlength="100" placeholder="Bellinzona" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="imp-paese" class="form-label">Paese</label>
+            <input type="text" id="imp-paese" class="form-input" maxlength="2" value="CH" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">💳 Pagamento e contatti</div>
+        <div class="form-group">
+          <label for="imp-iban" class="form-label">IBAN <span class="req" aria-hidden="true">*</span></label>
+          <input type="text" id="imp-iban" class="form-input" maxlength="40" placeholder="CH00 0000 0000 0000 0000 0" />
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="imp-termini" class="form-label">Termine di pagamento (giorni)</label>
+            <input type="number" id="imp-termini" class="form-input" min="0" max="365" step="1" placeholder="30" />
+          </div>
+          <div class="form-group" style="flex:2">
+            <label for="imp-email" class="form-label">Email</label>
+            <input type="email" id="imp-email" class="form-input" maxlength="120" placeholder="info@esempio.ch" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="imp-telefono" class="form-label">Telefono</label>
+            <input type="text" id="imp-telefono" class="form-input" maxlength="40" placeholder="+41 91 000 00 00" />
+          </div>
+          <div class="form-group" style="flex:2">
+            <label for="imp-sito" class="form-label">Sito web</label>
+            <input type="text" id="imp-sito" class="form-input" maxlength="120" placeholder="www.esempio.ch" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="imp-logo" class="form-label">Logo (URL) <span class="dim">(opzionale — se vuoto usa img/logo.png)</span></label>
+          <input type="text" id="imp-logo" class="form-input" maxlength="300" placeholder="https://… oppure img/logo.png" />
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="form-actions" style="margin-top:0">
+          <button type="button" class="btn-primary" id="imp-save-btn" onclick="saveImpostazioni()">💾 Salva impostazioni</button>
+          <button type="button" class="btn-secondary" onclick="initImpostazioniPage()">↺ Ricarica</button>
+        </div>
+        <div class="sql-tip" style="margin-top:12px">
+          I campi con <span class="req">*</span> (ragione sociale, indirizzo, N. IVA, IBAN) servono per una fattura completa.
+          Puoi salvare anche parzialmente: ti avviso se manca qualcosa.
         </div>
       </div>
 
