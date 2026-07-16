@@ -1833,6 +1833,8 @@ async function newFattura(tipo) {
   showFattureView('edit')
   await ensureContiIva()
   await loadAziendaInfo()
+  await loadIbanRubrica()
+  populateEditorIban(null)
   applyIvaModeEditor()
   renderRigheEditor()
 }
@@ -1884,6 +1886,8 @@ async function editFattura(id) {
     showFattureView('edit')
     await ensureContiIva()
     await loadAziendaInfo()
+    await loadIbanRubrica()
+    populateEditorIban(f.iban || null)
     applyIvaModeEditor()
     renderRigheEditor()
   } catch (e) {
@@ -2009,6 +2013,7 @@ function collectFatturaHeader() {
     anno:              anno,
     tipo:              editorTipo,
     rif_fattura_id:    editorRifId,
+    iban:              resolveEditorIban(),
     note:              el('f-fat-note') ? (el('f-fat-note').value.trim() || null) : null,
     totale_imponibile: tot.imponibile,
     totale_iva:        tot.iva,
@@ -2044,6 +2049,7 @@ async function replaceRighe(fatturaId) {
 }
 
 async function persistBozza() {
+  await maybeSaveNewIbanToRubrica()   // se "nuovo IBAN" + "salva in rubrica"
   var header = collectFatturaHeader()
   header.stato = 'bozza'
   var fatturaId = editorFatturaId
@@ -2212,6 +2218,188 @@ async function creaNotaCredito(id) {
   }
 }
 
+// ── Rubrica IBAN per cantiere (Fase 8) ───────────────────────────────────────
+function maskIban(iban) {
+  var s = String(iban || '').replace(/\s+/g, '')
+  return s.length <= 4 ? s : '…' + s.slice(-4)
+}
+
+async function loadIbanRubrica(force) {
+  if (ibanRubrica !== null && !force) return
+  if (!currentAziendaId) { ibanRubrica = []; return }
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_iban')
+      .select('id, etichetta, iban, attivo')
+      .eq('azienda_id', currentAziendaId)
+      .order('attivo', { ascending: false })
+      .order('etichetta')
+    if (error) throw error
+    ibanRubrica = data || []
+  } catch (e) {
+    ibanRubrica = ibanRubrica || []
+    console.warn('IBAN rubrica:', e.message)
+  }
+}
+
+// ── Editor fattura: selezione IBAN ───────────────────────────────────────────
+function buildEditorIbanOptions(currentIban) {
+  var a = aziendaInfo || {}
+  var defMask = a.iban ? ' (' + maskIban(a.iban) + ')' : ' (non impostato)'
+  var out = '<option value="">Predefinito aziendale' + esc(defMask) + '</option>'
+  var attive = (ibanRubrica || []).filter(function (x) { return x.attivo })
+  for (var i = 0; i < attive.length; i++) {
+    var e = attive[i]
+    var sel = (currentIban && e.iban === currentIban) ? ' selected' : ''
+    out += '<option value="' + esc(e.iban) + '"' + sel + '>' + esc(e.etichetta + ' — ' + maskIban(e.iban)) + '</option>'
+  }
+  out += '<option value="__new__">➕ Nuovo IBAN…</option>'
+  return out
+}
+
+function populateEditorIban(currentIban) {
+  var sel = el('f-fat-iban-select')
+  if (!sel) return
+  // reset stato "nuovo"
+  if (el('f-fat-iban-save')) el('f-fat-iban-save').checked = false
+  if (el('f-fat-iban-label')) { el('f-fat-iban-label').value = ''; el('f-fat-iban-label').style.display = 'none' }
+  if (el('f-fat-iban-manual')) el('f-fat-iban-manual').value = ''
+
+  sel.innerHTML = buildEditorIbanOptions(currentIban)
+  // IBAN presente ma non in rubrica (manuale non salvato) → "__new__" precompilato
+  if (currentIban && sel.value !== currentIban) {
+    sel.value = '__new__'
+    if (el('f-fat-iban-manual')) el('f-fat-iban-manual').value = currentIban
+  }
+  onIbanSelectChange()
+}
+
+function onIbanSelectChange() {
+  var sel = el('f-fat-iban-select')
+  var grp = el('f-fat-iban-new-group')
+  if (grp) grp.style.display = (sel && sel.value === '__new__') ? 'block' : 'none'
+}
+function onIbanSaveToggle(checked) {
+  var lbl = el('f-fat-iban-label')
+  if (lbl) lbl.style.display = checked ? 'block' : 'none'
+}
+function updateEditorIbanState() { /* riservato: nessuna azione live necessaria */ }
+
+// IBAN effettivo da salvare in tm_conta_fatture.iban ('' / predefinito → null)
+function resolveEditorIban() {
+  var sel = el('f-fat-iban-select')
+  if (!sel) return null
+  var v = sel.value
+  if (v === '') return null
+  if (v === '__new__') {
+    var manual = el('f-fat-iban-manual') ? el('f-fat-iban-manual').value.trim() : ''
+    return manual || null
+  }
+  return v
+}
+
+// Se "nuovo IBAN" + "salva in rubrica" spuntato: crea la voce (non bloccante)
+async function maybeSaveNewIbanToRubrica() {
+  var sel = el('f-fat-iban-select')
+  if (!sel || sel.value !== '__new__') return
+  if (!(el('f-fat-iban-save') && el('f-fat-iban-save').checked)) return
+  var iban = el('f-fat-iban-manual') ? el('f-fat-iban-manual').value.trim() : ''
+  var etichetta = el('f-fat-iban-label') ? el('f-fat-iban-label').value.trim() : ''
+  if (!iban || !etichetta) return   // servono entrambi; altrimenti si salta
+  try {
+    const { error } = await sb
+      .from('tm_conta_iban')
+      .insert({ azienda_id: currentAziendaId, etichetta: etichetta, iban: iban, attivo: true })
+      .select()
+    if (error) throw error
+    await loadIbanRubrica(true)
+  } catch (e) { console.warn('Salvataggio IBAN in rubrica:', e.message) }
+}
+
+// ── Rubrica IBAN in ⚙️ Impostazioni ditta ────────────────────────────────────
+async function renderIbanRubrica() {
+  var box = el('iban-list')
+  if (!box) return
+  await loadIbanRubrica()
+  var showClosed = el('iban-show-closed') && el('iban-show-closed').checked
+  var list = (ibanRubrica || []).filter(function (x) { return showClosed || x.attivo })
+  if (!list.length) { box.innerHTML = '<div class="dim" style="padding:6px 0">Nessun IBAN in rubrica.</div>'; return }
+  box.innerHTML = list.map(function (e) {
+    return '<div class="iban-row' + (e.attivo ? '' : ' chiuso') + '">' +
+      '<span class="iban-etichetta">' + esc(e.etichetta) + '</span>' +
+      '<span class="iban-mask">' + esc(maskIban(e.iban)) + '</span>' +
+      (e.attivo ? '' : ' ' + badge('warn', 'chiuso')) +
+      '<span class="iban-actions">' +
+        '<button class="icon-btn" title="Modifica" onclick="editIbanEntry(\'' + e.id + '\')">✏️</button>' +
+        (e.attivo
+          ? '<button class="icon-btn" title="Segna chiuso" onclick="toggleIbanChiuso(\'' + e.id + '\', false)">🔒 Chiudi</button>'
+          : '<button class="icon-btn" title="Riapri" onclick="toggleIbanChiuso(\'' + e.id + '\', true)">↩︎ Riapri</button>') +
+      '</span>' +
+    '</div>'
+  }).join('')
+}
+
+function openIbanForm() {
+  editingIbanId = null
+  if (el('iban-form-etichetta')) el('iban-form-etichetta').value = ''
+  if (el('iban-form-iban')) el('iban-form-iban').value = ''
+  if (el('iban-form-save-btn')) el('iban-form-save-btn').textContent = '💾 Salva IBAN'
+  var f = el('iban-form'); if (f) f.style.display = 'block'
+  html('iban-banner', '')
+}
+function closeIbanForm() {
+  editingIbanId = null
+  var f = el('iban-form'); if (f) f.style.display = 'none'
+}
+function editIbanEntry(id) {
+  var e = (ibanRubrica || []).filter(function (x) { return x.id === id })[0]
+  if (!e) return
+  editingIbanId = id
+  if (el('iban-form-etichetta')) el('iban-form-etichetta').value = e.etichetta || ''
+  if (el('iban-form-iban')) el('iban-form-iban').value = e.iban || ''
+  if (el('iban-form-save-btn')) el('iban-form-save-btn').textContent = '💾 Aggiorna IBAN'
+  var f = el('iban-form'); if (f) f.style.display = 'block'
+  html('iban-banner', '')
+}
+
+async function saveIbanEntry() {
+  var etichetta = getVal('iban-form-etichetta')
+  var iban = getVal('iban-form-iban')
+  if (!etichetta || !iban) { showFattureBanner('iban-banner', 'err', 'Servono sia l\'etichetta sia l\'IBAN.'); return }
+  if (!currentAziendaId) { showFattureBanner('iban-banner', 'err', 'Azienda non trovata.'); return }
+  var btn = el('iban-form-save-btn'); if (btn) btn.disabled = true
+  try {
+    if (editingIbanId) {
+      const { error } = await sb.from('tm_conta_iban').update({ etichetta: etichetta, iban: iban }).eq('id', editingIbanId).eq('azienda_id', currentAziendaId).select()
+      if (error) throw error
+    } else {
+      const { error } = await sb.from('tm_conta_iban').insert({ azienda_id: currentAziendaId, etichetta: etichetta, iban: iban, attivo: true }).select()
+      if (error) throw error
+    }
+    closeIbanForm()
+    await loadIbanRubrica(true)
+    renderIbanRubrica()
+    showFattureBanner('iban-banner', 'ok', 'IBAN salvato in rubrica.')
+  } catch (e) {
+    showFattureBanner('iban-banner', 'err', 'Salvataggio IBAN: ' + (e.message || e))
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+async function toggleIbanChiuso(id, toAttivo) {
+  if (!currentAziendaId) return
+  try {
+    const { error } = await sb.from('tm_conta_iban').update({ attivo: toAttivo }).eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadIbanRubrica(true)
+    renderIbanRubrica()
+    showFattureBanner('iban-banner', 'ok', toAttivo ? 'IBAN riaperto.' : 'IBAN segnato come chiuso.')
+  } catch (e) {
+    showFattureBanner('iban-banner', 'err', 'Aggiornamento IBAN: ' + (e.message || e))
+  }
+}
+
 // ── Vista / stampa documento ─────────────────────────────────────────────────
 async function loadAziendaInfo() {
   if (aziendaInfo !== null) return
@@ -2338,10 +2526,30 @@ function renderFatturaPrint(f, righe, rifInfo) {
   // Logo: logo_url se presente, altrimenti img/logo.png; onerror → fallback → nascondi
   var logoSrc = (a.logo_url && String(a.logo_url).trim()) ? a.logo_url : 'img/logo.png'
 
-  // Intestazione azienda (dati completi da tm_aziende; nome = ragione sociale)
+  // Intestazione azienda (nome = ragione sociale; indirizzo, NPA città, tel, email)
   var azNome = a.nome || aziendaNome()
+  var addrLines = []
+  if (a.indirizzo) addrLines.push(a.indirizzo)
   var cittaRiga = [a.cap, a.citta].filter(Boolean).join(' ')
-  var contatti = [a.email, a.telefono, a.sito_web].filter(Boolean).join(' · ')
+  if (cittaRiga) addrLines.push(cittaRiga)
+  var contattiLine = [(a.telefono ? 'Tel. ' + a.telefono : null), a.email].filter(Boolean).join(' · ')
+  if (contattiLine) addrLines.push(contattiLine)
+  if (ivaOn && a.numero_iva) addrLines.push('IVA ' + a.numero_iva)
+  var addrText = addrLines.join('\n')
+
+  // Scadenza (solo fattura)
+  var giorni = safeNum(a.termini_pagamento_giorni)
+  if (giorni == null) giorni = 30
+  var scadenza = isNC ? null : addDays(f.data_emissione, giorni)
+
+  // Meta a destra: numero, data, scadenza (fattura) / riferimento (NC), stato
+  var metaRows =
+    '<tr><td>N.</td><td class="inv-num-cell">' + esc(f.numero || 'bozza') + '</td></tr>' +
+    '<tr><td>Data</td><td>' + esc(fmtDate(f.data_emissione)) + '</td></tr>' +
+    (scadenza ? '<tr><td>Scadenza</td><td>' + esc(fmtDate(scadenza)) + '</td></tr>' : '') +
+    (isNC ? '<tr><td>Rif.</td><td>Fatt. ' + esc((rifInfo && rifInfo.numero) ? rifInfo.numero : '—') +
+            ((rifInfo && rifInfo.data_emissione) ? ' del ' + esc(fmtDate(rifInfo.data_emissione)) : '') + '</td></tr>' : '') +
+    '<tr><td>Stato</td><td>' + esc(f.stato) + '</td></tr>'
 
   // Blocco pagamento (fattura) OPPURE riferimento alla fattura stornata (nota di credito)
   var payHtml
@@ -2354,56 +2562,58 @@ function renderFatturaPrint(f, righe, rifInfo) {
         '<div class="inv-pay-row"><span class="inv-pay-lbl">Natura</span><span>Storno a credito del cliente</span></div>' +
       '</div>'
   } else {
-    var giorni = safeNum(a.termini_pagamento_giorni)
-    if (giorni == null) giorni = 30
-    var scadenza = addDays(f.data_emissione, giorni)
+    // IBAN della fattura (snapshot); se vuoto → IBAN aziendale predefinito
+    var ibanShown = (f.iban && String(f.iban).trim()) ? f.iban : a.iban
     payHtml =
       '<div class="inv-pay">' +
-        (a.iban ? '<div class="inv-pay-row"><span class="inv-pay-lbl">IBAN</span><span>' + esc(a.iban) + '</span></div>' : '') +
+        (ibanShown ? '<div class="inv-pay-row"><span class="inv-pay-lbl">IBAN</span><span>' + esc(ibanShown) + '</span></div>' : '') +
         '<div class="inv-pay-row"><span class="inv-pay-lbl">Termine di pagamento</span><span>' + giorni + ' giorni</span></div>' +
         (scadenza ? '<div class="inv-pay-row"><span class="inv-pay-lbl">Scadenza</span><span class="inv-scad">' + esc(fmtDate(scadenza)) + '</span></div>' : '') +
+        '<div class="inv-qrnote">Polizza QR allegata a parte.</div>' +
       '</div>'
   }
+
+  // Piè di pagina centrato
+  var footerParts = [esc(azNome)]
+  if (a.uid) footerParts.push('UID ' + esc(a.uid))
+  if (a.sito_web) footerParts.push(esc(a.sito_web))
+  var footerHtml =
+    '<div class="inv-footer">' +
+      '<strong>' + footerParts.join(' · ') + '</strong><br>' +
+      'Iscritta al Registro di Commercio del Cantone Ticino' +
+    '</div>'
 
   html('fatture-print',
     '<div class="inv">' +
       '<div class="inv-head">' +
-        '<div class="inv-azienda">' +
+        '<div class="inv-brand">' +
           '<img src="' + esc(logoSrc) + '" alt="Logo azienda" class="inv-logo" onerror="logoOnError(this)">' +
-          '<div class="inv-azienda-nome">' + esc(azNome) +
-            (a.forma_giuridica ? ' <span class="inv-forma">' + esc(a.forma_giuridica) + '</span>' : '') +
+          '<div class="inv-brand-info">' +
+            '<div class="inv-azienda-nome">' + esc(azNome) +
+              (a.forma_giuridica ? ' <span class="inv-forma">' + esc(a.forma_giuridica) + '</span>' : '') +
+            '</div>' +
+            '<div class="inv-azienda-addr">' + esc(addrText) + '</div>' +
           '</div>' +
-          '<small>' +
-            (a.indirizzo ? esc(a.indirizzo) + '\n' : '') +
-            (cittaRiga ? esc(cittaRiga) + '\n' : '') +
-            (a.paese ? esc(a.paese) + '\n' : '') +
-            (a.uid ? 'UID ' + esc(a.uid) + '\n' : '') +
-            (ivaOn && a.numero_iva ? 'IVA ' + esc(a.numero_iva) + '\n' : '') +
-            (contatti ? esc(contatti) : '') +
-          '</small>' +
         '</div>' +
         '<div class="inv-meta">' +
-          '<div>' + titolo + '</div>' +
-          '<div class="inv-numero">' + esc(f.numero || '(bozza — non emessa)') + '</div>' +
-          '<div>Data: ' + esc(fmtDate(f.data_emissione)) + '</div>' +
-          '<div>Stato: ' + esc(f.stato) + '</div>' +
-          (isNC ? '<div class="inv-rif">Storno della fattura ' + esc((rifInfo && rifInfo.numero) ? rifInfo.numero : '—') +
-                  ((rifInfo && rifInfo.data_emissione) ? ' del ' + esc(fmtDate(rifInfo.data_emissione)) : '') + '</div>' : '') +
+          '<div class="inv-title">' + titolo + '</div>' +
+          '<table class="inv-meta-tbl">' + metaRows + '</table>' +
         '</div>' +
       '</div>' +
       '<div class="inv-cliente">' +
-        '<div class="inv-cliente-lbl">Cliente</div>' +
+        '<div class="inv-cliente-lbl">Fatturare a</div>' +
         '<div class="inv-cliente-nome">' + esc(f.cliente_nome || '') + '</div>' +
         (f.cliente_indirizzo ? '<div>' + esc(f.cliente_indirizzo) + '</div>' : '') +
-        (f.cliente_paese ? '<div class="dim">' + esc(f.cliente_paese) + '</div>' : '') +
-        (f.cliente_iva ? '<div class="dim">IVA: ' + esc(f.cliente_iva) + '</div>' : '') +
+        (f.cliente_paese ? '<div>' + esc(f.cliente_paese) + '</div>' : '') +
+        (f.cliente_iva ? '<div>IVA: ' + esc(f.cliente_iva) + '</div>' : '') +
       '</div>' +
-      '<table><thead><tr>' + righeHead + '</tr></thead><tbody>' + righeHtml + '</tbody></table>' +
+      '<table class="inv-table"><thead><tr>' + righeHead + '</tr></thead><tbody>' + righeHtml + '</tbody></table>' +
       ivaSumHtml +
       totHtml +
       payHtml +
       (!ivaOn ? '<div class="inv-note">Non soggetto IVA.</div>' : '') +
       (f.note ? '<div class="inv-note">' + esc(f.note) + '</div>' : '') +
+      footerHtml +
     '</div>'
   )
 }
@@ -2481,6 +2691,9 @@ async function initImpostazioniPage() {
     aziendaInfo = data || {}
     fillImpostazioniForm(aziendaInfo)
     html('impostazioni-banner', '')
+    closeIbanForm()
+    await loadIbanRubrica(true)
+    renderIbanRubrica()
     var missing = impostazioniMancanti(aziendaInfo)
     if (missing.length) {
       showFattureBanner('impostazioni-banner', 'warn', 'Per fatture complete mancano: ' + missing.join(', ') + '. Puoi compilarli e salvare.')
