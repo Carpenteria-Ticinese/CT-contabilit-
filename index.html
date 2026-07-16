@@ -500,6 +500,23 @@
           </div>
         </div>
 
+        <div class="card" id="fatture-iban-card">
+          <div class="card-title">🏦 IBAN per l'incasso</div>
+          <div class="form-group">
+            <label for="f-fat-iban-select" class="form-label">IBAN della fattura</label>
+            <select id="f-fat-iban-select" class="form-input" onchange="onIbanSelectChange()"></select>
+          </div>
+          <div class="form-group" id="f-fat-iban-new-group" style="display:none">
+            <input type="text" id="f-fat-iban-manual" class="form-input" maxlength="40" placeholder="CH.. nuovo IBAN" oninput="updateEditorIbanState()" />
+            <label class="form-label-check" style="margin-top:8px">
+              <input type="checkbox" id="f-fat-iban-save" onchange="onIbanSaveToggle(this.checked)" />
+              <span>Salva questo IBAN in rubrica (per riusarlo)</span>
+            </label>
+            <input type="text" id="f-fat-iban-label" class="form-input" maxlength="100" placeholder="Etichetta (es. Cantiere Rossi)" style="margin-top:8px; display:none" />
+          </div>
+          <div class="form-hint">«Predefinito aziendale» usa l'IBAN di ⚙️ Impostazioni ditta. Gli IBAN per cantiere si gestiscono lì nella rubrica.</div>
+        </div>
+
         <div class="card">
           <div class="form-group">
             <label for="f-fat-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
@@ -598,8 +615,9 @@
       <div class="card">
         <div class="card-title">💳 Pagamento e contatti</div>
         <div class="form-group">
-          <label for="imp-iban" class="form-label">IBAN <span class="req" aria-hidden="true">*</span></label>
+          <label for="imp-iban" class="form-label">IBAN aziendale predefinito <span class="req" aria-hidden="true">*</span></label>
           <input type="text" id="imp-iban" class="form-input" maxlength="40" placeholder="CH00 0000 0000 0000 0000 0" />
+          <div class="form-hint">Usato sulle fatture quando non scegli un IBAN per cantiere.</div>
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
@@ -636,6 +654,41 @@
           I campi con <span class="req">*</span> (ragione sociale, indirizzo, N. IVA, IBAN) servono per una fattura completa.
           Puoi salvare anche parzialmente: ti avviso se manca qualcosa.
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          🏦 IBAN per cantiere
+          <button type="button" class="link-btn" onclick="openIbanForm()">+ Nuovo IBAN</button>
+        </div>
+        <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
+          Salva qui gli IBAN dei singoli cantieri: li scegli al volo quando emetti una fattura, senza ribatterli.
+          Quando chiudi un conto, segnalo «chiuso»: sparisce dalle scelte ma resta nello storico.
+        </p>
+
+        <div id="iban-form" class="nuovo-conto-box" style="display:none">
+          <div class="form-row">
+            <div class="form-group" style="flex:2">
+              <label for="iban-form-etichetta" class="form-label">Etichetta (cantiere/cliente)</label>
+              <input type="text" id="iban-form-etichetta" class="form-input" maxlength="100" placeholder="es. Cantiere Rossi — Bellinzona" />
+            </div>
+            <div class="form-group" style="flex:2">
+              <label for="iban-form-iban" class="form-label">IBAN</label>
+              <input type="text" id="iban-form-iban" class="form-input" maxlength="40" placeholder="CH00 0000 0000 0000 0000 0" />
+            </div>
+          </div>
+          <div class="form-actions" style="margin-top:6px">
+            <button type="button" class="btn-primary" id="iban-form-save-btn" onclick="saveIbanEntry()">💾 Salva IBAN</button>
+            <button type="button" class="btn-secondary" onclick="closeIbanForm()">Annulla</button>
+          </div>
+        </div>
+
+        <div id="iban-banner" role="alert" aria-live="assertive" style="margin:10px 0"></div>
+        <div id="iban-list"></div>
+        <label class="form-label-check" style="margin-top:12px">
+          <input type="checkbox" id="iban-show-closed" onchange="renderIbanRubrica()" />
+          <span>Mostra anche gli IBAN chiusi</span>
+        </label>
       </div>
 
     </div>
