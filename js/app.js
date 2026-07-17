@@ -1756,15 +1756,52 @@ function fattureRowActions(f) {
   return a
 }
 
+function clearFattureSearch() {
+  var inp = el('fatture-search')
+  if (inp) inp.value = ''
+  renderFattureTable()
+  if (inp) inp.focus()
+}
+
 function renderFattureTable() {
   var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : ''
   var anno  = el('fatture-filtro-anno') ? el('fatture-filtro-anno').value : ''
+  var q = el('fatture-search') ? el('fatture-search').value.trim().toLowerCase() : ''
+
+  // mostra/nasconde il pulsante di pulizia ricerca
+  var clearBtn = el('fatture-search-clear')
+  if (clearBtn) clearBtn.style.display = q ? 'flex' : 'none'
+
+  // filtri esistenti (stato/anno)
   var list = fattureList.filter(function (f) {
     if (stato && f.stato !== stato) return false
     if (anno && String(f.anno) !== String(anno)) return false
     return true
   })
-  if (!list.length) { html('fatture-table', '<div class="dim" style="padding:10px 0">Nessuna fattura.</div>'); return }
+
+  // ricerca testuale DENTRO il risultato filtrato: numero, cliente, totale
+  // (case-insensitive, per pezzi di parola; tutti i termini devono combaciare)
+  if (q) {
+    var termini = q.split(/\s+/)
+    list = list.filter(function (f) {
+      var totNum = safeNum(f.totale)
+      var hay = (
+        (f.numero || '') + ' ' +
+        (f.cliente_nome || '') + ' ' +
+        (totNum != null ? String(totNum) + ' ' + totNum.toFixed(2) : '')
+      ).toLowerCase()
+      return termini.every(function (t) { return hay.indexOf(t) !== -1 })
+    })
+  }
+
+  if (!list.length) {
+    var filtroAttivo = q || stato || anno
+    var msg = filtroAttivo
+      ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.'
+      : 'Nessuna fattura.'
+    html('fatture-table', '<div class="dim" style="padding:10px 0">' + msg + '</div>')
+    return
+  }
   var rows = list.map(function (f) {
     return '<tr class="row-clickable" onclick="viewFattura(\'' + f.id + '\')">' +
       '<td><span class="cod">' + esc(f.numero || '— bozza —') + '</span></td>' +
