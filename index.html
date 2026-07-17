@@ -406,6 +406,12 @@
 
         <div class="card">
           <div class="card-title">📄 Elenco</div>
+          <div class="form-group" style="margin-bottom:12px">
+            <div class="search-wrap">
+              <input type="text" id="fatture-search" class="form-input" placeholder="🔍 Cerca fattura (numero, cliente, totale)…" oninput="renderFattureTable()" autocomplete="off" aria-label="Cerca fattura" />
+              <button type="button" class="search-clear" id="fatture-search-clear" onclick="clearFattureSearch()" aria-label="Svuota ricerca" title="Svuota" style="display:none">✕</button>
+            </div>
+          </div>
           <div class="form-row" style="margin-bottom:12px">
             <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="fatture-filtro-stato" class="form-label">Stato</label>
