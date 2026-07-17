@@ -958,6 +958,21 @@ tbody tr.row-clickable { cursor: pointer; }
 .nc-ref.nc-ref-over { background: var(--warn-bg); border-color: #fcd34d; color: var(--warn); }
 .nc-ref-warn { margin-top: 6px; font-weight: 600; }
 
+/* Ricerca fatture */
+.search-wrap { position: relative; }
+.search-wrap .form-input { padding-right: 40px; }
+.search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 30px; min-width: 30px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text2); font-size: 13px; cursor: pointer; line-height: 1;
+}
+.search-clear:hover { background: var(--border); color: var(--text); }
+@media (max-width: 900px) {
+  .search-clear { width: 36px; height: 36px; min-width: 36px; }
+}
+
 /* Rubrica IBAN per cantiere (Fase 8) */
 .iban-row {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
