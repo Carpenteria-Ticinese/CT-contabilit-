@@ -50,6 +50,11 @@
       <span>Fatture</span>
     </button>
 
+    <button class="nav-item auth-only" data-page="acquisti">
+      <span aria-hidden="true">📥</span>
+      <span>Fatture acquisto</span>
+    </button>
+
     <button class="nav-item auth-only" data-page="export">
       <span aria-hidden="true">📤</span>
       <span>Export &amp; consegna</span>
@@ -558,6 +563,123 @@
 
     </div>
 
+    <!-- ══ PAGINA: Fatture d'acquisto (Fase 10) ════════════════════════════ -->
+    <div id="page-acquisti" class="page">
+
+      <!-- Lista -->
+      <div id="acquisti-list-view">
+        <div class="page-header">
+          <div>
+            <div class="page-title">📥 Fatture acquisto</div>
+            <div class="page-subtitle">Registrazione manuale dei documenti ricevuti dai fornitori. Modificabili ed eliminabili.</div>
+          </div>
+          <button class="btn-primary" onclick="newAcquisto()">➕ Nuova fattura d'acquisto</button>
+        </div>
+
+        <div id="acquisti-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+        <div class="card">
+          <div class="card-title">📄 Elenco</div>
+          <div class="form-group" style="margin-bottom:12px">
+            <div class="search-wrap">
+              <input type="text" id="acquisti-search" class="form-input" placeholder="🔍 Cerca (fornitore, numero, importo)…" oninput="renderAcquistiTable()" autocomplete="off" aria-label="Cerca fattura d'acquisto" />
+              <button type="button" class="search-clear" id="acquisti-search-clear" onclick="clearAcquistiSearch()" aria-label="Svuota ricerca" title="Svuota" style="display:none">✕</button>
+            </div>
+          </div>
+          <div class="form-row" style="margin-bottom:12px">
+            <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="acquisti-filtro-stato" class="form-label">Stato pagamento</label>
+              <select id="acquisti-filtro-stato" class="form-input" onchange="renderAcquistiTable()">
+                <option value="">Tutti</option>
+                <option value="da_pagare">Da pagare</option>
+                <option value="pagata">Pagata</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="acquisti-filtro-anno" class="form-label">Anno</label>
+              <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
+            </div>
+          </div>
+          <div id="acquisti-table"></div>
+        </div>
+      </div>
+
+      <!-- Editor -->
+      <div id="acquisti-edit-view" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title" id="acquisti-edit-title">Nuova fattura d'acquisto</div>
+            <div class="page-subtitle">Documento ricevuto: si può modificare ed eliminare in seguito.</div>
+          </div>
+          <button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>
+        </div>
+
+        <div id="acquisti-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
+
+        <div class="card">
+          <div class="card-title">🏢 Fornitore e documento</div>
+          <div class="form-group">
+            <label for="a-fornitore" class="form-label">Fornitore <span class="req" aria-hidden="true">*</span></label>
+            <input type="text" id="a-fornitore" class="form-input" maxlength="200" placeholder="es. Ferramenta Bianchi SA" />
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:2">
+              <label for="a-numero" class="form-label">Numero fornitore</label>
+              <input type="text" id="a-numero" class="form-input" maxlength="80" placeholder="es. FT-2026/512" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="a-data" class="form-label">Data <span class="req" aria-hidden="true">*</span></label>
+              <input type="date" id="a-data" class="form-input" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:2">
+              <label for="a-importo" class="form-label">Importo <span class="req" aria-hidden="true">*</span></label>
+              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="a-valuta" class="form-label">Valuta</label>
+              <select id="a-valuta" class="form-input">
+                <option value="CHF" selected>CHF</option>
+                <option value="EUR">EUR</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="a-scadenza" class="form-label">Scadenza <span class="dim">(opzionale)</span></label>
+              <input type="date" id="a-scadenza" class="form-input" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="a-stato" class="form-label">Stato pagamento</label>
+              <select id="a-stato" class="form-input">
+                <option value="da_pagare" selected>Da pagare</option>
+                <option value="pagata">Pagata</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="a-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
+            <textarea id="a-note" class="form-input" rows="2" maxlength="500" placeholder="Riferimenti, cantiere, condizioni…"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="a-allegato" class="form-label">Allegato documento <span class="dim">(opzionale)</span></label>
+            <input type="file" id="a-allegato" class="form-input-file" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
+            <div class="form-hint" id="a-allegato-hint">Caricato nel bucket <code>conta-allegati</code>. Se il bucket non esiste, la fattura viene salvata senza allegato.</div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn-primary" id="acq-save-btn" onclick="saveAcquisto()">💾 Salva</button>
+            <button type="button" class="btn-secondary" id="acq-annulla-btn" onclick="onAcquistoAnnulla()">Annulla</button>
+          </div>
+          <div class="sql-tip" style="margin-top:12px">
+            La fattura d'acquisto entra nel Registratore tra i movimenti «Da classificare» (lato costo), classificabile con conto + IVA.
+          </div>
+        </div>
+      </div>
+
+    </div>
+
     <!-- ══ PAGINA: Impostazioni ditta (Fase 7) ═════════════════════════════ -->
     <div id="page-impostazioni" class="page">
 
@@ -828,6 +950,29 @@
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- ══ MODALE: Conferma emissione fattura (Fase 10) ═════════════════════ -->
+  <div id="emit-confirm-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="emit-confirm-title" onclick="if(event.target===this) closeEmitConfirm()">
+    <div class="modal-card" style="max-width:440px">
+      <div class="modal-header">
+        <div class="modal-title" id="emit-confirm-title">📨 Confermi l'emissione?</div>
+        <button class="modal-close" onclick="closeEmitConfirm()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="emit-confirm-summary" class="emit-summary"></div>
+        <div class="fase-banner warn" style="margin-top:14px">
+          <span class="icon" aria-hidden="true">⚠️</span>
+          <div class="msg">Dopo l'emissione la fattura non sarà più modificabile. Confermi?</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="closeEmitConfirm()">Annulla</button>
+          <button type="button" class="btn-primary" id="emit-confirm-btn" onclick="confirmEmitNow()">✅ Conferma ed emetti</button>
+        </div>
+      </div>
     </div>
   </div>
 
