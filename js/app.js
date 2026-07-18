@@ -44,6 +44,13 @@ let editorRifInfo     = null   // {numero, data_emissione, totale} della fattura
 // Fase 8 — rubrica IBAN per cantiere
 let ibanRubrica       = null   // [{id, etichetta, iban, attivo}]
 let editingIbanId     = null   // id voce rubrica in modifica (Impostazioni)
+
+// Fase 10 — fatture d'acquisto + conferma emissione vendite
+let acquistiList      = []     // fatture d'acquisto caricate
+let editingAcquistoId = null   // id acquisto in modifica (null = nuovo)
+let acquistoOriginal  = null   // valori originali (per "Annulla ripristina")
+let acquistoDocPath   = null   // doc_path esistente in modifica
+let pendingEmitFn     = null   // callback della modale di conferma emissione
 let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezzo_unitario, codice_iva_id}
 let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
 let currentDetailFattura = null
@@ -344,6 +351,41 @@ async function loadCanalA() {
       }
     } catch (e) {
       console.warn('Canale A / fatture:', e.message)
+    }
+  }
+
+  // fatture d'acquisto (Fase 10) → entrano nel Registratore come origine_tipo='acquisto'
+  // (lato costo, importo positivo). Restano la loro casa: qui si LEGGONO soltanto.
+  if (currentAziendaId) {
+    try {
+      const { data, error } = await sb
+        .from('tm_conta_fatture_acquisto')
+        .select('id, fornitore, numero_fornitore, data, importo, valuta')
+        .eq('azienda_id', currentAziendaId)
+        .order('data', { ascending: false })
+      if (error) throw error
+      for (var q = 0; q < (data || []).length; q++) {
+        var acq = data[q]
+        var desc = 'Acquisto' + (acq.numero_fornitore ? ' ' + acq.numero_fornitore : '') + ' — ' + (acq.fornitore || '')
+        movimenti.push({
+          origine_tipo: 'acquisto',
+          origine_id:   acq.id,
+          data:         acq.data,
+          descrizione:  desc,
+          importo:      safeNum(acq.importo),
+          valuta:       acq.valuta || 'CHF',
+          cantiere_id:  null,
+          ente:         acq.fornitore || null,
+          extra:        acq.fornitore ? 'Fornitore: ' + acq.fornitore : null,
+          _sorgente:    'Fatture acquisto',
+          _tipo_label:  'Fattura acquisto',
+          _icon:        '📥',
+          _match_field: 'ente',
+          _match_value: acq.fornitore || null
+        })
+      }
+    } catch (e) {
+      console.warn('Canale A / acquisti:', e.message)
     }
   }
 
@@ -2140,8 +2182,21 @@ async function emettiFatturaCorrente() {
     return
   }
 
-  if (!window.confirm('Emettere il documento? Verrà assegnato il numero progressivo e diventerà DEFINITIVO (sola lettura). Per correggere si usa una nota di credito.')) return
+  // Riepilogo di conferma (evita emissioni per distrazione)
+  var tipoLbl = editorTipo === 'nota_credito' ? 'Nota di credito' : 'Fattura'
+  var cliente = el('f-cli-nome') ? el('f-cli-nome').value.trim() : ''
+  var dataVal = el('f-fat-data') ? el('f-fat-data').value : ''
+  var valuta  = el('f-fat-valuta') ? el('f-fat-valuta').value : 'CHF'
+  var tot     = recalcFatturaTotals().totale
+  var sumRows = [['Tipo', tipoLbl], ['Cliente', cliente || '—'], ['Data', dataVal ? fmtDate(dataVal) : 'oggi (all\'emissione)']]
+  if (editorTipo !== 'nota_credito') {
+    sumRows.push(['IBAN', resolveEditorIban() || (aziendaInfo && aziendaInfo.iban) || '— predefinito —'])
+  }
+  sumRows.push(['Totale', fmtNum2(tot) + ' ' + valuta, true])
+  openEmitConfirm(emitSummaryRows(sumRows), doEmitCorrente)
+}
 
+async function doEmitCorrente() {
   var btn = el('btn-emetti'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Emissione…' }
   try {
     await persistBozza()
@@ -2160,7 +2215,20 @@ async function emettiFatturaCorrente() {
 }
 
 async function emettiFatturaById(id) {
-  if (!window.confirm('Emettere il documento? Verrà assegnato il numero e diventerà definitivo (sola lettura).')) return
+  var f = currentDetailFattura
+  var sumRows
+  if (f && f.id === id) {
+    var tLbl = f.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura'
+    sumRows = [['Tipo', tLbl], ['Cliente', f.cliente_nome || '—'], ['Data', f.data_emissione ? fmtDate(f.data_emissione) : 'oggi (all\'emissione)']]
+    if (f.tipo !== 'nota_credito') sumRows.push(['IBAN', (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '— predefinito —')])
+    sumRows.push(['Totale', fmtNum2(safeNum(f.totale)) + ' ' + (f.valuta || 'CHF'), true])
+  } else {
+    sumRows = [['Documento', 'pronto per l\'emissione']]
+  }
+  openEmitConfirm(emitSummaryRows(sumRows), function () { doEmitById(id) })
+}
+
+async function doEmitById(id) {
   html('fatture-detail-banner', loadingRow('Emissione in corso…'))
   try {
     const { error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: id })
@@ -2676,6 +2744,269 @@ function renderDetailActions(f) {
 }
 
 function printFattura() { window.print() }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 10 — CONFERMA EMISSIONE (riepilogo prima di rendere definitiva la vendita)
+// ══════════════════════════════════════════════════════════════════════════════
+function emitSummaryRows(rows) {
+  return rows.map(function (r) {
+    return '<div class="emit-row"><span class="emit-lbl">' + esc(r[0]) + '</span>' +
+      '<span class="emit-val' + (r[2] ? ' big' : '') + '">' + esc(r[1]) + '</span></div>'
+  }).join('')
+}
+function openEmitConfirm(summaryHtml, fn) {
+  pendingEmitFn = fn
+  var s = el('emit-confirm-summary'); if (s) s.innerHTML = summaryHtml
+  var o = el('emit-confirm-overlay'); if (o) o.style.display = 'flex'
+}
+function closeEmitConfirm() {
+  pendingEmitFn = null
+  var o = el('emit-confirm-overlay'); if (o) o.style.display = 'none'
+}
+function confirmEmitNow() {
+  var fn = pendingEmitFn
+  closeEmitConfirm()
+  if (typeof fn === 'function') fn()
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 10 — FATTURE D'ACQUISTO (registrazione manuale di documenti ricevuti)
+// Numero del fornitore (libero), modificabili ed eliminabili. Entrano nel
+// Registratore come origine_tipo='acquisto' (lato costo).
+// ══════════════════════════════════════════════════════════════════════════════
+function showAcquistiView(which) {
+  var l = el('acquisti-list-view'), e = el('acquisti-edit-view')
+  if (l) l.style.display = which === 'list' ? 'block' : 'none'
+  if (e) e.style.display = which === 'edit' ? 'block' : 'none'
+}
+function acquistiBackToList() { showAcquistiView('list') }
+
+async function initAcquistiPage() {
+  acquistiBackToList()
+  await loadAcquistiList()
+}
+
+async function loadAcquistiList() {
+  if (!currentAziendaId) { html('acquisti-table', '<div class="dim">Accedi per vedere le fatture d\'acquisto.</div>'); return }
+  html('acquisti-table', loadingRow('Caricamento…'))
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_fatture_acquisto')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, doc_path, note, created_at')
+      .eq('azienda_id', currentAziendaId)
+      .order('data', { ascending: false })
+    if (error) throw error
+    acquistiList = data || []
+    renderAcquistiTable()
+  } catch (e) {
+    html('acquisti-table', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
+  }
+}
+
+function statoAcquistoBadge(stato) {
+  return stato === 'pagata' ? badge('ok', '✅ Pagata') : badge('warn', '⏳ Da pagare')
+}
+
+function acquistiRowActions(a) {
+  var pagata = a.stato_pagamento === 'pagata'
+  return '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
+    (pagata
+      ? '<button class="icon-btn" title="Segna da pagare" onclick="event.stopPropagation(); toggleAcquistoPagata(\'' + a.id + '\', false)">↩︎</button>'
+      : '<button class="icon-btn" title="Segna pagata" onclick="event.stopPropagation(); toggleAcquistoPagata(\'' + a.id + '\', true)">✅</button>') +
+    '<button class="icon-btn danger" title="Elimina" onclick="event.stopPropagation(); deleteAcquisto(\'' + a.id + '\')">🗑️</button>'
+}
+
+function clearAcquistiSearch() {
+  var inp = el('acquisti-search'); if (inp) inp.value = ''
+  renderAcquistiTable(); if (inp) inp.focus()
+}
+
+function renderAcquistiTable() {
+  var stato = el('acquisti-filtro-stato') ? el('acquisti-filtro-stato').value : ''
+  var anno  = el('acquisti-filtro-anno') ? el('acquisti-filtro-anno').value : ''
+  var qv    = el('acquisti-search') ? el('acquisti-search').value.trim().toLowerCase() : ''
+  var clearBtn = el('acquisti-search-clear'); if (clearBtn) clearBtn.style.display = qv ? 'flex' : 'none'
+
+  var list = acquistiList.filter(function (a) {
+    if (stato && a.stato_pagamento !== stato) return false
+    if (anno && (!a.data || String(a.data).slice(0, 4) !== String(anno))) return false
+    return true
+  })
+  if (qv) {
+    var termini = qv.split(/\s+/)
+    list = list.filter(function (a) {
+      var imp = safeNum(a.importo)
+      var hay = ((a.fornitore || '') + ' ' + (a.numero_fornitore || '') + ' ' +
+        (imp != null ? String(imp) + ' ' + imp.toFixed(2) : '')).toLowerCase()
+      return termini.every(function (t) { return hay.indexOf(t) !== -1 })
+    })
+  }
+  if (!list.length) {
+    var attivo = qv || stato || anno
+    html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
+      (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
+    return
+  }
+  var rows = list.map(function (a) {
+    return '<tr class="row-clickable" onclick="editAcquisto(\'' + a.id + '\')">' +
+      '<td>' + esc(a.fornitore || '') + '</td>' +
+      '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
+      '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
+      '<td class="num">' + fmtImporto(a.importo, a.valuta) + '</td>' +
+      '<td>' + statoAcquistoBadge(a.stato_pagamento) + '</td>' +
+      '<td class="row-actions">' + acquistiRowActions(a) + '</td>' +
+    '</tr>'
+  }).join('')
+  html('acquisti-table', '<div class="table-wrap"><table><thead><tr>' +
+    '<th>Fornitore</th><th style="width:130px">Numero</th><th style="width:100px">Data</th>' +
+    '<th style="width:130px;text-align:right">Importo</th><th style="width:120px">Stato</th><th style="width:170px">Azioni</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>')
+}
+
+function fillAcquistoForm(v) {
+  v = v || {}
+  setVal('a-fornitore', v.fornitore)
+  setVal('a-numero',    v.numero_fornitore)
+  setVal('a-data',      v.data)
+  setVal('a-importo',   v.importo == null ? '' : v.importo)
+  setVal('a-valuta',    v.valuta || 'CHF')
+  setVal('a-scadenza',  v.scadenza || '')
+  setVal('a-stato',     v.stato_pagamento || 'da_pagare')
+  setVal('a-note',      v.note || '')
+  var file = el('a-allegato'); if (file) file.value = ''
+}
+
+function newAcquisto() {
+  editingAcquistoId = null
+  acquistoOriginal = null
+  acquistoDocPath = null
+  fillAcquistoForm({ data: new Date().toISOString().split('T')[0], valuta: 'CHF', stato_pagamento: 'da_pagare' })
+  if (el('acquisti-edit-title')) el('acquisti-edit-title').textContent = 'Nuova fattura d\'acquisto'
+  html('acquisti-edit-banner', '')
+  showAcquistiView('edit')
+}
+
+async function editAcquisto(id) {
+  if (!currentAziendaId) return
+  html('acquisti-edit-banner', '')
+  try {
+    const { data, error } = await sb.from('tm_conta_fatture_acquisto').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    editingAcquistoId = id
+    acquistoDocPath = data.doc_path || null
+    var vals = {
+      fornitore: data.fornitore || '', numero_fornitore: data.numero_fornitore || '',
+      data: data.data || '', importo: data.importo == null ? '' : data.importo,
+      valuta: data.valuta || 'CHF', scadenza: data.scadenza || '',
+      stato_pagamento: data.stato_pagamento || 'da_pagare', note: data.note || ''
+    }
+    acquistoOriginal = vals
+    fillAcquistoForm(vals)
+    if (el('acquisti-edit-title')) el('acquisti-edit-title').textContent = 'Modifica fattura d\'acquisto'
+    showAcquistiView('edit')
+  } catch (e) {
+    showFattureBanner('acquisti-list-banner', 'err', 'Apertura: ' + (e.message || e))
+  }
+}
+
+function collectAcquisto() {
+  var fornitore = getVal('a-fornitore')
+  var dataVal = getVal('a-data')
+  var importo = safeNum(getVal('a-importo'))
+  if (!fornitore) throw new Error('Il fornitore è obbligatorio.')
+  if (!dataVal) throw new Error('La data è obbligatoria.')
+  if (importo == null || importo <= 0) throw new Error('L\'importo dev\'essere un numero positivo.')
+  return {
+    azienda_id:       currentAziendaId,
+    fornitore:        fornitore,
+    numero_fornitore: getVal('a-numero') || null,
+    data:             dataVal,
+    importo:          importo,
+    valuta:           getVal('a-valuta') || 'CHF',
+    scadenza:         getVal('a-scadenza') || null,
+    stato_pagamento:  getVal('a-stato') || 'da_pagare',
+    note:             getVal('a-note') || null
+  }
+}
+
+async function saveAcquisto() {
+  html('acquisti-edit-banner', '')
+  var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
+  try {
+    var payload = collectAcquisto()
+    // allegato (opzionale): in modifica si parte dal doc esistente
+    var doc_path = editingAcquistoId ? acquistoDocPath : null
+    var allegatoFallito = false
+    var fileInput = el('a-allegato')
+    if (fileInput && fileInput.files && fileInput.files.length > 0) {
+      try { doc_path = await uploadAllegato(fileInput.files[0]) }
+      catch (uploadErr) { allegatoFallito = uploadErr.message || 'allegato non caricato' }
+    }
+    payload.doc_path = doc_path
+
+    if (editingAcquistoId) {
+      const { error } = await sb.from('tm_conta_fatture_acquisto').update(payload).eq('id', editingAcquistoId).eq('azienda_id', currentAziendaId).select()
+      if (error) throw error
+    } else {
+      payload.created_by = currentUser ? currentUser.id : null
+      const { data, error } = await sb.from('tm_conta_fatture_acquisto').insert(payload).select()
+      if (error) throw error
+      editingAcquistoId = data && data[0] ? data[0].id : null
+    }
+    acquistoDocPath = doc_path
+    acquistoOriginal = null
+
+    await loadAcquistiList()
+    try { await refreshDaClassificareCount() } catch (_) {}
+    acquistiBackToList()
+    if (allegatoFallito) showFattureBanner('acquisti-list-banner', 'warn', 'Fattura salvata (senza allegato): ' + allegatoFallito)
+    else showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto salvata.')
+  } catch (e) {
+    showFattureBanner('acquisti-edit-banner', 'err', 'Salvataggio: ' + (e.message || e))
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Salva' }
+  }
+}
+
+function onAcquistoAnnulla() {
+  if (editingAcquistoId && acquistoOriginal) {
+    fillAcquistoForm(acquistoOriginal)   // ripristina i valori originali
+    html('acquisti-edit-banner', '')
+  } else {
+    acquistiBackToList()
+  }
+}
+
+async function deleteAcquisto(id) {
+  if (!currentAziendaId) return
+  if (!window.confirm('Sicuro? Non si può annullare.\n\nLa fattura d\'acquisto verrà eliminata (con la sua eventuale classificazione).')) return
+  try {
+    const delClass = await sb.from('tm_conta_classificazioni').delete()
+      .eq('azienda_id', currentAziendaId).eq('origine_tipo', 'acquisto').eq('origine_id', id).select()
+    if (delClass.error) throw delClass.error
+    const { error } = await sb.from('tm_conta_fatture_acquisto').delete().eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    if (editingAcquistoId === id) acquistiBackToList()
+    await loadAcquistiList()
+    try { await refreshDaClassificareCount() } catch (_) {}
+    showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto eliminata.')
+  } catch (e) {
+    showFattureBanner('acquisti-list-banner', 'err', 'Eliminazione: ' + (e.message || e))
+  }
+}
+
+async function toggleAcquistoPagata(id, toPagata) {
+  if (!currentAziendaId) return
+  try {
+    const { error } = await sb.from('tm_conta_fatture_acquisto')
+      .update({ stato_pagamento: toPagata ? 'pagata' : 'da_pagare' })
+      .eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadAcquistiList()
+  } catch (e) {
+    showFattureBanner('acquisti-list-banner', 'err', 'Aggiornamento stato: ' + (e.message || e))
+  }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // FASE 7 — IMPOSTAZIONI DITTA (dati azienda in tm_aziende)
@@ -3331,6 +3662,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'inserimento') { loadRecentiInseriti() }
       if (pageId === 'export')      { initExportPage() }
       if (pageId === 'fatture')     { initFatturePage() }
+      if (pageId === 'acquisti')    { initAcquistiPage() }
       if (pageId === 'impostazioni'){ initImpostazioniPage() }
       if (pageId === 'setup')       { /* già caricata */ }
     })
