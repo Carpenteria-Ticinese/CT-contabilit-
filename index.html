@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=10c" />
+  <link rel="stylesheet" href="css/style.css?v=11" />
 </head>
 <body>
 
@@ -47,8 +47,8 @@
     </button>
 
     <button class="nav-item auth-only" data-page="fatture">
-      <span aria-hidden="true">🧾</span>
-      <span>Fatture</span>
+      <span aria-hidden="true">📤</span>
+      <span>Fatture vendita</span>
     </button>
 
     <button class="nav-item auth-only" data-page="acquisti">
@@ -282,9 +282,10 @@
             </div>
 
             <div class="form-group">
-              <label for="f-allegato" class="form-label">
+              <label for="f-allegato" class="form-label" id="f-allegato-label">
                 Allegato documento <span class="dim">(opzionale)</span>
               </label>
+              <div id="f-allegato-corrente" class="allegato-box" style="display:none"></div>
               <input
                 type="file" id="f-allegato" class="form-input-file"
                 accept=".pdf,.jpg,.jpeg,.png,.heic,.webp"
@@ -392,20 +393,20 @@
 
     </div>
 
-    <!-- ══ PAGINA: Fatture (Fase 6) ════════════════════════════════════════ -->
+    <!-- ══ PAGINA: Fatture VENDITA (Fase 6) ════════════════════════════════ -->
     <div id="page-fatture" class="page">
 
       <!-- Vista 1: Lista -->
       <div id="fatture-list-view">
         <div class="page-header">
           <div>
-            <div class="page-title">🧾 Fatture</div>
+            <div class="page-title">📤 Fatture vendita</div>
             <div class="page-subtitle">
               Emissione manuale. Numerazione progressiva per anno, assegnata all'emissione.
               Dopo l'emissione la fattura è di sola lettura: si corregge con una nota di credito.
             </div>
           </div>
-          <button class="btn-primary" onclick="newFattura('fattura')">➕ Nuova fattura</button>
+          <button class="btn-primary" onclick="newFattura('fattura')">➕ Nuova fattura vendita</button>
         </div>
 
         <div id="fatture-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
@@ -549,7 +550,7 @@
       <!-- Vista 3: Dettaglio / stampa -->
       <div id="fatture-detail-view" style="display:none">
         <div class="page-header no-print">
-          <div><div class="page-title">Dettaglio fattura</div></div>
+          <div><div class="page-title">Dettaglio fattura vendita</div></div>
           <button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>
         </div>
 
@@ -614,6 +615,22 @@
             </div>
           </div>
           <div id="acquisti-table"></div>
+        </div>
+      </div>
+
+      <!-- Vista di sola lettura -->
+      <div id="acquisti-detail-view" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">📥 Dettaglio fattura d'acquisto</div>
+            <div class="page-subtitle">Sola lettura. Premi «Modifica» per cambiare i dati.</div>
+          </div>
+          <button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>
+        </div>
+        <div id="acquisti-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+        <div class="card no-print" id="acquisti-detail-actions"></div>
+        <div class="card">
+          <div id="acquisti-detail-body"></div>
         </div>
       </div>
 
@@ -723,7 +740,8 @@
             <textarea id="a-note" class="form-input" rows="2" maxlength="500" placeholder="Riferimenti, cantiere, condizioni…"></textarea>
           </div>
           <div class="form-group">
-            <label for="a-allegato" class="form-label">Allegato documento <span class="dim">(opzionale)</span></label>
+            <label for="a-allegato" class="form-label" id="a-allegato-label">Allegato documento <span class="dim">(opzionale)</span></label>
+            <div id="a-allegato-corrente" class="allegato-box" style="display:none"></div>
             <input type="file" id="a-allegato" class="form-input-file" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
             <div class="form-hint" id="a-allegato-hint">Caricato nel bucket <code>conta-allegati</code>. Se l'upload non riesce te lo dico esplicitamente: la fattura viene salvata comunque, l'allegato lo puoi riallegare modificandola.</div>
           </div>
@@ -1041,7 +1059,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=10c"></script>
+<script src="js/app.js?v=11"></script>
 
 </body>
 </html>
