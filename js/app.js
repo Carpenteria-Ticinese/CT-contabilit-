@@ -1200,6 +1200,49 @@ function fillFormFromValues(vals) {
   if (el('f-allegato'))    el('f-allegato').value = ''
 }
 
+// Allegato già presente sul movimento Canale B: nome + apri + rimuovi
+function renderMovimentoAllegatoCorrente() {
+  var box = el('f-allegato-corrente')
+  var lbl = el('f-allegato-label')
+  if (!box) return
+  if (!editingDocPath) {
+    box.style.display = 'none'
+    box.innerHTML = ''
+    if (lbl) lbl.innerHTML = 'Allegato documento <span class="dim">(opzionale)</span>'
+    return
+  }
+  box.style.display = 'flex'
+  box.innerHTML =
+    '<span aria-hidden="true">📎</span>' +
+    '<span class="allegato-nome">' + esc(allegatoNomeFile(editingDocPath)) + '</span>' +
+    '<span class="allegato-actions">' +
+      '<button type="button" class="btn-secondary" onclick="openAllegato(\'' + esc(editingDocPath) + '\', \'inserimento-banner\')">📎 Apri allegato</button>' +
+      '<button type="button" class="btn-secondary" onclick="rimuoviAllegatoMovimento()">🗑️ Rimuovi allegato</button>' +
+    '</span>'
+  if (lbl) lbl.innerHTML = 'Sostituisci allegato <span class="dim">(scegli un nuovo file per rimpiazzare quello sopra)</span>'
+}
+
+async function rimuoviAllegatoMovimento() {
+  if (!editingDocPath) return
+  if (!window.confirm('Rimuovere l\'allegato?\n\nIl file verrà cancellato dallo storage: non si può annullare.')) return
+  var path = editingDocPath
+  try {
+    await deleteAllegatoStorage(path)
+    if (editingMovimentoId) {
+      const { error } = await sb.from('tm_conta_movimenti_propri')
+        .update({ doc_path: null }).eq('id', editingMovimentoId).eq('azienda_id', currentAziendaId).select()
+      if (error) throw error
+    }
+    editingDocPath = null
+    renderMovimentoAllegatoCorrente()
+    showInserimentoBanner('ok', 'Allegato rimosso', 'Il file è stato cancellato dallo storage.')
+    try { await loadRecentiInseriti() } catch (_) {}
+  } catch (e) {
+    console.error('rimuoviAllegatoMovimento:', e)
+    showInserimentoBanner('err', 'Rimozione allegato non riuscita', e.message || String(e))
+  }
+}
+
 async function startEditMovimento(id) {
   if (!currentAziendaId) return
   if (isBloccato('proprio', id)) {
@@ -1230,6 +1273,7 @@ async function startEditMovimento(id) {
 
     showPage('inserimento')
     fillFormFromValues(vals)
+    renderMovimentoAllegatoCorrente()
     var bar = el('edit-mode-bar'); if (bar) bar.style.display = 'flex'
     var d = el('edit-mode-desc'); if (d) d.textContent = '«' + vals.descrizione + '»'
     var ct = el('inserimento-card-title'); if (ct) ct.textContent = '✏️ Modifica movimento'
@@ -1258,6 +1302,7 @@ function exitEditMode() {
   var ct = el('inserimento-card-title'); if (ct) ct.textContent = '➕ Nuovo movimento'
   var sbtn = el('inserimento-submit-btn'); if (sbtn) sbtn.textContent = '💾 Salva movimento'
   resetInserimentoForm()
+  renderMovimentoAllegatoCorrente()   // editingDocPath è null → nasconde il box
 }
 
 async function deleteMovimento(id, descrizione) {
@@ -2733,9 +2778,12 @@ function renderDetailActions(f) {
     // Elimina SOLO sulle bozze (numero non ancora assegnato). Mai sulle emesse.
     a += '<button class="btn-secondary" onclick="deleteBozza(\'' + f.id + '\')">🗑️ Elimina</button>'
   } else if (f.stato === 'emessa') {
+    // Emessa → NON modificabile: si corregge con una nota di credito
+    a += '<span class="lock-tag" title="Documento definitivo">🔒 Emessa — sola lettura</span>'
     a += '<button class="btn-secondary" onclick="setPagata(\'' + f.id + '\', true)">✅ Segna come pagata</button>'
     if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
   } else if (f.stato === 'pagata') {
+    a += '<span class="lock-tag" title="Documento definitivo">🔒 Emessa — sola lettura</span>'
     a += '<button class="btn-secondary" onclick="setPagata(\'' + f.id + '\', false)">↩️ Segna non pagata</button>'
     if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
   }
@@ -2776,9 +2824,83 @@ function confirmEmitNow() {
 // Registratore come origine_tipo='acquisto' (lato costo).
 // ══════════════════════════════════════════════════════════════════════════════
 function showAcquistiView(which) {
-  var l = el('acquisti-list-view'), e = el('acquisti-edit-view')
-  if (l) l.style.display = which === 'list' ? 'block' : 'none'
-  if (e) e.style.display = which === 'edit' ? 'block' : 'none'
+  var views = ['list', 'detail', 'edit']
+  for (var i = 0; i < views.length; i++) {
+    var v = el('acquisti-' + views[i] + '-view')
+    if (v) v.style.display = (views[i] === which) ? 'block' : 'none'
+  }
+}
+
+// ── Vista di SOLA LETTURA della fattura d'acquisto ───────────────────────────
+async function viewAcquisto(id) {
+  if (!currentAziendaId) return
+  showAcquistiView('detail')
+  html('acquisti-detail-banner', '')
+  html('acquisti-detail-actions', '')
+  html('acquisti-detail-body', loadingRow('Caricamento…'))
+  try {
+    const { data, error } = await sb.from('tm_conta_fatture_acquisto').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    await ensureContiIva()
+    renderAcquistoDetail(data)
+  } catch (e) {
+    html('acquisti-detail-body', '<p style="color:var(--err)">Errore: ' + esc(e.message || e) + '</p>')
+  }
+}
+
+function renderAcquistoDetail(a) {
+  function riga(lbl, val, mono) {
+    if (val === null || val === undefined || val === '') return ''
+    return '<div class="ro-lbl">' + esc(lbl) + '</div><div class="ro-val' + (mono ? ' mono' : '') + '">' + val + '</div>'
+  }
+  var impo = safeNum(a.imponibile), ivaI = safeNum(a.iva_importo)
+  var pagata = a.stato_pagamento === 'pagata'
+
+  var body = '<div class="ro-grid">' +
+    '<div class="ro-section">Documento</div>' +
+    riga('Fornitore', esc(a.fornitore || '')) +
+    riga('Numero fornitore', esc(a.numero_fornitore || '—')) +
+    riga('Data', esc(fmtDate(a.data))) +
+    riga('Scadenza', a.scadenza ? esc(fmtDate(a.scadenza)) : '') +
+    '<div class="ro-sep"></div>' +
+    '<div class="ro-section">Importi</div>' +
+    riga('Totale', fmtImporto(a.importo, a.valuta), true) +
+    riga('Codice IVA', a.codice_iva_id ? esc(ivaLabel(a.codice_iva_id)) : '—') +
+    riga('Imponibile', impo != null ? fmtNum2(impo) + ' ' + esc(a.valuta || 'CHF') : '', true) +
+    riga('IVA', ivaI != null ? fmtNum2(ivaI) + ' ' + esc(a.valuta || 'CHF') : '', true) +
+    (isSoggettoIva() ? '' : '<div class="ro-lbl"></div><div class="ro-val" style="font-weight:400;color:var(--text3)">ℹ️ IVA non recuperabile (non soggetto IVA)</div>') +
+    '<div class="ro-sep"></div>' +
+    '<div class="ro-section">Pagamento</div>' +
+    riga('Stato', statoAcquistoBadge(a.stato_pagamento)) +
+    (pagata || a.data_pagamento ? riga('Data pagamento', a.data_pagamento ? esc(fmtDate(a.data_pagamento)) : '—') : '') +
+    (pagata || a.metodo_pagamento ? riga('Metodo', esc(a.metodo_pagamento || '—')) : '') +
+    (a.riferimento_pagamento ? riga('Riferimento', esc(a.riferimento_pagamento)) : '') +
+    (a.note ? '<div class="ro-sep"></div><div class="ro-section">Note</div><div class="ro-lbl"></div><div class="ro-val" style="font-weight:400;white-space:pre-line">' + esc(a.note) + '</div>' : '') +
+    '</div>'
+
+  // Allegato
+  if (a.doc_path) {
+    body += '<div class="allegato-box" style="margin-top:16px">' +
+      '<span aria-hidden="true">📎</span>' +
+      '<span class="allegato-nome">' + esc(allegatoNomeFile(a.doc_path)) + '</span>' +
+      '<span class="allegato-actions">' +
+        '<button class="btn-secondary" onclick="openAllegato(\'' + esc(a.doc_path) + '\', \'acquisti-detail-banner\')">📎 Apri allegato</button>' +
+      '</span></div>'
+  } else {
+    body += '<div class="dim" style="margin-top:16px">Nessun allegato.</div>'
+  }
+  html('acquisti-detail-body', body)
+
+  // Azioni: Modifica sempre consentita sugli acquisti
+  html('acquisti-detail-actions',
+    '<div class="form-actions" style="margin-top:0">' +
+      '<button class="btn-primary" onclick="editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
+      (a.stato_pagamento === 'pagata'
+        ? '<button class="btn-secondary" onclick="toggleAcquistoPagata(\'' + a.id + '\', false)">↩️ Segna da pagare</button>'
+        : '<button class="btn-secondary" onclick="toggleAcquistoPagata(\'' + a.id + '\', true)">✅ Segna pagata</button>') +
+      '<button class="btn-secondary" onclick="deleteAcquisto(\'' + a.id + '\')">🗑️ Elimina</button>' +
+      '<button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>' +
+    '</div>')
 }
 function acquistiBackToList() { showAcquistiView('list') }
 
@@ -2810,7 +2932,8 @@ function statoAcquistoBadge(stato) {
 
 function acquistiRowActions(a) {
   var pagata = a.stato_pagamento === 'pagata'
-  return '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
+  return allegatoBtn(a.doc_path, 'acquisti-list-banner') +
+    '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
     (pagata
       ? '<button class="icon-btn" title="Segna da pagare" onclick="event.stopPropagation(); toggleAcquistoPagata(\'' + a.id + '\', false)">↩︎</button>'
       : '<button class="icon-btn" title="Segna pagata" onclick="event.stopPropagation(); toggleAcquistoPagata(\'' + a.id + '\', true)">✅</button>') +
@@ -2866,7 +2989,7 @@ function renderAcquistiTable() {
     } else if (a.metodo_pagamento || a.data_pagamento) {
       paySub = '<span class="cell-sub">dati pagamento salvati</span>'
     }
-    return '<tr class="row-clickable" onclick="editAcquisto(\'' + a.id + '\')">' +
+    return '<tr class="row-clickable" onclick="viewAcquisto(\'' + a.id + '\')">' +
       '<td>' + esc(a.fornitore || '') + '</td>' +
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
@@ -2989,11 +3112,57 @@ function fillAcquistoForm(v) {
   // con clearAcquistoFileInput(), prima di mostrare il form o su "Annulla".
   onAcquistoStatoChange()
   updateAcquistoIvaSummary()
+  renderAcquistoAllegatoCorrente()   // solo un div: non tocca l'input file
 }
 
 function clearAcquistoFileInput() {
   var f = el('a-allegato')
   if (f) f.value = ''
+}
+
+// Mostra l'allegato già presente: nome + apri + rimuovi. L'input file funge da
+// "sostituisci" (caricando un nuovo file si rimpiazza il vecchio al salvataggio).
+function renderAcquistoAllegatoCorrente() {
+  var box = el('a-allegato-corrente')
+  var lbl = el('a-allegato-label')
+  if (!box) return
+  if (!acquistoDocPath) {
+    box.style.display = 'none'
+    box.innerHTML = ''
+    if (lbl) lbl.innerHTML = 'Allegato documento <span class="dim">(opzionale)</span>'
+    return
+  }
+  box.style.display = 'flex'
+  box.innerHTML =
+    '<span aria-hidden="true">📎</span>' +
+    '<span class="allegato-nome">' + esc(allegatoNomeFile(acquistoDocPath)) + '</span>' +
+    '<span class="allegato-actions">' +
+      '<button type="button" class="btn-secondary" onclick="openAllegato(\'' + esc(acquistoDocPath) + '\', \'acquisti-edit-banner\')">📎 Apri allegato</button>' +
+      '<button type="button" class="btn-secondary" onclick="rimuoviAllegatoAcquisto()">🗑️ Rimuovi allegato</button>' +
+    '</span>'
+  if (lbl) lbl.innerHTML = 'Sostituisci allegato <span class="dim">(scegli un nuovo file per rimpiazzare quello sopra)</span>'
+}
+
+async function rimuoviAllegatoAcquisto() {
+  if (!acquistoDocPath) return
+  if (!window.confirm('Rimuovere l\'allegato?\n\nIl file verrà cancellato dallo storage: non si può annullare.')) return
+  var path = acquistoDocPath
+  try {
+    await deleteAllegatoStorage(path)
+    // se la fattura è già salvata, azzera anche doc_path a database
+    if (editingAcquistoId) {
+      const { error } = await sb.from('tm_conta_fatture_acquisto')
+        .update({ doc_path: null }).eq('id', editingAcquistoId).eq('azienda_id', currentAziendaId).select()
+      if (error) throw error
+    }
+    acquistoDocPath = null
+    renderAcquistoAllegatoCorrente()
+    showFattureBanner('acquisti-edit-banner', 'ok', 'Allegato rimosso.')
+    try { await loadAcquistiList() } catch (_) {}
+  } catch (e) {
+    console.error('rimuoviAllegatoAcquisto:', e)
+    showFattureBanner('acquisti-edit-banner', 'err', 'Rimozione allegato non riuscita: ' + (e.message || e))
+  }
 }
 
 async function newAcquisto() {
@@ -3455,6 +3624,56 @@ async function handleInserimentoSubmit(event) {
 }
 
 // ─── Upload allegato su Storage ───────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// ALLEGATI — apertura con link firmato (bucket PRIVATO), nome file, rimozione
+// ══════════════════════════════════════════════════════════════════════════════
+
+// "azienda_id/1718900000000_fattura.pdf" → "fattura.pdf"
+function allegatoNomeFile(path) {
+  if (!path) return ''
+  var base = String(path).split('/').pop()
+  return base.replace(/^\d{10,}_/, '')
+}
+
+// Avviso leggibile: banner se disponibile, altrimenti alert. Mai silenzioso.
+function avvisoAllegato(bannerId, tipo, msg) {
+  if (bannerId && el(bannerId)) showFattureBanner(bannerId, tipo, msg)
+  else window.alert(msg)
+}
+
+// Bucket privato → link temporaneo (1 ora) e apertura in nuova scheda
+async function openAllegato(path, bannerId) {
+  if (!path) { avvisoAllegato(bannerId, 'warn', 'Nessun allegato associato a questo documento.'); return }
+  try {
+    const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 3600)
+    if (error) throw error
+    if (!data || !data.signedUrl) throw new Error('Il server non ha restituito un link firmato.')
+    window.open(data.signedUrl, '_blank', 'noopener')
+  } catch (e) {
+    console.error('openAllegato — createSignedUrl fallita:', e, 'path:', path)
+    var code = e.statusCode || e.status || ''
+    avvisoAllegato(bannerId, 'err',
+      'Impossibile aprire l\'allegato: ' + (e.message || e) + (code ? ' [HTTP ' + code + ']' : '') + ' — path: ' + path)
+  }
+}
+
+// Elimina il file dallo Storage (usato da "Rimuovi allegato")
+async function deleteAllegatoStorage(path) {
+  const { error } = await sb.storage.from(STORAGE_BUCKET).remove([path])
+  if (error) {
+    console.error('deleteAllegatoStorage — errore:', error, 'path:', path)
+    var code = error.statusCode || error.status || ''
+    throw new Error((error.message || 'errore sconosciuto') + (code ? ' [HTTP ' + code + ']' : ''))
+  }
+}
+
+// Pulsante compatto "📎 Apri allegato" per le liste
+function allegatoBtn(path, bannerId) {
+  if (!path) return ''
+  return '<button class="icon-btn" title="Apri allegato" onclick="event.stopPropagation(); openAllegato(\'' +
+    esc(path) + '\', \'' + esc(bannerId || '') + '\')">📎 Allegato</button>'
+}
+
 async function uploadAllegato(file) {
   if (!currentAziendaId) throw new Error('Azienda non definita, impossibile caricare allegato.')
   var ts       = Date.now()
@@ -3493,7 +3712,7 @@ async function loadRecentiInseriti() {
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, importo, valuta, ente_fornitore, ricorrente, periodicita')
+      .select('id, data, descrizione, importo, valuta, ente_fornitore, ricorrente, periodicita, doc_path')
       .eq('azienda_id', currentAziendaId)
       .order('created_at', { ascending: false })
       .limit(8)
@@ -3530,10 +3749,10 @@ async function loadRecentiInseriti() {
     var rows = data.map(function (m, i) {
       var importoStr = fmtImporto(m.importo, m.valuta)
       var bloccato = statoById[m.id] === 'bloccato'
-      var azioni = bloccato
+      var azioni = allegatoBtn(m.doc_path, 'inserimento-banner') + (bloccato
         ? '<span class="lock-tag" title="Periodo consegnato — sola lettura">🔒 Consegnato</span>'
         : '<button class="icon-btn" title="Modifica" onclick="editRecente(' + i + ')">✏️ Modifica</button>' +
-          '<button class="icon-btn danger" title="Elimina" onclick="deleteRecente(' + i + ')">🗑️ Elimina</button>'
+          '<button class="icon-btn danger" title="Elimina" onclick="deleteRecente(' + i + ')">🗑️ Elimina</button>')
       return (
         '<div class="recent-item">' +
           '<div class="recent-meta">' +
