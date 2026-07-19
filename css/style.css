@@ -958,6 +958,29 @@ tbody tr.row-clickable { cursor: pointer; }
 .nc-ref.nc-ref-over { background: var(--warn-bg); border-color: #fcd34d; color: var(--warn); }
 .nc-ref-warn { margin-top: 6px; font-weight: 600; }
 
+/* Allegati: box "allegato corrente" nei form + pulsanti apri/rimuovi */
+.allegato-box {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 10px; font-size: 13px;
+}
+.allegato-nome { font-weight: 600; color: var(--text); word-break: break-all; }
+.allegato-box .allegato-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Vista di sola lettura: coppie etichetta/valore */
+.ro-grid { display: grid; grid-template-columns: 190px 1fr; gap: 8px 16px; font-size: 14px; }
+.ro-lbl { color: var(--text2); }
+.ro-val { color: var(--text); font-weight: 600; word-break: break-word; }
+.ro-val.mono { font-family: monospace; }
+.ro-sep { grid-column: 1 / -1; border-top: 1px solid var(--border); margin: 6px 0; }
+.ro-section { grid-column: 1 / -1; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--primary); font-weight: 700; margin-top: 6px; }
+@media (max-width: 900px) {
+  .ro-grid { grid-template-columns: 1fr; gap: 2px 0; }
+  .ro-lbl { margin-top: 8px; font-size: 12px; }
+  .allegato-box .allegato-actions { margin-left: 0; width: 100%; }
+  .allegato-box .btn-secondary, .allegato-box .btn-primary { min-height: 44px; flex: 1; justify-content: center; }
+}
+
 /* IVA + pagamento fatture d'acquisto (Fase 10b) */
 .iva-summary {
   background: var(--bg);
