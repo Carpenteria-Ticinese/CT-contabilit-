@@ -958,6 +958,33 @@ tbody tr.row-clickable { cursor: pointer; }
 .nc-ref.nc-ref-over { background: var(--warn-bg); border-color: #fcd34d; color: var(--warn); }
 .nc-ref-warn { margin-top: 6px; font-weight: 600; }
 
+/* IVA + pagamento fatture d'acquisto (Fase 10b) */
+.iva-summary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  padding: 9px 12px;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+  color: var(--text2);
+}
+.iva-summary strong { color: var(--text); font-family: monospace; }
+.iva-summary .iva-nota { display: block; margin-top: 4px; font-size: 11.5px; color: var(--text3); }
+
+.pagamento-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  background: var(--surface);
+}
+.pagamento-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+.pagamento-box.pay-dim { opacity: .6; background: var(--bg); }
+
+/* riga secondaria compatta dentro le celle della tabella */
+.cell-sub { display: block; font-size: 11px; color: var(--text2); margin-top: 2px; }
+
 /* Riepilogo conferma emissione (Fase 10) */
 .emit-summary { font-size: 14px; }
 .emit-summary .emit-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
