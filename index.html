@@ -596,6 +596,18 @@
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="acquisti-filtro-metodo" class="form-label">Metodo pagamento</label>
+              <select id="acquisti-filtro-metodo" class="form-input" onchange="renderAcquistiTable()">
+                <option value="">Tutti</option>
+                <option value="Bonifico">Bonifico</option>
+                <option value="Contanti">Contanti</option>
+                <option value="TWINT">TWINT</option>
+                <option value="Carta/Bancomat">Carta/Bancomat</option>
+                <option value="Addebito diretto (LSV)">Addebito diretto (LSV)</option>
+                <option value="Altro">Altro</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="acquisti-filtro-anno" class="form-label">Anno</label>
               <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
             </div>
@@ -635,7 +647,7 @@
           <div class="form-row">
             <div class="form-group" style="flex:2">
               <label for="a-importo" class="form-label">Importo <span class="req" aria-hidden="true">*</span></label>
-              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" />
+              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" oninput="onAcquistoImportoChange()" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-valuta" class="form-label">Valuta</label>
@@ -646,6 +658,25 @@
               </select>
             </div>
           </div>
+          <div class="form-group">
+            <label for="a-codice-iva" class="form-label">Codice IVA <span class="dim">(opzionale — se vuoto si salva solo il totale)</span></label>
+            <select id="a-codice-iva" class="form-input" onchange="onAcquistoIvaCodeChange()"></select>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="a-imponibile" class="form-label">Imponibile</label>
+              <input type="number" id="a-imponibile" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoIvaManual()" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="a-iva" class="form-label">IVA</label>
+              <input type="number" id="a-iva" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoIvaManual()" />
+            </div>
+            <div class="form-group" style="flex:0 0 auto; display:flex; align-items:flex-end">
+              <button type="button" class="btn-secondary" id="a-ricalcola-btn" onclick="recalcAcquistoIva()" title="Ricalcola imponibile e IVA dal totale">↻ Ricalcola</button>
+            </div>
+          </div>
+          <div id="a-iva-summary" class="iva-summary"></div>
+
           <div class="form-row">
             <div class="form-group" style="flex:1">
               <label for="a-scadenza" class="form-label">Scadenza <span class="dim">(opzionale)</span></label>
@@ -653,11 +684,38 @@
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-stato" class="form-label">Stato pagamento</label>
-              <select id="a-stato" class="form-input">
+              <select id="a-stato" class="form-input" onchange="onAcquistoStatoChange()">
                 <option value="da_pagare" selected>Da pagare</option>
                 <option value="pagata">Pagata</option>
               </select>
             </div>
+          </div>
+
+          <div id="a-pagamento-group" class="pagamento-box">
+            <div class="pagamento-title">💳 Dati del pagamento</div>
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="a-data-pagamento" class="form-label">Data pagamento</label>
+                <input type="date" id="a-data-pagamento" class="form-input" />
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="a-metodo" class="form-label">Metodo di pagamento</label>
+                <select id="a-metodo" class="form-input">
+                  <option value="">— Non indicato —</option>
+                  <option value="Bonifico">Bonifico</option>
+                  <option value="Contanti">Contanti</option>
+                  <option value="TWINT">TWINT</option>
+                  <option value="Carta/Bancomat">Carta/Bancomat</option>
+                  <option value="Addebito diretto (LSV)">Addebito diretto (LSV)</option>
+                  <option value="Altro">Altro</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label for="a-riferimento" class="form-label">Riferimento <span class="dim">(ricevuta, estratto conto…)</span></label>
+              <input type="text" id="a-riferimento" class="form-input" maxlength="120" placeholder="es. ricevuta 12345 / estratto 07-2026" />
+            </div>
+            <div class="form-hint" id="a-pagamento-hint"></div>
           </div>
           <div class="form-group">
             <label for="a-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
