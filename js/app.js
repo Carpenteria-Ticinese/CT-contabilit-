@@ -50,6 +50,7 @@ let acquistiList      = []     // fatture d'acquisto caricate
 let editingAcquistoId = null   // id acquisto in modifica (null = nuovo)
 let acquistoOriginal  = null   // valori originali (per "Annulla ripristina")
 let acquistoDocPath   = null   // doc_path esistente in modifica
+let acquistoIvaManuale = false // true = imponibile/IVA scritti a mano (non ricalcolare)
 let pendingEmitFn     = null   // callback della modale di conferma emissione
 let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezzo_unitario, codice_iva_id}
 let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
@@ -2792,7 +2793,7 @@ async function loadAcquistiList() {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, doc_path, note, created_at')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, doc_path, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, metodo_pagamento, riferimento_pagamento')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -2827,8 +2828,10 @@ function renderAcquistiTable() {
   var qv    = el('acquisti-search') ? el('acquisti-search').value.trim().toLowerCase() : ''
   var clearBtn = el('acquisti-search-clear'); if (clearBtn) clearBtn.style.display = qv ? 'flex' : 'none'
 
+  var metodo = el('acquisti-filtro-metodo') ? el('acquisti-filtro-metodo').value : ''
   var list = acquistiList.filter(function (a) {
     if (stato && a.stato_pagamento !== stato) return false
+    if (metodo && a.metodo_pagamento !== metodo) return false
     if (anno && (!a.data || String(a.data).slice(0, 4) !== String(anno))) return false
     return true
   })
@@ -2842,18 +2845,33 @@ function renderAcquistiTable() {
     })
   }
   if (!list.length) {
-    var attivo = qv || stato || anno
+    var attivo = qv || stato || anno || metodo
     html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
       (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
     return
   }
   var rows = list.map(function (a) {
+    // riga secondaria compatta: scomposizione IVA
+    var impo = safeNum(a.imponibile), ivaI = safeNum(a.iva_importo)
+    var ivaSub = (impo != null || ivaI != null)
+      ? '<span class="cell-sub">imp. ' + fmtNum2(impo) + ' · IVA ' + fmtNum2(ivaI) + '</span>'
+      : ''
+    // riga secondaria compatta: pagamento (es. "Pagata il 14.07 · Bonifico")
+    var paySub = ''
+    if (a.stato_pagamento === 'pagata') {
+      var parts = []
+      if (a.data_pagamento) parts.push('il ' + fmtDate(a.data_pagamento))
+      if (a.metodo_pagamento) parts.push(a.metodo_pagamento)
+      if (parts.length) paySub = '<span class="cell-sub">' + esc(parts.join(' · ')) + '</span>'
+    } else if (a.metodo_pagamento || a.data_pagamento) {
+      paySub = '<span class="cell-sub">dati pagamento salvati</span>'
+    }
     return '<tr class="row-clickable" onclick="editAcquisto(\'' + a.id + '\')">' +
       '<td>' + esc(a.fornitore || '') + '</td>' +
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
-      '<td class="num">' + fmtImporto(a.importo, a.valuta) + '</td>' +
-      '<td>' + statoAcquistoBadge(a.stato_pagamento) + '</td>' +
+      '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
+      '<td>' + statoAcquistoBadge(a.stato_pagamento) + paySub + '</td>' +
       '<td class="row-actions">' + acquistiRowActions(a) + '</td>' +
     '</tr>'
   }).join('')
@@ -2861,6 +2879,87 @@ function renderAcquistiTable() {
     '<th>Fornitore</th><th style="width:130px">Numero</th><th style="width:100px">Data</th>' +
     '<th style="width:130px;text-align:right">Importo</th><th style="width:120px">Stato</th><th style="width:170px">Azioni</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>')
+}
+
+// ── IVA sulle fatture d'acquisto (IVA inclusa nel totale) ────────────────────
+// Stessa formula della Fase 3: imponibile = importo/(1+aliq/100); iva = importo − imponibile.
+function acquistoAliquotaSelezionata() {
+  var sel = el('a-codice-iva')
+  if (!sel || !sel.value) return null           // nessun codice scelto
+  var alq = ivaAliquotaById(sel.value)
+  return alq == null ? 0 : alq
+}
+
+function recalcAcquistoIva() {
+  acquistoIvaManuale = false
+  var imp = safeNum(getVal('a-importo'))
+  var alq = acquistoAliquotaSelezionata()
+  if (imp == null || alq == null) {
+    // niente totale o nessun codice IVA → campi vuoti (si salva solo il totale)
+    setVal('a-imponibile', '')
+    setVal('a-iva', '')
+  } else {
+    var c = calcolaIva(imp, alq, true)          // true = IVA inclusa nel totale
+    setVal('a-imponibile', c.imponibile == null ? '' : c.imponibile)
+    setVal('a-iva', c.iva == null ? '' : c.iva)
+  }
+  updateAcquistoIvaSummary()
+}
+
+function onAcquistoIvaCodeChange() { recalcAcquistoIva() }
+
+function onAcquistoImportoChange() {
+  if (!acquistoIvaManuale) recalcAcquistoIva()
+  else updateAcquistoIvaSummary()
+}
+
+function onAcquistoIvaManual() {
+  acquistoIvaManuale = true                     // l'utente comanda: teniamo i suoi valori
+  updateAcquistoIvaSummary()
+}
+
+function updateAcquistoIvaSummary() {
+  var box = el('a-iva-summary')
+  if (!box) return
+  var imp  = safeNum(getVal('a-importo'))
+  var impo = safeNum(getVal('a-imponibile'))
+  var iva  = safeNum(getVal('a-iva'))
+  var alq  = acquistoAliquotaSelezionata()
+  var valuta = getVal('a-valuta') || 'CHF'
+  var nota = isSoggettoIva() ? '' :
+    '<span class="iva-nota">ℹ️ IVA non recuperabile (non soggetto IVA) — il dato resta per archivio.</span>'
+
+  if (imp == null) { box.innerHTML = 'Inserisci il totale per vedere la scomposizione IVA.' + nota; return }
+  if (impo == null && iva == null) {
+    box.innerHTML = 'Totale <strong>' + fmtNum2(imp) + ' ' + esc(valuta) + '</strong> — nessun codice IVA scelto: si salva solo il totale.' + nota
+    return
+  }
+  var somma = round2((impo || 0) + (iva || 0))
+  var diff = Math.abs(round2(somma - imp)) > 0.005
+  box.innerHTML =
+    'Totale <strong>' + fmtNum2(imp) + ' ' + esc(valuta) + '</strong> = imponibile <strong>' + fmtNum2(impo) +
+    '</strong> + IVA <strong>' + fmtNum2(iva) + '</strong>' +
+    (alq != null ? ' (aliquota ' + (alq === 0 ? '0' : fmtNum2(alq)) + '%)' : '') +
+    (acquistoIvaManuale ? ' · <em>valori inseriti a mano</em>' : '') +
+    (diff ? ' <span style="color:var(--warn)">⚠️ imponibile + IVA = ' + fmtNum2(somma) + ', diverso dal totale</span>' : '') +
+    nota
+}
+
+// ── Stato/dati di pagamento ──────────────────────────────────────────────────
+function onAcquistoStatoChange() {
+  var pagata = getVal('a-stato') === 'pagata'
+  var grp = el('a-pagamento-group')
+  if (grp) { if (pagata) grp.classList.remove('pay-dim'); else grp.classList.add('pay-dim') }
+  var ids = ['a-data-pagamento', 'a-metodo', 'a-riferimento']
+  for (var i = 0; i < ids.length; i++) { var e = el(ids[i]); if (e) e.disabled = !pagata }
+  // proposta (non obbligatoria): se segno "pagata" e la data è vuota → oggi
+  if (pagata && !getVal('a-data-pagamento')) setVal('a-data-pagamento', new Date().toISOString().split('T')[0])
+  var hint = el('a-pagamento-hint')
+  if (hint) {
+    hint.textContent = pagata
+      ? 'Data proposta modificabile, non obbligatoria.'
+      : 'Si attivano quando lo stato è «Pagata». I dati già inseriti restano salvati.'
+  }
 }
 
 function fillAcquistoForm(v) {
@@ -2873,17 +2972,33 @@ function fillAcquistoForm(v) {
   setVal('a-scadenza',  v.scadenza || '')
   setVal('a-stato',     v.stato_pagamento || 'da_pagare')
   setVal('a-note',      v.note || '')
+  // IVA: il menu va costruito prima di impostare il valore
+  var ivaSel = el('a-codice-iva')
+  if (ivaSel) ivaSel.innerHTML = buildIvaOptions(v.codice_iva_id || null)
+  setVal('a-imponibile', v.imponibile == null ? '' : v.imponibile)
+  setVal('a-iva',        v.iva_importo == null ? '' : v.iva_importo)
+  // valori già presenti = inseriti/confermati in precedenza: non sovrascriverli
+  acquistoIvaManuale = (v.imponibile != null || v.iva_importo != null)
+  // pagamento
+  setVal('a-data-pagamento',  v.data_pagamento || '')
+  setVal('a-metodo',          v.metodo_pagamento || '')
+  setVal('a-riferimento',     v.riferimento_pagamento || '')
   var file = el('a-allegato'); if (file) file.value = ''
+  onAcquistoStatoChange()
+  updateAcquistoIvaSummary()
 }
 
-function newAcquisto() {
+async function newAcquisto() {
   editingAcquistoId = null
   acquistoOriginal = null
   acquistoDocPath = null
-  fillAcquistoForm({ data: new Date().toISOString().split('T')[0], valuta: 'CHF', stato_pagamento: 'da_pagare' })
+  acquistoIvaManuale = false
   if (el('acquisti-edit-title')) el('acquisti-edit-title').textContent = 'Nuova fattura d\'acquisto'
   html('acquisti-edit-banner', '')
   showAcquistiView('edit')
+  await ensureContiIva()      // per il menu Codice IVA
+  await loadAziendaInfo()     // per la nota "non soggetto IVA"
+  fillAcquistoForm({ data: new Date().toISOString().split('T')[0], valuta: 'CHF', stato_pagamento: 'da_pagare' })
 }
 
 async function editAcquisto(id) {
@@ -2898,12 +3013,18 @@ async function editAcquisto(id) {
       fornitore: data.fornitore || '', numero_fornitore: data.numero_fornitore || '',
       data: data.data || '', importo: data.importo == null ? '' : data.importo,
       valuta: data.valuta || 'CHF', scadenza: data.scadenza || '',
-      stato_pagamento: data.stato_pagamento || 'da_pagare', note: data.note || ''
+      stato_pagamento: data.stato_pagamento || 'da_pagare', note: data.note || '',
+      codice_iva_id: data.codice_iva_id || null,
+      imponibile: data.imponibile, iva_importo: data.iva_importo,
+      data_pagamento: data.data_pagamento || '', metodo_pagamento: data.metodo_pagamento || '',
+      riferimento_pagamento: data.riferimento_pagamento || ''
     }
     acquistoOriginal = vals
-    fillAcquistoForm(vals)
     if (el('acquisti-edit-title')) el('acquisti-edit-title').textContent = 'Modifica fattura d\'acquisto'
     showAcquistiView('edit')
+    await ensureContiIva()
+    await loadAziendaInfo()
+    fillAcquistoForm(vals)
   } catch (e) {
     showFattureBanner('acquisti-list-banner', 'err', 'Apertura: ' + (e.message || e))
   }
@@ -2916,6 +3037,8 @@ function collectAcquisto() {
   if (!fornitore) throw new Error('Il fornitore è obbligatorio.')
   if (!dataVal) throw new Error('La data è obbligatoria.')
   if (importo == null || importo <= 0) throw new Error('L\'importo dev\'essere un numero positivo.')
+  var impo = safeNum(getVal('a-imponibile'))
+  var ivaI = safeNum(getVal('a-iva'))
   return {
     azienda_id:       currentAziendaId,
     fornitore:        fornitore,
@@ -2925,7 +3048,15 @@ function collectAcquisto() {
     valuta:           getVal('a-valuta') || 'CHF',
     scadenza:         getVal('a-scadenza') || null,
     stato_pagamento:  getVal('a-stato') || 'da_pagare',
-    note:             getVal('a-note') || null
+    note:             getVal('a-note') || null,
+    // IVA (restano NULL se non si sceglie un codice: si salva solo il totale)
+    codice_iva_id:    getVal('a-codice-iva') || null,
+    imponibile:       impo,
+    iva_importo:      ivaI,
+    // pagamento (conservati anche se lo stato torna "da pagare")
+    data_pagamento:        getVal('a-data-pagamento') || null,
+    metodo_pagamento:      getVal('a-metodo') || null,
+    riferimento_pagamento: getVal('a-riferimento') || null
   }
 }
 
