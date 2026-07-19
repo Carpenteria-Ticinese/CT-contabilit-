@@ -2983,9 +2983,17 @@ function fillAcquistoForm(v) {
   setVal('a-data-pagamento',  v.data_pagamento || '')
   setVal('a-metodo',          v.metodo_pagamento || '')
   setVal('a-riferimento',     v.riferimento_pagamento || '')
-  var file = el('a-allegato'); if (file) file.value = ''
+  // NB: l'input file NON si azzera qui. fillAcquistoForm può girare DOPO await di
+  // rete, quando il form è già visibile: azzerarlo cancellerebbe il file scelto
+  // dall'utente e l'upload verrebbe saltato in silenzio. Si azzera esplicitamente
+  // con clearAcquistoFileInput(), prima di mostrare il form o su "Annulla".
   onAcquistoStatoChange()
   updateAcquistoIvaSummary()
+}
+
+function clearAcquistoFileInput() {
+  var f = el('a-allegato')
+  if (f) f.value = ''
 }
 
 async function newAcquisto() {
@@ -2993,6 +3001,7 @@ async function newAcquisto() {
   acquistoOriginal = null
   acquistoDocPath = null
   acquistoIvaManuale = false
+  clearAcquistoFileInput()    // PRIMA di mostrare il form: mai dopo (cancellerebbe la scelta)
   if (el('acquisti-edit-title')) el('acquisti-edit-title').textContent = 'Nuova fattura d\'acquisto'
   html('acquisti-edit-banner', '')
   showAcquistiView('edit')
@@ -3020,6 +3029,7 @@ async function editAcquisto(id) {
       riferimento_pagamento: data.riferimento_pagamento || ''
     }
     acquistoOriginal = vals
+    clearAcquistoFileInput()   // PRIMA di mostrare il form: mai dopo
     if (el('acquisti-edit-title')) el('acquisti-edit-title').textContent = 'Modifica fattura d\'acquisto'
     showAcquistiView('edit')
     await ensureContiIva()
@@ -3062,16 +3072,24 @@ function collectAcquisto() {
 
 async function saveAcquisto() {
   html('acquisti-edit-banner', '')
+  // Il file va letto SUBITO, prima di qualunque await: un re-render successivo
+  // non deve poter far sparire la scelta dell'utente.
+  var fileInput = el('a-allegato')
+  var fileDaCaricare = (fileInput && fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : null
+
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
     var payload = collectAcquisto()
     // allegato (opzionale): in modifica si parte dal doc esistente
     var doc_path = editingAcquistoId ? acquistoDocPath : null
     var allegatoFallito = false
-    var fileInput = el('a-allegato')
-    if (fileInput && fileInput.files && fileInput.files.length > 0) {
-      try { doc_path = await uploadAllegato(fileInput.files[0]) }
-      catch (uploadErr) { allegatoFallito = uploadErr.message || 'allegato non caricato' }
+    if (fileDaCaricare) {
+      try {
+        doc_path = await uploadAllegato(fileDaCaricare)
+      } catch (uploadErr) {
+        allegatoFallito = uploadErr.message || 'allegato non caricato'
+        console.error('Allegato acquisto — upload fallito:', uploadErr)
+      }
     }
     payload.doc_path = doc_path
 
@@ -3086,12 +3104,18 @@ async function saveAcquisto() {
     }
     acquistoDocPath = doc_path
     acquistoOriginal = null
+    clearAcquistoFileInput()   // caricato (o fallito): l'input riparte pulito
 
     await loadAcquistiList()
     try { await refreshDaClassificareCount() } catch (_) {}
     acquistiBackToList()
-    if (allegatoFallito) showFattureBanner('acquisti-list-banner', 'warn', 'Fattura salvata (senza allegato): ' + allegatoFallito)
-    else showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto salvata.')
+    if (allegatoFallito) {
+      showFattureBanner('acquisti-list-banner', 'warn', '⚠️ Fattura salvata MA allegato NON caricato: ' + allegatoFallito)
+    } else if (fileDaCaricare) {
+      showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto salvata con allegato «' + fileDaCaricare.name + '».')
+    } else {
+      showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto salvata.')
+    }
   } catch (e) {
     showFattureBanner('acquisti-edit-banner', 'err', 'Salvataggio: ' + (e.message || e))
   } finally {
@@ -3102,6 +3126,7 @@ async function saveAcquisto() {
 function onAcquistoAnnulla() {
   if (editingAcquistoId && acquistoOriginal) {
     fillAcquistoForm(acquistoOriginal)   // ripristina i valori originali
+    clearAcquistoFileInput()             // "Annulla" annulla anche il file scelto
     html('acquisti-edit-banner', '')
   } else {
     acquistiBackToList()
@@ -3440,10 +3465,20 @@ async function uploadAllegato(file) {
 
   const { data, error } = await sb.storage.from(STORAGE_BUCKET).upload(path, file, { upsert: false })
   if (error) {
-    if (error.message && error.message.toLowerCase().indexOf('bucket') !== -1) {
-      throw new Error('Bucket "' + STORAGE_BUCKET + '" non trovato su Supabase Storage. Clicca su "Istruzioni per crearlo".')
+    // Riporta SEMPRE l'errore reale (niente diagnosi inventate): serve per capire
+    // se è il bucket, una policy RLS o altro.
+    console.error('uploadAllegato — errore Storage:', error)
+    var msg  = error.message || ''
+    var code = error.statusCode || error.status || ''
+    var full = msg + (code ? ' [HTTP ' + code + ']' : '')
+    var low  = msg.toLowerCase()
+    if (low.indexOf('bucket') !== -1) {
+      throw new Error('Bucket "' + STORAGE_BUCKET + '" non raggiungibile — ' + full)
     }
-    throw new Error('Upload allegato: ' + error.message)
+    if (String(code) === '403' || low.indexOf('row-level security') !== -1 || low.indexOf('unauthorized') !== -1 || low.indexOf('policy') !== -1) {
+      throw new Error('Storage: permesso negato dalle policy (path "' + path + '") — ' + full)
+    }
+    throw new Error('Upload allegato: ' + (full || 'errore sconosciuto'))
   }
   return data ? data.path : path
 }
