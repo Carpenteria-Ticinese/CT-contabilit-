@@ -958,6 +958,33 @@ tbody tr.row-clickable { cursor: pointer; }
 .nc-ref.nc-ref-over { background: var(--warn-bg); border-color: #fcd34d; color: var(--warn); }
 .nc-ref-warn { margin-top: 6px; font-weight: 600; }
 
+/* Export: selettori rapidi di periodo + caselle sezioni */
+.periodo-modi { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.modo-btn {
+  padding: 9px 14px; min-height: 40px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text2); cursor: pointer; font-family: inherit;
+}
+.modo-btn:hover { background: var(--bg); }
+.modo-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+.sezioni-box {
+  display: grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap: 8px 20px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.sezioni-box .form-label-check { margin: 0; }
+
+.exp-preview .exp-riga { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 13px; }
+.exp-preview .exp-riga span:last-child { font-family: monospace; color: var(--text); font-weight: 600; }
+.exp-preview .exp-vuoto { color: var(--text3); }
+
+@media (max-width: 900px) {
+  .modo-btn { min-height: 44px; flex: 1 1 45%; }
+  .sezioni-box { grid-template-columns: 1fr; }
+  .sezioni-box .form-label-check { min-height: 44px; }
+}
+
 /* Allegati: box "allegato corrente" nei form + pulsanti apri/rimuovi */
 .allegato-box {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
