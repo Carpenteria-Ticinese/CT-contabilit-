@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=11" />
+  <link rel="stylesheet" href="css/style.css?v=12" />
 </head>
 <body>
 
@@ -355,26 +355,68 @@
 
       <div class="card">
         <div class="card-title">🗓 Periodo</div>
+
+        <div class="periodo-modi" role="group" aria-label="Tipo di periodo">
+          <button type="button" class="modo-btn active" id="modo-anno"  onclick="setPeriodoModo('anno')">📅 Anno intero</button>
+          <button type="button" class="modo-btn" id="modo-trimestre"   onclick="setPeriodoModo('trimestre')">🗓 Trimestre</button>
+          <button type="button" class="modo-btn" id="modo-mese"        onclick="setPeriodoModo('mese')">📆 Mese</button>
+          <button type="button" class="modo-btn" id="modo-custom"      onclick="setPeriodoModo('custom')">✏️ Personalizzato</button>
+        </div>
+
+        <div class="form-row" id="exp-sel-row">
+          <div class="form-group" style="flex:1" id="exp-anno-group">
+            <label for="exp-anno" class="form-label">Anno</label>
+            <select id="exp-anno" class="form-input" onchange="applicaPeriodoRapido()"></select>
+          </div>
+          <div class="form-group" style="flex:1; display:none" id="exp-trimestre-group">
+            <label for="exp-trimestre" class="form-label">Trimestre</label>
+            <select id="exp-trimestre" class="form-input" onchange="applicaPeriodoRapido()">
+              <option value="1">T1 — gennaio/marzo</option>
+              <option value="2">T2 — aprile/giugno</option>
+              <option value="3">T3 — luglio/settembre</option>
+              <option value="4">T4 — ottobre/dicembre</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1; display:none" id="exp-mese-group">
+            <label for="exp-mese" class="form-label">Mese</label>
+            <select id="exp-mese" class="form-input" onchange="applicaPeriodoRapido()">
+              <option value="1">Gennaio</option><option value="2">Febbraio</option><option value="3">Marzo</option>
+              <option value="4">Aprile</option><option value="5">Maggio</option><option value="6">Giugno</option>
+              <option value="7">Luglio</option><option value="8">Agosto</option><option value="9">Settembre</option>
+              <option value="10">Ottobre</option><option value="11">Novembre</option><option value="12">Dicembre</option>
+            </select>
+          </div>
+        </div>
+
         <div class="form-row">
           <div class="form-group" style="flex:1">
             <label for="exp-da" class="form-label">Da <span class="req" aria-hidden="true">*</span></label>
-            <input type="date" id="exp-da" class="form-input" onchange="updateExportPreview()" />
+            <input type="date" id="exp-da" class="form-input" onchange="onPeriodoManuale()" />
           </div>
           <div class="form-group" style="flex:1">
             <label for="exp-a" class="form-label">A <span class="req" aria-hidden="true">*</span></label>
-            <input type="date" id="exp-a" class="form-input" onchange="updateExportPreview()" />
+            <input type="date" id="exp-a" class="form-input" onchange="onPeriodoManuale()" />
           </div>
+        </div>
+
+        <div class="card-title" style="margin-top:6px">📦 Cosa esportare</div>
+        <div class="sezioni-box">
+          <label class="form-label-check"><input type="checkbox" id="exp-sec-vendite"  checked onchange="updateExportPreview()" /> <span>📤 Fatture di vendita</span></label>
+          <label class="form-label-check"><input type="checkbox" id="exp-sec-note"     checked onchange="updateExportPreview()" /> <span>↩️ Note di credito</span></label>
+          <label class="form-label-check"><input type="checkbox" id="exp-sec-acquisti" checked onchange="updateExportPreview()" /> <span>📥 Fatture d'acquisto</span></label>
+          <label class="form-label-check"><input type="checkbox" id="exp-sec-spese"    checked onchange="updateExportPreview()" /> <span>🧾 Spese e movimenti</span></label>
         </div>
 
         <div id="exp-preview" class="exp-preview"></div>
 
         <div class="form-actions">
           <button type="button" class="btn-primary" id="exp-xlsx-btn" onclick="exportExcel()">📊 Genera Excel (.xlsx)</button>
-          <button type="button" class="btn-secondary" id="exp-csv-btn" onclick="exportCsv()">📄 Genera CSV</button>
+          <button type="button" class="btn-secondary" id="exp-csv-btn" onclick="exportCsv()">📄 Genera CSV (uno per sezione)</button>
         </div>
         <div class="sql-tip" style="margin-top:14px">
-          Vengono esportati <strong>solo i movimenti classificati</strong> del periodo (con conto + IVA). I non
-          classificati e la «Regia · Da fatturare» non entrano. Il formato Banana potrà essere aggiunto in seguito.
+          L'Excel contiene un <strong>foglio per sezione</strong> (solo quelle spuntate e non vuote) più il
+          <strong>Riepilogo</strong>. «Spese e movimenti» include solo i movimenti <strong>classificati</strong>
+          (la «Regia · Da fatturare» non entra). Il CSV non supporta i fogli: scarica un file per sezione.
         </div>
       </div>
 
@@ -1059,7 +1101,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=11"></script>
+<script src="js/app.js?v=12"></script>
 
 </body>
 </html>
