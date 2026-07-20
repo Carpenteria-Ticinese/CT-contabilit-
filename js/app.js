@@ -32,6 +32,8 @@ let utentiEmailCache = {}     // id utente -> email (best-effort, per la Storia)
 // Fase 5 — export + blocco periodo
 let classByKey = {}           // "origine_tipo:origine_id" -> riga classificazione (con stato)
 let exportPeriodRows = []     // righe export calcolate per il periodo corrente
+let exportModo       = 'anno' // 'anno' | 'trimestre' | 'mese' | 'custom'
+let exportDataset    = null   // cache dati export (fatture, acquisti, movimenti, classificazioni)
 
 // Fase 6 — fatture
 let fattureList       = []     // fatture caricate per la lista
@@ -1616,15 +1618,295 @@ function buildExportAoa(pairs) {
   return { movimenti: movimenti, perConto: pc, perIva: pi }
 }
 
-function initExportPage() {
-  if (!el('exp-da') || !el('exp-a')) return
-  if (!el('exp-da').value) {
-    var now = new Date()
-    el('exp-da').value = now.getFullYear() + '-01-01'
-    el('exp-a').value = now.toISOString().split('T')[0]
+// ══════════════════════════════════════════════════════════════════════════════
+// EXPORT — dataset unico, sezioni separate, periodo rapido
+// ══════════════════════════════════════════════════════════════════════════════
+function pad2(n) { return (n < 10 ? '0' : '') + n }
+function ultimoGiornoMese(anno, mese) {
+  var d = new Date(anno, mese, 0)          // giorno 0 del mese dopo = ultimo del mese
+  return anno + '-' + pad2(mese) + '-' + pad2(d.getDate())
+}
+
+// Carica UNA volta tutto ciò che serve all'export (poi si filtra per periodo)
+async function loadExportDataset(force) {
+  if (exportDataset && !force) return exportDataset
+  if (!currentAziendaId) throw new Error('Azienda non definita.')
+
+  var fatture = [], acquisti = [], movimentiAll = [], classMap = {}, numeroById = {}
+
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_fatture')
+      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, tipo, iban, rif_fattura_id')
+      .eq('azienda_id', currentAziendaId)
+      .in('stato', ['emessa', 'pagata'])
+    if (error) throw error
+    fatture = data || []
+    for (var i = 0; i < fatture.length; i++) numeroById[fatture[i].id] = fatture[i].numero
+  } catch (e) { console.warn('Export / fatture:', e.message) }
+
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_fatture_acquisto')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, imponibile, iva_importo, stato_pagamento, data_pagamento, metodo_pagamento')
+      .eq('azienda_id', currentAziendaId)
+    if (error) throw error
+    acquisti = data || []
+  } catch (e) { console.warn('Export / acquisti:', e.message) }
+
+  try {
+    var canalA = await loadCanalA()
+    var canalB = await loadCanalB()
+    movimentiAll = canalA.concat(canalB)
+  } catch (e) { console.warn('Export / movimenti:', e.message) }
+
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_classificazioni')
+      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato')
+      .eq('azienda_id', currentAziendaId)
+    if (error) throw error
+    for (var k = 0; k < (data || []).length; k++) {
+      classMap[data[k].origine_tipo + ':' + data[k].origine_id] = data[k]
+    }
+  } catch (e) { throw new Error('Lettura classificazioni: ' + e.message) }
+
+  classByKey = classMap
+  await ensureContiIva()
+  await loadCantieri()
+  await loadAziendaInfo()
+
+  exportDataset = { fatture: fatture, acquisti: acquisti, movimentiAll: movimentiAll, classMap: classMap, numeroById: numeroById }
+  return exportDataset
+}
+
+function sezioniSelezionate() {
+  function on(id) { var e = el(id); return e ? e.checked : true }
+  return { vendite: on('exp-sec-vendite'), note: on('exp-sec-note'), acquisti: on('exp-sec-acquisti'), spese: on('exp-sec-spese') }
+}
+
+// Documenti del periodo, divisi per sezione
+function docsPeriodo(ds, da, a) {
+  var vendite = [], note = [], acquisti = [], spese = [], classificatiTutti = []
+  for (var i = 0; i < ds.fatture.length; i++) {
+    var f = ds.fatture[i]
+    if (!inPeriodo(f.data_emissione, da, a)) continue
+    if (f.tipo === 'nota_credito') note.push(f); else vendite.push(f)
   }
-  html('export-banner', '')
+  for (var j = 0; j < ds.acquisti.length; j++) {
+    if (inPeriodo(ds.acquisti[j].data, da, a)) acquisti.push(ds.acquisti[j])
+  }
+  for (var m = 0; m < ds.movimentiAll.length; m++) {
+    var mov = ds.movimentiAll[m]
+    var c = ds.classMap[mov.origine_tipo + ':' + mov.origine_id]
+    if (!c || !inPeriodo(mov.data, da, a) || c.imponibile == null) continue
+    classificatiTutti.push({ mov: mov, cls: c })
+    // il foglio "Spese e movimenti" esclude fatture e acquisti (hanno fogli propri)
+    if (mov.origine_tipo !== 'fattura' && mov.origine_tipo !== 'acquisto') spese.push({ mov: mov, cls: c })
+  }
+  function byData(x, y) { return String(x.data || x.data_emissione || (x.mov && x.mov.data) || '').localeCompare(String(y.data || y.data_emissione || (y.mov && y.mov.data) || '')) }
+  vendite.sort(byData); note.sort(byData); acquisti.sort(byData); spese.sort(byData)
+  return { vendite: vendite, note: note, acquisti: acquisti, spese: spese, classificatiTutti: classificatiTutti }
+}
+
+// ── Fogli ────────────────────────────────────────────────────────────────────
+function buildSheetVendite(list, ds, negativo) {
+  var head = ['Numero', 'Data', 'Cliente', 'Cantiere', 'Imponibile', 'IVA', 'Totale', 'Valuta', 'Stato pagamento', 'IBAN']
+  if (negativo) head.push('Rif. fattura stornata')
+  var aoa = [head]
+  var segno = negativo ? -1 : 1
+  for (var i = 0; i < list.length; i++) {
+    var f = list[i]
+    var c = ds.classMap['fattura:' + f.id]
+    var riga = [
+      f.numero || '',
+      f.data_emissione || '',
+      f.cliente_nome || '',
+      c ? cantiereLabel(c.cantiere_id) : '',
+      round2(segno * (safeNum(f.totale_imponibile) || 0)),
+      round2(segno * (safeNum(f.totale_iva) || 0)),
+      round2(segno * (safeNum(f.totale) || 0)),
+      f.valuta || 'CHF',
+      f.stato || '',
+      (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
+    ]
+    if (negativo) riga.push(ds.numeroById[f.rif_fattura_id] || '—')
+    aoa.push(riga)
+  }
+  return aoa
+}
+
+function buildSheetAcquisti(list, ds) {
+  var aoa = [['Fornitore', 'Numero fornitore', 'Data', 'Imponibile', 'IVA', 'Totale', 'Valuta',
+              'Stato pagamento', 'Data pagamento', 'Metodo pagamento', 'Conto', 'Codice IVA']]
+  for (var i = 0; i < list.length; i++) {
+    var x = list[i]
+    var c = ds.classMap['acquisto:' + x.id]
+    aoa.push([
+      x.fornitore || '',
+      x.numero_fornitore || '',
+      x.data || '',
+      safeNum(x.imponibile) != null ? safeNum(x.imponibile) : '',
+      safeNum(x.iva_importo) != null ? safeNum(x.iva_importo) : '',
+      safeNum(x.importo) || 0,
+      x.valuta || 'CHF',
+      x.stato_pagamento === 'pagata' ? 'Pagata' : 'Da pagare',
+      x.data_pagamento || '',
+      x.metodo_pagamento || '',
+      c ? contoLabel(c.conto_id) : '',
+      c ? ivaLabel(c.codice_iva_id) : ''
+    ])
+  }
+  return aoa
+}
+
+function buildSheetSpese(pairs) {
+  var aoa = [['Data', 'Origine', 'Descrizione', 'Ente/Fornitore', 'Conto', 'Codice IVA',
+              'IVA', 'Imponibile', 'IVA importo', 'Totale', 'Valuta', 'Cantiere', 'Note']]
+  for (var i = 0; i < pairs.length; i++) {
+    var m = pairs[i].mov, c = pairs[i].cls
+    var imp = safeNum(c.imponibile) || 0
+    var ivaImp = safeNum(c.iva_importo) || 0
+    aoa.push([
+      m.data || '', m.origine_tipo, m.descrizione || '', m.ente || '',
+      contoLabel(c.conto_id), ivaLabel(c.codice_iva_id),
+      (c.iva_inclusa === false ? 'esclusa' : 'inclusa'),
+      imp, ivaImp, round2(imp + ivaImp),
+      m.valuta || 'CHF', cantiereLabel(c.cantiere_id), c.note || ''
+    ])
+  }
+  return aoa
+}
+
+// Totali di sezione (usati da anteprima e foglio Riepilogo)
+function totaliSezioni(d) {
+  function sumF(list, campo) { var s = 0; for (var i = 0; i < list.length; i++) s += safeNum(list[i][campo]) || 0; return round2(s) }
+  var totVendite  = sumF(d.vendite, 'totale')
+  var totNote     = -sumF(d.note, 'totale')                       // storno → negativo
+  var totAcquisti = sumF(d.acquisti, 'importo')
+  var totSpese = 0
+  for (var i = 0; i < d.spese.length; i++) {
+    totSpese += (safeNum(d.spese[i].cls.imponibile) || 0) + (safeNum(d.spese[i].cls.iva_importo) || 0)
+  }
+  totSpese = round2(totSpese)
+  return {
+    vendite: totVendite, note: totNote, acquisti: totAcquisti, spese: totSpese,
+    saldo: round2(totVendite + totNote - totAcquisti - totSpese)
+  }
+}
+
+function buildSheetRiepilogo(d, sez, da, a) {
+  var t = totaliSezioni(d)
+  var aoa = [['RIEPILOGO', ''], ['Periodo', da + ' → ' + a], ['', '']]
+  aoa.push(['Sezione', 'Documenti', 'Totale CHF'])
+  if (sez.vendite)  aoa.push(['Fatture di vendita', d.vendite.length, t.vendite])
+  if (sez.note)     aoa.push(['Note di credito', d.note.length, t.note])
+  if (sez.acquisti) aoa.push(['Fatture d\'acquisto', d.acquisti.length, t.acquisti])
+  if (sez.spese)    aoa.push(['Spese e movimenti', d.spese.length, t.spese])
+  aoa.push(['', '', ''])
+  aoa.push(['SALDO (vendite − note − acquisti − spese)', '', t.saldo])
+
+  // Riepiloghi per conto e per codice IVA (su tutto il classificato del periodo)
+  var perConto = {}, perIva = {}
+  for (var i = 0; i < d.classificatiTutti.length; i++) {
+    var c = d.classificatiTutti[i].cls
+    var imp = safeNum(c.imponibile) || 0, ivaImp = safeNum(c.iva_importo) || 0
+    var ck = contoLabel(c.conto_id), ik = ivaLabel(c.codice_iva_id)
+    if (!perConto[ck]) perConto[ck] = { imp: 0, iva: 0, tot: 0 }
+    perConto[ck].imp += imp; perConto[ck].iva += ivaImp; perConto[ck].tot += round2(imp + ivaImp)
+    if (!perIva[ik]) perIva[ik] = { imp: 0, iva: 0 }
+    perIva[ik].imp += imp; perIva[ik].iva += ivaImp
+  }
+  aoa.push(['', '', ''])
+  aoa.push(['RIEPILOGO PER CONTO', '', ''])
+  aoa.push(['Conto', 'Imponibile', 'IVA', 'Totale'])
+  Object.keys(perConto).sort().forEach(function (kk) {
+    aoa.push([kk, round2(perConto[kk].imp), round2(perConto[kk].iva), round2(perConto[kk].tot)])
+  })
+  aoa.push(['', '', ''])
+  aoa.push(['RIEPILOGO PER CODICE IVA', '', ''])
+  aoa.push(['Codice IVA', 'Imponibile', 'IVA'])
+  Object.keys(perIva).sort().forEach(function (kk) {
+    aoa.push([kk, round2(perIva[kk].imp), round2(perIva[kk].iva)])
+  })
+  return aoa
+}
+
+// Sezioni pronte per l'export: solo spuntate e non vuote
+function sezioniDaEsportare(d, sez, ds) {
+  var out = []
+  if (sez.vendite  && d.vendite.length)  out.push({ nome: 'Vendite',            aoa: buildSheetVendite(d.vendite, ds, false) })
+  if (sez.note     && d.note.length)     out.push({ nome: 'Note di credito',    aoa: buildSheetVendite(d.note, ds, true) })
+  if (sez.acquisti && d.acquisti.length) out.push({ nome: 'Acquisti',           aoa: buildSheetAcquisti(d.acquisti, ds) })
+  if (sez.spese    && d.spese.length)    out.push({ nome: 'Spese e movimenti',  aoa: buildSheetSpese(d.spese) })
+  return out
+}
+
+// ── Selettori rapidi di periodo ──────────────────────────────────────────────
+function setPeriodoModo(modo) {
+  exportModo = modo
+  var modi = ['anno', 'trimestre', 'mese', 'custom']
+  for (var i = 0; i < modi.length; i++) {
+    var b = el('modo-' + modi[i])
+    if (b) { if (modi[i] === modo) b.classList.add('active'); else b.classList.remove('active') }
+  }
+  if (el('exp-anno-group'))      el('exp-anno-group').style.display      = (modo !== 'custom') ? 'block' : 'none'
+  if (el('exp-trimestre-group')) el('exp-trimestre-group').style.display = (modo === 'trimestre') ? 'block' : 'none'
+  if (el('exp-mese-group'))      el('exp-mese-group').style.display      = (modo === 'mese') ? 'block' : 'none'
+  if (modo === 'custom') updateExportPreview()
+  else applicaPeriodoRapido()
+}
+
+function applicaPeriodoRapido() {
+  if (exportModo === 'custom') return
+  var anno = parseInt(getVal('exp-anno'), 10) || new Date().getFullYear()
+  var da, a
+  if (exportModo === 'trimestre') {
+    var t = parseInt(getVal('exp-trimestre'), 10) || 1
+    var m1 = (t - 1) * 3 + 1
+    da = anno + '-' + pad2(m1) + '-01'
+    a  = ultimoGiornoMese(anno, m1 + 2)
+  } else if (exportModo === 'mese') {
+    var m = parseInt(getVal('exp-mese'), 10) || 1
+    da = anno + '-' + pad2(m) + '-01'
+    a  = ultimoGiornoMese(anno, m)
+  } else {                                   // anno intero (in CH l'anno fiscale è solare)
+    da = anno + '-01-01'
+    a  = anno + '-12-31'
+  }
+  setVal('exp-da', da); setVal('exp-a', a)
   updateExportPreview()
+}
+
+function onPeriodoManuale() { setPeriodoModo('custom') }
+
+function popolaAnniDisponibili(ds) {
+  var sel = el('exp-anno')
+  if (!sel) return
+  var anni = {}
+  function add(d) { if (d && String(d).length >= 4) anni[String(d).slice(0, 4)] = true }
+  for (var i = 0; i < ds.fatture.length; i++) add(ds.fatture[i].data_emissione)
+  for (var j = 0; j < ds.acquisti.length; j++) add(ds.acquisti[j].data)
+  for (var m = 0; m < ds.movimentiAll.length; m++) add(ds.movimentiAll[m].data)
+  add(String(new Date().getFullYear()))      // l'anno corrente c'è sempre
+  var lista = Object.keys(anni).sort().reverse()
+  var precedente = sel.value
+  sel.innerHTML = lista.map(function (y) { return '<option value="' + y + '">' + y + '</option>' }).join('')
+  if (precedente && lista.indexOf(precedente) !== -1) sel.value = precedente
+  else sel.value = String(new Date().getFullYear())
+}
+
+async function initExportPage() {
+  if (!el('exp-da') || !el('exp-a')) return
+  html('export-banner', '')
+  html('exp-preview', loadingRow('Caricamento dati…'))
+  try {
+    var ds = await loadExportDataset(true)     // ricarica: i dati possono essere cambiati
+    popolaAnniDisponibili(ds)
+    setPeriodoModo(exportModo || 'anno')       // imposta da/a e aggiorna l'anteprima
+  } catch (e) {
+    html('exp-preview', '<span style="color:var(--err)">Errore caricamento: ' + esc(e.message || e) + '</span>')
+  }
 }
 
 async function updateExportPreview() {
@@ -1637,20 +1919,31 @@ async function updateExportPreview() {
 
   prev.innerHTML = loadingRow('Calcolo anteprima…')
   try {
-    var pairs = await getClassificatiNelPeriodo(da, a)
-    exportPeriodRows = pairs
-    var tot = 0, nBlocc = 0
-    for (var i = 0; i < pairs.length; i++) {
-      tot += (safeNum(pairs[i].cls.imponibile) || 0) + (safeNum(pairs[i].cls.iva_importo) || 0)
-      if (pairs[i].cls.stato === 'bloccato') nBlocc++
+    var ds = await loadExportDataset()
+    var d = docsPeriodo(ds, da, a)
+    var sez = sezioniSelezionate()
+    var t = totaliSezioni(d)
+    exportPeriodRows = d.classificatiTutti     // usato dal blocco periodo
+
+    function riga(attiva, etichetta, n, totale) {
+      if (!attiva) return '<div class="exp-riga exp-vuoto"><span>' + etichetta + ' — escluso</span><span>—</span></div>'
+      return '<div class="exp-riga"><span>' + etichetta + ': <strong>' + n + '</strong> doc.</span>' +
+             '<span>' + fmtNum2(totale) + ' CHF</span></div>'
     }
+    var nBlocc = 0
+    for (var i = 0; i < d.classificatiTutti.length; i++) if (d.classificatiTutti[i].cls.stato === 'bloccato') nBlocc++
+
     prev.innerHTML =
-      '<strong>' + pairs.length + '</strong> movimenti classificati nel periodo · ' +
-      'totale <span class="exp-amount">' + fmtNum2(round2(tot)) + ' CHF</span>' +
-      (nBlocc ? ' · ' + nBlocc + ' già consegnati 🔒' : '')
+      riga(sez.vendite,  '📤 Fatture di vendita', d.vendite.length,  t.vendite) +
+      riga(sez.note,     '↩️ Note di credito',    d.note.length,     t.note) +
+      riga(sez.acquisti, '📥 Fatture d\'acquisto', d.acquisti.length, t.acquisti) +
+      riga(sez.spese,    '🧾 Spese e movimenti',  d.spese.length,    t.spese) +
+      '<div class="exp-riga" style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px">' +
+        '<span><strong>Saldo del periodo</strong></span><span class="exp-amount">' + fmtNum2(t.saldo) + ' CHF</span></div>' +
+      (nBlocc ? '<div class="exp-riga exp-vuoto"><span>' + nBlocc + ' movimenti già consegnati 🔒</span><span></span></div>' : '')
   } catch (e) {
     exportPeriodRows = []
-    prev.innerHTML = '<span style="color:var(--err)">Errore anteprima: ' + esc(e.message) + '</span>'
+    prev.innerHTML = '<span style="color:var(--err)">Errore anteprima: ' + esc(e.message || e) + '</span>'
   }
 }
 
@@ -1661,22 +1954,30 @@ async function exportExcel() {
   var btn = el('exp-xlsx-btn')
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Genero…' }
   try {
-    var pairs = await getClassificatiNelPeriodo(da, a)
-    if (!pairs.length) { showExportBanner('warn', 'Nessun movimento classificato nel periodo: niente da esportare.'); return }
-    var sheets = buildExportAoa(pairs)
+    var ds = await loadExportDataset()
+    var d = docsPeriodo(ds, da, a)
+    var sez = sezioniSelezionate()
+    var sezioni = sezioniDaEsportare(d, sez, ds)
+    if (!sezioni.length) {
+      showExportBanner('warn', 'Nessun documento da esportare: controlla il periodo e le sezioni spuntate.')
+      return
+    }
     var wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheets.movimenti), 'Movimenti')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheets.perConto), 'Riepilogo per conto')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheets.perIva), 'Riepilogo per IVA')
+    for (var i = 0; i < sezioni.length; i++) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sezioni[i].aoa), sezioni[i].nome)
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetRiepilogo(d, sez, da, a)), 'Riepilogo')
     XLSX.writeFile(wb, exportFileName(da, a, 'xlsx'))
-    showExportBanner('ok', 'Excel generato: ' + pairs.length + ' movimenti. Controlla i download del browser.')
+    var nomi = sezioni.map(function (s) { return s.nome }).join(', ')
+    showExportBanner('ok', 'Excel generato con i fogli: ' + nomi + ' + Riepilogo. Controlla i download del browser.')
   } catch (e) {
-    showExportBanner('err', 'Export Excel: ' + e.message)
+    showExportBanner('err', 'Export Excel: ' + (e.message || e))
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '📊 Genera Excel (.xlsx)' }
   }
 }
 
+// CSV: un file per sezione (il CSV non supporta i fogli)
 async function exportCsv() {
   if (typeof XLSX === 'undefined') { showExportBanner('err', 'Libreria CSV non caricata: controlla la connessione e ricarica la pagina.'); return }
   var da = el('exp-da').value, a = el('exp-a').value
@@ -1684,17 +1985,26 @@ async function exportCsv() {
   var btn = el('exp-csv-btn')
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Genero…' }
   try {
-    var pairs = await getClassificatiNelPeriodo(da, a)
-    if (!pairs.length) { showExportBanner('warn', 'Nessun movimento classificato nel periodo: niente da esportare.'); return }
-    var sheets = buildExportAoa(pairs)
-    var ws = XLSX.utils.aoa_to_sheet(sheets.movimenti)
-    var csv = '﻿' + XLSX.utils.sheet_to_csv(ws, { FS: ';' })   // BOM + ';' per Excel europeo
-    downloadBlob(csv, exportFileName(da, a, 'csv'), 'text/csv;charset=utf-8;')
-    showExportBanner('ok', 'CSV generato: ' + pairs.length + ' movimenti (foglio «Movimenti»).')
+    var ds = await loadExportDataset()
+    var d = docsPeriodo(ds, da, a)
+    var sez = sezioniSelezionate()
+    var sezioni = sezioniDaEsportare(d, sez, ds)
+    if (!sezioni.length) {
+      showExportBanner('warn', 'Nessun documento da esportare: controlla il periodo e le sezioni spuntate.')
+      return
+    }
+    sezioni.push({ nome: 'Riepilogo', aoa: buildSheetRiepilogo(d, sez, da, a) })
+    for (var i = 0; i < sezioni.length; i++) {
+      var ws = XLSX.utils.aoa_to_sheet(sezioni[i].aoa)
+      var csv = '﻿' + XLSX.utils.sheet_to_csv(ws, { FS: ';' })   // BOM + ';' per Excel europeo
+      var slug = sezioni[i].nome.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      downloadBlob(csv, 'CT_export_' + da + '_' + a + '_' + slug + '.csv', 'text/csv;charset=utf-8;')
+    }
+    showExportBanner('ok', 'Generati ' + sezioni.length + ' file CSV (uno per sezione). Controlla i download del browser.')
   } catch (e) {
-    showExportBanner('err', 'Export CSV: ' + e.message)
+    showExportBanner('err', 'Export CSV: ' + (e.message || e))
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '📄 Genera CSV' }
+    if (btn) { btn.disabled = false; btn.textContent = '📄 Genera CSV (uno per sezione)' }
   }
 }
 
@@ -1737,6 +2047,7 @@ async function lockPeriod() {
       showExportBanner('warn', 'Periodo consegnato: ' + daBloccare.length + ' classificazioni bloccate. ' +
         'Log export NON scritto (' + logMsg + '). Applica migration_fase5.sql per abilitare il log.')
     }
+    exportDataset = null   // stati cambiati: ricarica i dati
     await updateExportPreview()
     await refreshDaClassificareCount()
   } catch (e) {
@@ -1766,6 +2077,7 @@ async function unlockPeriod() {
     if (error) throw error
 
     showExportBanner('ok', 'Periodo riaperto: ' + daSbloccare.length + ' classificazioni di nuovo modificabili.')
+    exportDataset = null   // stati cambiati: ricarica i dati
     await updateExportPreview()
     await refreshDaClassificareCount()
   } catch (e) {
