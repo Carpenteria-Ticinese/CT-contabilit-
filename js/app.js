@@ -3621,6 +3621,10 @@ async function newAcquisto() {
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
   html('a-contatto-legato', '')
   html('a-fornitore-suggest', '')
+  // FASE 5A: il ponte riparte pulito, senza le segnalazioni del documento prima
+  chiudiIncollaRisposta()
+  html('ponte-ai-banner', '')
+  html('ponte-ai-note', '')
 }
 
 async function editAcquisto(id) {
@@ -6164,6 +6168,342 @@ function vaiAlleScadenze() {
   showPage('scadenze')
   initScadenzePage()
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 5A — PONTE COPIA/INCOLLA
+//
+// Nessuna chiave API, nessun servizio esterno, nessun account: il testo va a
+// Claude a mano e la risposta torna a mano. Il file e' pubblico su GitHub Pages,
+// quindi qualsiasi chiave scritta qui dentro sarebbe leggibile da chiunque.
+//
+// Questa strada resta anche quando ci sara' la lettura automatica: e' l'unica
+// che non puo' smettere di funzionare perche' un servizio e' giu'.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Il prompt ────────────────────────────────────────────────────────────────
+
+// L'elenco dei conti si genera dal database, non e' scritto qui: se Umberto
+// aggiunge un conto, il prompt lo conosce senza ripubblicare il programma.
+function elencoContiPerPrompt() {
+  var conti = (contiCache || []).filter(function (c) {
+    // Solo i conti su cui ha senso registrare un acquisto: costi e cespiti.
+    // Proporre un ricavo su una fattura ricevuta sarebbe un suggerimento sbagliato.
+    return c.tipo === 'costo' || c.tipo === 'attivo'
+  })
+  if (!conti.length) return '  (elenco conti non disponibile: scegli tu il conto dopo)'
+  return conti.map(function (c) {
+    return '  ' + c.codice_conto + ' = ' + c.descrizione
+  }).join('\n')
+}
+
+function testoPromptFattura() {
+  return 'Leggi questa fattura e rispondi SOLO con un oggetto\n' +
+    'JSON, senza testo prima o dopo, senza backtick.\n\n' +
+    'Campi richiesti:\n' +
+    '{\n' +
+    '  "fornitore": "ragione sociale esatta",\n' +
+    '  "numero_fornitore": "numero fattura o null",\n' +
+    '  "data": "AAAA-MM-GG",\n' +
+    '  "scadenza": "AAAA-MM-GG o null",\n' +
+    '  "importo": 0.00,\n' +
+    '  "valuta": "CHF",\n' +
+    '  "imponibile": 0.00,\n' +
+    '  "iva_importo": 0.00,\n' +
+    '  "aliquota_iva": 8.1,\n' +
+    '  "descrizione": "cosa e\' stato acquistato",\n' +
+    '  "conto_suggerito": "codice a 4 cifre",\n' +
+    '  "note_lettura": "cosa non si legge bene, o null"\n' +
+    '}\n\n' +
+    'REGOLE:\n' +
+    '- Copia imponibile e IVA COSI\' COME SONO STAMPATI\n' +
+    '  sulla fattura. NON ricalcolarli.\n' +
+    '- Se un dato non c\'e\' o non si legge: null.\n' +
+    '  Non inventare mai un valore.\n' +
+    '- Le date in formato AAAA-MM-GG.\n' +
+    '- Gli importi con il punto decimale (1234.50).\n' +
+    '- conto_suggerito: scegli fra questi conti\n' +
+    elencoContiPerPrompt() + '\n' +
+    '- note_lettura: scrivi qui se la foto e\' sfocata,\n' +
+    '  tagliata, o se un importo e\' incerto.\n'
+}
+
+async function copiaPromptFattura() {
+  try {
+    await ensureContiIva()          // il prompt ha bisogno dell'elenco conti aggiornato
+    var testo = testoPromptFattura()
+    var copiato = false
+    try {
+      await navigator.clipboard.writeText(testo)
+      copiato = true
+    } catch (_) {
+      // Alcuni browser negano la clipboard se la pagina non e' in primo piano.
+      // Ripiego storico che funziona ovunque: una textarea nascosta e execCommand.
+      var ta = document.createElement('textarea')
+      ta.value = testo
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      try { copiato = document.execCommand('copy') } catch (__) { copiato = false }
+      document.body.removeChild(ta)
+    }
+
+    if (copiato) {
+      showPonteBanner('ok', 'Prompt copiato. Aprilo in Claude e allega la foto o il PDF della fattura.')
+    } else {
+      // Se non si riesce a copiare, il testo va comunque mostrato: senza, l'utente
+      // resta senza prompt e senza sapere perche'.
+      apriIncollaRisposta()
+      var box = el('ponte-ai-testo')
+      if (box) { box.value = testo; box.select() }
+      showPonteBanner('warn',
+        'Il browser non ha permesso la copia automatica. Il prompt è qui sotto, già selezionato: copialo a mano con Ctrl+C.')
+    }
+  } catch (e) {
+    showPonteBanner('err', 'Prompt non preparato: ' + (e.message || e))
+  }
+}
+
+function showPonteBanner(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html('ponte-ai-banner',
+    '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + esc(msg) + '</div>' +
+    '</div>')
+}
+
+function apriIncollaRisposta() {
+  var box = el('ponte-ai-incolla')
+  if (box) box.style.display = 'block'
+  var ta = el('ponte-ai-testo')
+  if (ta) { ta.value = ''; ta.focus() }
+  html('ponte-ai-banner', '')
+}
+
+function chiudiIncollaRisposta() {
+  var box = el('ponte-ai-incolla')
+  if (box) box.style.display = 'none'
+  var ta = el('ponte-ai-testo')
+  if (ta) ta.value = ''
+}
+
+// ── Lettura del JSON ─────────────────────────────────────────────────────────
+
+// La risposta arriva quasi sempre sporca: backtick, «Ecco il JSON:» davanti,
+// una frase di commento dopo. Si tiene il primo oggetto graffo-per-graffo.
+function estraiJson(testo) {
+  var t = String(testo || '').trim()
+  t = t.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
+  var apre = t.indexOf('{')
+  var chiude = t.lastIndexOf('}')
+  if (apre === -1 || chiude === -1 || chiude < apre) {
+    throw new Error('Nella risposta non c\'è nessun oggetto JSON: manca la parentesi graffa di apertura o di chiusura.')
+  }
+  var pezzo = t.slice(apre, chiude + 1)
+  try {
+    return JSON.parse(pezzo)
+  } catch (e) {
+    throw new Error('Il JSON non è leggibile (' + e.message + '). Copia di nuovo la risposta per intero, senza tagliarla.')
+  }
+}
+
+// ── Validazioni, una per tipo di campo ───────────────────────────────────────
+
+// Una data deve essere scritta bene E deve esistere davvero: il 31 febbraio
+// e' scritto bene ma non esiste, e JavaScript lo trasformerebbe in marzo.
+function validaData(v) {
+  if (v == null || v === '') return null
+  var t = String(v).trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null
+  var p = t.split('-')
+  var anno = +p[0], mese = +p[1], giorno = +p[2]
+  if (mese < 1 || mese > 12 || giorno < 1) return null
+  var d = new Date(Date.UTC(anno, mese - 1, giorno))
+  // Se la data non esiste, i pezzi ricostruiti non coincidono con quelli scritti.
+  if (d.getUTCFullYear() !== anno || d.getUTCMonth() !== mese - 1 || d.getUTCDate() !== giorno) return null
+  return t
+}
+
+function validaImporto(v) {
+  if (v == null || v === '') return null
+  var n = safeNum(typeof v === 'string' ? v.replace(/'/g, '').replace(/\s/g, '').replace(',', '.') : v)
+  if (n == null || n < 0) return null      // un importo negativo su una fattura non ha senso
+  return n
+}
+
+function validaValuta(v) {
+  var t = String(v || '').trim().toUpperCase()
+  return (t === 'CHF' || t === 'EUR') ? t : null
+}
+
+// Il conto deve esistere davvero nel piano dei conti: se l'AI inventa un codice,
+// il campo resta vuoto invece di riempirsi con qualcosa di falso.
+function validaConto(codice) {
+  if (!codice) return null
+  var t = String(codice).trim()
+  var c = (contiCache || []).filter(function (x) { return String(x.codice_conto) === t })[0]
+  return c || null
+}
+
+// Il codice IVA che corrisponde all'aliquota letta, se esiste.
+function codiceIvaPerAliquota(aliquota) {
+  var a = safeNum(aliquota)
+  if (a == null) return null
+  var c = (ivaCache || []).filter(function (x) {
+    var xa = safeNum(x.aliquota)
+    return xa != null && Math.abs(xa - a) < 0.005
+  })[0]
+  return c || null
+}
+
+// ── Applicazione al modulo ───────────────────────────────────────────────────
+
+async function applicaRispostaAI() {
+  html('ponte-ai-note', '')
+  var testo = el('ponte-ai-testo') ? el('ponte-ai-testo').value : ''
+  if (!String(testo).trim()) {
+    showPonteBanner('err', 'La casella è vuota: incolla la risposta di Claude prima di premere «Compila il modulo».')
+    return
+  }
+
+  var dati
+  try {
+    dati = estraiJson(testo)
+  } catch (e) {
+    // Regola non negoziabile: se il JSON e' rotto NON si compila niente.
+    // Mezzo modulo riempito e' peggio di un modulo vuoto, perche' sembra a posto.
+    showPonteBanner('err', e.message)
+    return
+  }
+
+  try {
+    await ensureContiIva()
+    await loadGruppi()
+  } catch (_) { /* la compilazione va avanti anche senza gli elenchi */ }
+
+  // Si valida TUTTO prima di scrivere: cosi' o si compila un modulo coerente,
+  // o non si tocca niente.
+  var scartati = []
+  var v = {}
+
+  v.fornitore = (dati.fornitore == null) ? null : String(dati.fornitore).trim() || null
+  v.numero    = (dati.numero_fornitore == null) ? null : String(dati.numero_fornitore).trim() || null
+
+  v.data = validaData(dati.data)
+  if (dati.data && !v.data) scartati.push('la data «' + dati.data + '» non è una data valida')
+
+  v.scadenza = validaData(dati.scadenza)
+  if (dati.scadenza && !v.scadenza) scartati.push('la scadenza «' + dati.scadenza + '» non è una data valida')
+
+  v.importo = validaImporto(dati.importo)
+  if (dati.importo != null && v.importo == null) scartati.push('l\'importo «' + dati.importo + '» non è un numero valido')
+
+  v.imponibile = validaImporto(dati.imponibile)
+  if (dati.imponibile != null && v.imponibile == null) scartati.push('l\'imponibile «' + dati.imponibile + '» non è un numero valido')
+
+  v.iva = validaImporto(dati.iva_importo)
+  if (dati.iva_importo != null && v.iva == null) scartati.push('l\'IVA «' + dati.iva_importo + '» non è un numero valido')
+
+  v.valuta = validaValuta(dati.valuta)
+  if (dati.valuta && !v.valuta) scartati.push('la valuta «' + dati.valuta + '» non è ammessa (solo CHF o EUR)')
+
+  var conto = validaConto(dati.conto_suggerito)
+  if (dati.conto_suggerito && !conto) {
+    scartati.push('il conto «' + dati.conto_suggerito + '» non esiste nel piano dei conti')
+  }
+
+  var codIva = codiceIvaPerAliquota(dati.aliquota_iva)
+
+  // ── Coerenza degli importi ──────────────────────────────────────────────
+  // Imponibile + IVA deve dare il totale. Non si corregge niente: si avvisa.
+  // Gli arrotondamenti di stampa fanno ballare i centesimi, quindi si tollera
+  // uno scarto di 5 centesimi.
+  var avvisoScarto = null
+  if (v.importo != null && v.imponibile != null && v.iva != null) {
+    var scarto = Math.abs((v.imponibile + v.iva) - v.importo)
+    if (scarto > 0.05) {
+      avvisoScarto = 'Imponibile ' + fmtNumIt(v.imponibile) + ' CHF + IVA ' + fmtNumIt(v.iva) +
+        ' CHF fa ' + fmtNumIt(v.imponibile + v.iva) + ' CHF, ma il totale letto è ' +
+        fmtNumIt(v.importo) + ' CHF: ballano ' + fmtNumIt(scarto) +
+        ' CHF. Controlla sulla fattura quale dei tre è sbagliato.'
+    }
+  }
+
+  // ── Scrittura nel modulo ────────────────────────────────────────────────
+  if (v.fornitore) setVal('a-fornitore', v.fornitore)
+  if (v.numero)    setVal('a-numero', v.numero)
+  if (v.data)      setVal('a-data', v.data)
+  if (v.scadenza)  setVal('a-scadenza', v.scadenza)
+  if (v.importo != null)    setVal('a-importo', v.importo)
+  if (v.valuta)             setVal('a-valuta', v.valuta)
+  if (v.imponibile != null) setVal('a-imponibile', v.imponibile)
+  if (v.iva != null)        setVal('a-iva', v.iva)
+  if (dati.descrizione)     setVal('a-note', String(dati.descrizione).trim())
+
+  if (codIva && el('a-codice-iva')) el('a-codice-iva').innerHTML = buildIvaOptions(codIva.id)
+
+  // Il conto suggerito non ha un campo suo in questo modulo: il conto si
+  // assegna dopo, in «Da classificare». Qui se ne usa il GRUPPO, che e' il
+  // derivato del conto (FASE 3), e il codice resta scritto nel riquadro.
+  if (conto && conto.gruppo_codice) {
+    await riempiSelectGruppi('a-gruppo', conto.gruppo_codice)
+  }
+
+  // Il contatto NON si collega da solo: il nome letto da una foto non basta a
+  // dire che e' quel fornitore in rubrica. Si scrive il testo, il collegamento
+  // lo fa Umberto scegliendolo dall'elenco.
+  if (el('a-contatto-id')) el('a-contatto-id').value = ''
+  html('a-contatto-legato', '')
+
+  chiudiIncollaRisposta()
+  showPonteBanner('ok', 'Modulo compilato dalla lettura. Controlla i campi prima di salvare.')
+  renderNoteLettura(dati.note_lettura, scartati, avvisoScarto, conto)
+}
+
+// Riquadro sopra il modulo: cosa ha segnalato la lettura, cosa e' stato scartato
+// e cosa non torna. Tutto in parole, con l'icona sempre accompagnata dal testo.
+function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto) {
+  var pezzi = ''
+
+  if (noteLettura) {
+    pezzi += '<div class="lettura-nota">' +
+      '<span aria-hidden="true">🔎</span>' +
+      '<span><strong>La lettura segnala:</strong> ' + esc(String(noteLettura)) + '</span>' +
+    '</div>'
+  }
+
+  if (avvisoScarto) {
+    pezzi += '<div class="lettura-nota avviso">' +
+      '<span aria-hidden="true">⚠️</span>' +
+      '<span><strong>Gli importi non tornano.</strong> ' + esc(avvisoScarto) +
+      ' I campi sono stati compilati lo stesso.</span>' +
+    '</div>'
+  }
+
+  if (scartati && scartati.length) {
+    pezzi += '<div class="lettura-nota avviso">' +
+      '<span aria-hidden="true">🚫</span>' +
+      '<span><strong>Non ' + (scartati.length === 1 ? 'è stato scritto' : 'sono stati scritti') +
+      ' nel modulo:</strong><ul style="margin:5px 0 0 18px">' +
+      scartati.map(function (x) { return '<li>' + esc(x) + '</li>' }).join('') +
+      '</ul>Questi campi sono rimasti vuoti: compilali a mano guardando la fattura.</span>' +
+    '</div>'
+  }
+
+  if (conto) {
+    pezzi += '<div class="lettura-nota">' +
+      '<span aria-hidden="true">🏷</span>' +
+      '<span><strong>Conto suggerito dalla lettura:</strong> ' +
+      esc(conto.codice_conto + ' · ' + conto.descrizione) +
+      '. Non viene salvato adesso: lo confermerai in «Da classificare».</span>' +
+    '</div>'
+  }
+
+  html('ponte-ai-note', pezzi)
+}
+
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
