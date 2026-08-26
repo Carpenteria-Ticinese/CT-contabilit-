@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=13" />
+  <link rel="stylesheet" href="css/style.css?v=14" />
 </head>
 <body>
 
@@ -44,6 +44,11 @@
     <button class="nav-item auth-only" data-page="inserimento">
       <span aria-hidden="true">➕</span>
       <span>Inserimento manuale</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="rubrica">
+      <span aria-hidden="true">📇</span>
+      <span>Rubrica</span>
     </button>
 
     <button class="nav-item auth-only" data-page="fatture">
@@ -229,13 +234,34 @@
               />
             </div>
 
-            <div class="form-group">
+            <div class="form-group rubrica-pick">
               <label for="f-ente" class="form-label">Ente / Fornitore</label>
               <input
                 type="text" id="f-ente" class="form-input"
-                maxlength="200"
-                placeholder="es. AXA Assicurazioni, UBS, Swisscom…"
-              />
+                maxlength="200" autocomplete="off"
+                placeholder="Scrivi per cercare in rubrica…"
+                oninput="rubricaSuggerisci('f')"
+                onkeydown="rubricaTasti(event, 'f')"
+                aria-describedby="f-ente-hint"
+                aria-autocomplete="list" aria-controls="f-ente-suggest" />
+              <input type="hidden" id="f-contatto-id" />
+              <div id="f-ente-suggest" class="rubrica-suggest" role="listbox"
+                   aria-label="Contatti trovati in rubrica"></div>
+              <div id="f-contatto-legato"></div>
+              <div class="form-hint" id="f-ente-hint">
+                Scrivi almeno due lettere: cerca fra i contatti in rubrica. Se non c’&egrave;,
+                puoi crearlo al volo senza uscire da questo modulo. Va bene anche lasciare
+                solo il testo, senza collegare nessun contatto.
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="f-gruppo" class="form-label">Gruppo di costo</label>
+              <select id="f-gruppo" class="form-input"></select>
+              <div class="form-hint" id="f-gruppo-hint">
+                Serve a raggruppare le spese nel cruscotto. Se il contatto ha un gruppo
+                predefinito viene proposto qui, e resta modificabile.
+              </div>
             </div>
 
             <div class="form-row">
@@ -257,6 +283,33 @@
                   <option value="USD">USD</option>
                 </select>
               </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="f-scadenza" class="form-label">
+                  Scadenza <span class="dim">(quando va pagato)</span>
+                </label>
+                <input type="date" id="f-scadenza" class="form-input" />
+                <div class="form-hint" id="f-scadenza-hint">
+                  Calcolata da sola se il contatto ha i giorni di pagamento. Modificabile.
+                </div>
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="f-stato-pagamento" class="form-label">Stato pagamento</label>
+                <select id="f-stato-pagamento" class="form-input" onchange="onMovStatoChange()">
+                  <option value="pagato">✅ Pagato — il denaro è già uscito</option>
+                  <option value="aperto">⏳ Da pagare — ancora da saldare</option>
+                </select>
+                <div class="form-hint" id="f-stato-hint"></div>
+              </div>
+            </div>
+
+            <div class="form-group" id="f-data-pagamento-group">
+              <label for="f-data-pagamento" class="form-label">
+                Data del pagamento <span class="dim">(quando è uscito il denaro)</span>
+              </label>
+              <input type="date" id="f-data-pagamento" class="form-input" />
             </div>
 
             <div class="form-group">
@@ -336,6 +389,203 @@
         </div>
 
       </div>
+    </div>
+
+    <!-- ══ PAGINA: Rubrica contatti (Fase 2) ════════════════ -->
+    <div id="page-rubrica" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Rubrica</div>
+          <div class="page-subtitle">
+            Anagrafica unica condivisa da tutte le app: clienti, fornitori e collaboratori.
+            Un contatto si scrive una volta sola.
+          </div>
+        </div>
+      </div>
+
+      <div id="rubrica-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+      <!-- Elenco -->
+      <div id="rubrica-lista-view">
+        <div class="card">
+
+          <div class="tabs" role="tablist" aria-label="Categoria contatti">
+            <button class="tab" role="tab" id="tab-cliente" aria-selected="true"
+                    onclick="setRubricaTab('cliente')">
+              <span aria-hidden="true">👤</span> Clienti
+              <span class="tab-count" id="cnt-cliente">0</span>
+            </button>
+            <button class="tab" role="tab" id="tab-fornitore" aria-selected="false"
+                    onclick="setRubricaTab('fornitore')">
+              <span aria-hidden="true">🏢</span> Fornitori
+              <span class="tab-count" id="cnt-fornitore">0</span>
+            </button>
+            <button class="tab" role="tab" id="tab-collaboratore" aria-selected="false"
+                    onclick="setRubricaTab('collaboratore')">
+              <span aria-hidden="true">👷</span> Collaboratori
+              <span class="tab-count" id="cnt-collaboratore">0</span>
+            </button>
+            <button class="tab" role="tab" id="tab-generico" aria-selected="false"
+                    onclick="setRubricaTab('generico')">
+              <span aria-hidden="true">📎</span> Generici
+              <span class="tab-count" id="cnt-generico">0</span>
+            </button>
+          </div>
+
+          <div class="rubrica-toolbar">
+            <button class="btn-primary" onclick="nuovoContatto()">➕ Nuovo contatto</button>
+            <label class="form-label-check" style="margin-bottom:0">
+              <input type="checkbox" id="rubrica-show-inattivi" onchange="renderContattiList()" />
+              <span>Mostra anche i contatti archiviati</span>
+            </label>
+            <div class="spacer"></div>
+            <div class="form-group rubrica-search" style="margin-bottom:0">
+              <label for="rubrica-search" class="form-label">Cerca nella rubrica</label>
+              <input type="text" id="rubrica-search" class="form-input"
+                     placeholder="🔍 Nome, citt&agrave;, email, telefono&hellip;"
+                     oninput="renderContattiList()" autocomplete="off"
+                     aria-label="Cerca un contatto per nome, citt&agrave;, email o telefono" />
+            </div>
+          </div>
+
+          <div id="rubrica-table"></div>
+        </div>
+      </div>
+
+      <!-- Scheda contatto -->
+      <div id="rubrica-scheda-view" style="display:none">
+        <div class="card">
+          <div class="card-title" id="contatto-card-title">👤 Scheda contatto</div>
+          <div id="contatto-banner" role="status" aria-live="polite" style="margin-bottom:12px"></div>
+
+          <div id="contatto-azioni-rapide" style="margin-bottom:14px"></div>
+
+          <form id="form-contatto" onsubmit="salvaContatto(event)" novalidate>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="c-categoria" class="form-label">
+                  Categoria <span class="req" aria-hidden="true">*</span>
+                </label>
+                <select id="c-categoria" class="form-input">
+                  <option value="cliente">Cliente</option>
+                  <option value="fornitore">Fornitore</option>
+                  <option value="collaboratore">Collaboratore</option>
+                  <option value="generico">Generico</option>
+                </select>
+              </div>
+              <div class="form-group" style="flex:2">
+                <label for="c-ragione" class="form-label">
+                  Ragione sociale <span class="dim">(o nome dell&rsquo;attivit&agrave;)</span>
+                </label>
+                <input type="text" id="c-ragione" class="form-input" maxlength="200"
+                       placeholder="es. Ferramenta Bianchi SA" />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="c-nome" class="form-label">Nome <span class="dim">(persona)</span></label>
+                <input type="text" id="c-nome" class="form-input" maxlength="100" />
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="c-cognome" class="form-label">Cognome <span class="dim">(persona)</span></label>
+                <input type="text" id="c-cognome" class="form-input" maxlength="100" />
+              </div>
+            </div>
+            <div class="form-hint" style="margin-top:-6px;margin-bottom:14px">
+              Serve almeno uno fra ragione sociale e cognome: &egrave; il nome con cui il contatto
+              compare negli elenchi.
+            </div>
+
+            <div class="form-group">
+              <label for="c-indirizzo" class="form-label">Indirizzo</label>
+              <input type="text" id="c-indirizzo" class="form-input" maxlength="200"
+                     placeholder="es. Via Girardolo del Nado 2" />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="c-cap" class="form-label">NPA <span class="dim">(codice postale)</span></label>
+                <input type="text" id="c-cap" class="form-input" maxlength="10" placeholder="6500" />
+              </div>
+              <div class="form-group" style="flex:2">
+                <label for="c-citta" class="form-label">Localit&agrave;</label>
+                <input type="text" id="c-citta" class="form-input" maxlength="100" placeholder="Bellinzona" />
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="c-paese" class="form-label">Paese</label>
+                <input type="text" id="c-paese" class="form-input" maxlength="2" value="CH" placeholder="CH" />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="c-telefono" class="form-label">Telefono</label>
+                <input type="tel" id="c-telefono" class="form-input" maxlength="40"
+                       placeholder="+41 91 000 00 00" oninput="renderAzioniRapide()" />
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="c-email" class="form-label">Email</label>
+                <input type="email" id="c-email" class="form-input" maxlength="150"
+                       placeholder="nome@esempio.ch" oninput="renderAzioniRapide()" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="c-sito" class="form-label">Sito web</label>
+              <input type="text" id="c-sito" class="form-input" maxlength="200"
+                     placeholder="www.esempio.ch" />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="c-uid" class="form-label">UID / Partita IVA</label>
+                <input type="text" id="c-uid" class="form-input" maxlength="40"
+                       placeholder="CHE-123.456.789" />
+              </div>
+              <div class="form-group" style="flex:2">
+                <label for="c-iban" class="form-label">IBAN</label>
+                <input type="text" id="c-iban" class="form-input" maxlength="40"
+                       placeholder="CH00 0000 0000 0000 0000 0" />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group" style="flex:2">
+                <label for="c-gruppo" class="form-label">Gruppo predefinito</label>
+                <select id="c-gruppo" class="form-input"></select>
+                <div class="form-hint">
+                  Proposto ogni volta che si sceglie questo contatto in un movimento. Resta modificabile.
+                </div>
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="c-giorni" class="form-label">Giorni di pagamento</label>
+                <input type="number" id="c-giorni" class="form-input" min="0" max="365" step="1"
+                       placeholder="30" />
+                <div class="form-hint">Giorni. Serve a calcolare la scadenza.</div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="c-note" class="form-label">Note</label>
+              <textarea id="c-note" class="form-input" rows="3" maxlength="1000"></textarea>
+            </div>
+
+            <label class="form-label-check">
+              <input type="checkbox" id="c-attivo" checked />
+              <span>Contatto attivo <span class="dim">(togli la spunta per archiviarlo senza cancellarlo)</span></span>
+            </label>
+
+            <div class="form-actions">
+              <button type="submit" class="btn-primary" id="contatto-submit-btn">💾 Salva contatto</button>
+              <button type="button" class="btn-secondary" onclick="chiudiSchedaContatto()">&larr; Torna all&rsquo;elenco</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
     </div>
 
     <!-- ══ PAGINA: Export & consegna (Fase 5) ══════════════════════════════ -->
@@ -704,9 +954,17 @@
 
         <div class="card">
           <div class="card-title">🏢 Fornitore e documento</div>
-          <div class="form-group">
+          <div class="form-group rubrica-pick">
             <label for="a-fornitore" class="form-label">Fornitore <span class="req" aria-hidden="true">*</span></label>
-            <input type="text" id="a-fornitore" class="form-input" maxlength="200" placeholder="es. Ferramenta Bianchi SA" />
+            <input type="text" id="a-fornitore" class="form-input" maxlength="200"
+                   autocomplete="off" placeholder="Scrivi per cercare in rubrica…"
+                   oninput="rubricaSuggerisci('a')"
+                   onkeydown="rubricaTasti(event, 'a')"
+                   aria-autocomplete="list" aria-controls="a-fornitore-suggest" />
+            <input type="hidden" id="a-contatto-id" />
+            <div id="a-fornitore-suggest" class="rubrica-suggest" role="listbox"
+                 aria-label="Contatti trovati in rubrica"></div>
+            <div id="a-contatto-legato"></div>
           </div>
           <div class="form-row">
             <div class="form-group" style="flex:2">
@@ -752,6 +1010,10 @@
           <div id="a-iva-summary" class="iva-summary"></div>
 
           <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="a-gruppo" class="form-label">Gruppo di costo</label>
+              <select id="a-gruppo" class="form-input"></select>
+            </div>
             <div class="form-group" style="flex:1">
               <label for="a-scadenza" class="form-label">Scadenza <span class="dim">(opzionale)</span></label>
               <input type="date" id="a-scadenza" class="form-input" />
@@ -1115,7 +1377,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=13"></script>
+<script src="js/app.js?v=14"></script>
 
 </body>
 </html>
