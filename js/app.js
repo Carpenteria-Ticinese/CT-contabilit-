@@ -1236,6 +1236,25 @@ function fillFormFromValues(vals) {
   togglePeriodicita(!!vals.ricorrente)
   if (el('f-periodicita')) el('f-periodicita').value = vals.periodicita || 'mensile'
   if (el('f-allegato'))    el('f-allegato').value = ''
+  // ── FASE 2: contatto collegato, gruppo, scadenza, stato pagamento
+  if (el('f-scadenza'))    el('f-scadenza').value = vals.data_scadenza || ''
+  if (el('f-contatto-id')) el('f-contatto-id').value = vals.contatto_id || ''
+  if (el('f-stato-pagamento')) el('f-stato-pagamento').value = vals.stato_pagamento || 'pagato'
+  if (el('f-data-pagamento'))  el('f-data-pagamento').value = vals.data_pagamento || ''
+  riempiSelectGruppi('f-gruppo', vals.gruppo_codice || '')
+  onMovStatoChange()
+  aggiornaLegatoDaId('f', vals.contatto_id)
+}
+
+// Ridisegna il riquadro «contatto collegato» partendo dal solo id: serve quando
+// il form viene ripopolato (modifica, annulla) e non da una scelta dell'utente.
+function aggiornaLegatoDaId(prefix, id) {
+  var c = rubricaCampi(prefix)
+  if (!id) { html(c.legato, ''); return }
+  loadContatti().then(function (list) {
+    var x = (list || []).filter(function (k) { return k.id === id })[0]
+    renderContattoLegato(prefix, x, null)
+  }).catch(function () { html(c.legato, '') })
 }
 
 // Allegato già presente sul movimento Canale B: nome + apri + rimuovi
@@ -1290,7 +1309,8 @@ async function startEditMovimento(id) {
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, doc_path')
+      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, doc_path,' +
+              ' data_scadenza, stato_pagamento, data_pagamento, gruppo_codice, contatto_id')
       .eq('id', id)
       .eq('azienda_id', currentAziendaId)
       .single()
@@ -1303,7 +1323,12 @@ async function startEditMovimento(id) {
       importo:     data.importo != null ? data.importo : '',
       valuta:      data.valuta || 'CHF',
       ricorrente:  !!data.ricorrente,
-      periodicita: data.periodicita || 'mensile'
+      periodicita: data.periodicita || 'mensile',
+      data_scadenza:   data.data_scadenza || '',
+      stato_pagamento: data.stato_pagamento || 'pagato',
+      data_pagamento:  data.data_pagamento || '',
+      gruppo_codice:   data.gruppo_codice || '',
+      contatto_id:     data.contatto_id || ''
     }
     editingMovimentoId = id
     originalEditValues = vals
@@ -2309,7 +2334,7 @@ async function newFattura(tipo) {
   el('f-cli-indirizzo').value = ''
   el('f-cli-paese').value = 'CH'
   el('f-cli-iva').value = ''
-  el('f-fat-data').value = new Date().toISOString().split('T')[0]
+  el('f-fat-data').value = oggiISO()
   el('f-fat-valuta').value = 'CHF'
   el('f-fat-note').value = ''
   html('fatture-edit-banner', '')
@@ -2362,7 +2387,7 @@ async function editFattura(id) {
     el('f-cli-indirizzo').value = f.cliente_indirizzo || ''
     el('f-cli-paese').value = f.cliente_paese || 'CH'
     el('f-cli-iva').value = f.cliente_iva || ''
-    el('f-fat-data').value = f.data_emissione || new Date().toISOString().split('T')[0]
+    el('f-fat-data').value = f.data_emissione || oggiISO()
     el('f-fat-valuta').value = f.valuta || 'CHF'
     el('f-fat-note').value = f.note || ''
     html('fatture-edit-banner', '')
@@ -2678,7 +2703,7 @@ async function setIncassata(id, toIncassata) {
   try {
     var patch = toIncassata
       // Data proposta: oggi. Resta correggibile a mano dalla scheda.
-      ? { stato_pagamento: 'pagato', data_pagamento: new Date().toISOString().split('T')[0] }
+      ? { stato_pagamento: 'pagato', data_pagamento: oggiISO() }
       // Togliendo l'incasso si toglie anche la data: una data di incasso su una
       // fattura che risulta non incassata sarebbe un dato falso.
       : { stato_pagamento: 'aperto', data_pagamento: null }
@@ -2707,7 +2732,7 @@ async function creaNotaCredito(id) {
       cliente_paese:     f.cliente_paese,
       cliente_iva:       f.cliente_iva,
       valuta:            f.valuta,
-      data_emissione:    new Date().toISOString().split('T')[0],
+      data_emissione:    oggiISO(),
       anno:              new Date().getFullYear(),
       tipo:              'nota_credito',
       rif_fattura_id:    f.id,
@@ -3141,6 +3166,8 @@ function renderFatturaPrint(f, righe, rifInfo) {
 function renderDetailActions(f) {
   var a = '<div class="form-actions" style="margin-top:0">'
   a += '<button class="btn-primary" onclick="printFattura()">🖨 Stampa</button>'
+  // Stesso CSS di stampa, stesso risultato: cambia solo il nome del file proposto.
+  a += '<button class="btn-secondary" onclick="scaricaFatturaPDF()">📄 Scarica PDF</button>'
   if (f.stato === 'bozza') {
     a += '<button class="btn-secondary" onclick="editFattura(\'' + f.id + '\')">✏️ Modifica bozza</button>'
     a += '<button class="btn-primary" onclick="emettiFatturaById(\'' + f.id + '\')">📨 Emetti</button>'
@@ -3451,7 +3478,7 @@ function onAcquistoStatoChange() {
   var ids = ['a-data-pagamento', 'a-metodo', 'a-riferimento']
   for (var i = 0; i < ids.length; i++) { var e = el(ids[i]); if (e) e.disabled = !pagato }
   // proposta (non obbligatoria): se segno "pagato" e la data è vuota → oggi
-  if (pagato && !getVal('a-data-pagamento')) setVal('a-data-pagamento', new Date().toISOString().split('T')[0])
+  if (pagato && !getVal('a-data-pagamento')) setVal('a-data-pagamento', oggiISO())
   var hint = el('a-pagamento-hint')
   if (hint) {
     hint.textContent = pagato
@@ -3469,6 +3496,10 @@ function fillAcquistoForm(v) {
   setVal('a-valuta',    v.valuta || 'CHF')
   setVal('a-scadenza',  v.scadenza || '')
   setVal('a-stato',     v.stato_pagamento || 'aperto')
+  // FASE 2: gruppo e contatto collegato
+  if (el('a-contatto-id')) el('a-contatto-id').value = v.contatto_id || ''
+  riempiSelectGruppi('a-gruppo', v.gruppo_codice || '')
+  aggiornaLegatoDaId('a', v.contatto_id)
   setVal('a-note',      v.note || '')
   // IVA: il menu va costruito prima di impostare il valore
   var ivaSel = el('a-codice-iva')
@@ -3551,7 +3582,11 @@ async function newAcquisto() {
   showAcquistiView('edit')
   await ensureContiIva()      // per il menu Codice IVA
   await loadAziendaInfo()     // per la nota "non soggetto IVA"
-  fillAcquistoForm({ data: new Date().toISOString().split('T')[0], valuta: 'CHF', stato_pagamento: 'aperto' })
+  fillAcquistoForm({ data: oggiISO(), valuta: 'CHF', stato_pagamento: 'aperto' })
+  // FASE 2: nessun contatto collegato su un documento nuovo
+  if (el('a-contatto-id')) el('a-contatto-id').value = ''
+  html('a-contatto-legato', '')
+  html('a-fornitore-suggest', '')
 }
 
 async function editAcquisto(id) {
@@ -3602,6 +3637,9 @@ function collectAcquisto() {
     valuta:           getVal('a-valuta') || 'CHF',
     scadenza:         getVal('a-scadenza') || null,
     stato_pagamento:  getVal('a-stato') || 'aperto',
+    // FASE 2: raggruppamento e collegamento alla rubrica
+    gruppo_codice:    getVal('a-gruppo') || null,
+    contatto_id:      getVal('a-contatto-id') || null,
     note:             getVal('a-note') || null,
     // IVA (restano NULL se non si sceglie un codice: si salva solo il totale)
     codice_iva_id:    getVal('a-codice-iva') || null,
@@ -3735,13 +3773,27 @@ function toggleSoggettoIva(checked) {
   if (iva) iva.disabled = !checked
 }
 
-// data 'YYYY-MM-DD' + giorni → 'YYYY-MM-DD' (per la scadenza fattura)
+// Un oggetto Date → 'YYYY-MM-DD' nel fuso LOCALE.
+// NON si usa toISOString(): quella converte in UTC, e a mezzanotte locale in
+// Ticino (UTC+1/+2) restituisce il giorno PRIMA. Su una scadenza di pagamento
+// un giorno di scarto non e' un dettaglio.
+function dataISO(d) {
+  if (!d || isNaN(d.getTime())) return null
+  var m = String(d.getMonth() + 1)
+  var g = String(d.getDate())
+  return d.getFullYear() + '-' + (m.length < 2 ? '0' + m : m) + '-' + (g.length < 2 ? '0' + g : g)
+}
+
+// La data di oggi, nel fuso di chi sta usando il programma.
+function oggiISO() { return dataISO(new Date()) }
+
+// data 'YYYY-MM-DD' + giorni → 'YYYY-MM-DD' (scadenze di fatture e movimenti)
 function addDays(dateStr, days) {
   if (!dateStr) return null
   var d = new Date(dateStr + 'T00:00:00')
   if (isNaN(d.getTime())) return null
   d.setDate(d.getDate() + (parseInt(days, 10) || 0))
-  return d.toISOString().split('T')[0]
+  return dataISO(d)
 }
 
 function setVal(id, val) { var e = el(id); if (e) e.value = (val == null ? '' : val) }
@@ -3886,8 +3938,14 @@ function resetInserimentoForm() {
   var form = el('form-inserimento')
   if (form) form.reset()
   togglePeriodicita(false)
-  if (el('f-data')) el('f-data').value = new Date().toISOString().split('T')[0]
+  if (el('f-data')) el('f-data').value = oggiISO()
   html('inserimento-banner', '')
+  // FASE 2: il collegamento in rubrica non deve sopravvivere al reset del form
+  if (el('f-contatto-id')) el('f-contatto-id').value = ''
+  html('f-contatto-legato', '')
+  html('f-ente-suggest', '')
+  riempiSelectGruppi('f-gruppo', '')
+  proponiStatoDaData()
 }
 
 function showInserimentoBanner(tipo, titolo, dettaglio) {
@@ -3942,6 +4000,10 @@ async function handleInserimentoSubmit(event) {
       }
     }
 
+    // Stato del pagamento: 'pagato' vuol dire che il denaro e' gia' uscito.
+    var statoPag = el('f-stato-pagamento') ? el('f-stato-pagamento').value : 'pagato'
+    var dataPag  = el('f-data-pagamento') ? el('f-data-pagamento').value : ''
+
     var payload = {
       azienda_id:    currentAziendaId,
       data:          dataVal,
@@ -3951,7 +4013,19 @@ async function handleInserimentoSubmit(event) {
       valuta:        valuta,
       ricorrente:    ricorrente,
       periodicita:   periodicita,
-      doc_path:      doc_path
+      doc_path:      doc_path,
+      // ── Colonne della FASE 1: senza queste il movimento non comparirebbe
+      //    correttamente in v_conta_flussi (e quindi nel cruscotto).
+      data_documento:  dataVal,
+      importo_totale:  importoVal,
+      verso:           'uscita',            // il Canale B registra solo uscite
+      origine:         'manuale',
+      stato_conferma:  'confermato',        // inserito a mano da chi lo sa
+      stato_pagamento: statoPag,
+      data_pagamento:  (statoPag === 'pagato' ? (dataPag || dataVal) : null),
+      data_scadenza:   (el('f-scadenza') && el('f-scadenza').value) || null,
+      gruppo_codice:   (el('f-gruppo') && el('f-gruppo').value) || null,
+      contatto_id:     (el('f-contatto-id') && el('f-contatto-id').value) || null
     }
 
     if (editingMovimentoId) {
@@ -4409,6 +4483,632 @@ function renderSqlInstructions() {
   )
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 2 — RUBRICA CONTATTI
+// Anagrafica unica (tm_contatti) condivisa da tutte le app dell'ecosistema.
+// Prima di questa fase la controparte era testo libero, riscritto ogni volta e
+// scollegato: «UBS», «U.B.S.» e «ubs» erano tre fornitori diversi.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let contattiCache   = null   // [{...}] tutti i contatti dell'azienda
+let gruppiCache     = null   // [{codice, nome, esempi, ordine}]
+let rubricaTab      = 'cliente'
+let editingContattoId = null
+let rubricaSuggest  = { prefix: null, list: [], hi: -1 }   // stato del menu a tendina
+
+// ── Caricamento dati di base ─────────────────────────────────────────────────
+
+// I 9 gruppi di costo/ricavo. Tabella condivisa, si carica una volta sola.
+async function loadGruppi() {
+  if (gruppiCache) return gruppiCache
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_gruppi')
+      .select('codice, nome, esempi, ordine')
+      .order('ordine')
+    if (error) throw error
+    gruppiCache = data || []
+  } catch (e) {
+    gruppiCache = []
+    console.warn('Gruppi non caricati:', e.message || e)
+  }
+  return gruppiCache
+}
+
+// Opzioni per un menu «gruppo». La voce vuota è esplicita: «nessun gruppo» è
+// una scelta legittima, non un campo dimenticato.
+function buildGruppoOptions(selected) {
+  var out = '<option value="">— nessun gruppo —</option>'
+  ;(gruppiCache || []).forEach(function (g) {
+    out += '<option value="' + esc(g.codice) + '"' +
+           (g.codice === selected ? ' selected' : '') + '>' +
+           esc(g.codice + ' · ' + g.nome) + '</option>'
+  })
+  return out
+}
+
+async function riempiSelectGruppi(id, selected) {
+  await loadGruppi()
+  var sel = el(id)
+  if (sel) sel.innerHTML = buildGruppoOptions(selected || '')
+}
+
+async function loadContatti(force) {
+  if (contattiCache && !force) return contattiCache
+  if (!currentAziendaId) { contattiCache = []; return contattiCache }
+  const { data, error } = await sb
+    .from('tm_contatti')
+    .select('id, categoria, ragione_sociale, nome, cognome, indirizzo, cap, citta, paese,' +
+            ' telefono, email, sito_web, uid_partita_iva, iban, gruppo_default,' +
+            ' giorni_pagamento, note, attivo')
+    .eq('azienda_id', currentAziendaId)
+    .order('ragione_sociale', { nullsFirst: false })
+  if (error) throw error
+  contattiCache = data || []
+  return contattiCache
+}
+
+// Il nome con cui un contatto compare ovunque: ragione sociale se c'è,
+// altrimenti cognome + nome. Un contatto senza nessuno dei due non si salva.
+function contattoNome(c) {
+  if (!c) return ''
+  if (c.ragione_sociale) return c.ragione_sociale
+  return [c.cognome, c.nome].filter(Boolean).join(' ')
+}
+
+// Riga secondaria: località, poi i recapiti. Solo i campi valorizzati.
+function contattoSub(c) {
+  var parti = []
+  if (c.citta) parti.push([c.cap, c.citta].filter(Boolean).join(' '))
+  if (c.telefono) parti.push('☎ ' + c.telefono)
+  if (c.email) parti.push('✉ ' + c.email)
+  if (c.gruppo_default) parti.push('gruppo ' + c.gruppo_default)
+  if (c.giorni_pagamento != null) parti.push(c.giorni_pagamento + ' giorni')
+  return parti.join(' · ')
+}
+
+// ── Pagina Rubrica ───────────────────────────────────────────────────────────
+
+async function initRubricaPage() {
+  if (!currentAziendaId) {
+    showRubricaBanner('err', 'Azienda non trovata: rieffettua il login.')
+    return
+  }
+  mostraRubricaVista('lista')
+  html('rubrica-table', loadingRow('Caricamento rubrica…'))
+  try {
+    await loadGruppi()
+    await loadContatti(true)
+    renderContattiList()
+  } catch (e) {
+    html('rubrica-table', '')
+    showRubricaBanner('err', 'Rubrica non caricata: ' + (e.message || e))
+  }
+}
+
+function showRubricaBanner(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html('rubrica-banner',
+    '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + esc(msg) + '</div>' +
+    '</div>')
+}
+
+function mostraRubricaVista(quale) {
+  var lista  = el('rubrica-lista-view')
+  var scheda = el('rubrica-scheda-view')
+  if (lista)  lista.style.display  = (quale === 'lista')  ? 'block' : 'none'
+  if (scheda) scheda.style.display = (quale === 'scheda') ? 'block' : 'none'
+}
+
+function setRubricaTab(cat) {
+  rubricaTab = cat
+  ;['cliente', 'fornitore', 'collaboratore', 'generico'].forEach(function (c) {
+    var t = el('tab-' + c)
+    if (t) t.setAttribute('aria-selected', c === cat ? 'true' : 'false')
+  })
+  renderContattiList()
+}
+
+function renderContattiList() {
+  var q = el('rubrica-search') ? el('rubrica-search').value.trim().toLowerCase() : ''
+  var mostraInattivi = el('rubrica-show-inattivi') ? el('rubrica-show-inattivi').checked : false
+  var tutti = contattiCache || []
+
+  // I contatori sulle schede contano SEMPRE i soli contatti attivi: servono a
+  // dire quanti contatti utilizzabili ci sono, non quanti ne esistono in tutto.
+  ;['cliente', 'fornitore', 'collaboratore', 'generico'].forEach(function (c) {
+    var n = tutti.filter(function (x) { return x.categoria === c && x.attivo !== false }).length
+    var b = el('cnt-' + c)
+    if (b) b.textContent = String(n)
+  })
+
+  var list = tutti.filter(function (c) {
+    if (c.categoria !== rubricaTab) return false
+    if (!mostraInattivi && c.attivo === false) return false
+    return true
+  })
+
+  if (q) {
+    var termini = q.split(/\s+/)
+    list = list.filter(function (c) {
+      var hay = (contattoNome(c) + ' ' + (c.citta || '') + ' ' + (c.cap || '') + ' ' +
+                 (c.email || '') + ' ' + (c.telefono || '') + ' ' +
+                 (c.uid_partita_iva || '')).toLowerCase()
+      return termini.every(function (t) { return hay.indexOf(t) !== -1 })
+    })
+  }
+
+  list.sort(function (a, b) { return contattoNome(a).localeCompare(contattoNome(b), 'it') })
+
+  if (!list.length) {
+    var vuotoMsg = q
+      ? 'Nessun contatto trovato per «' + esc(q) + '». Prova a cercare un pezzo di parola.'
+      : 'Nessun contatto in questa scheda. Premi «➕ Nuovo contatto» per aggiungerne uno.'
+    html('rubrica-table', '<div class="dim" style="padding:14px 2px">' + vuotoMsg + '</div>')
+    return
+  }
+
+  var rows = list.map(function (c) {
+    var nome = contattoNome(c)
+    var azioni = ''
+    // Azioni rapide: icona SEMPRE accompagnata dall'etichetta testuale.
+    // stopPropagation: il clic sull'azione non deve aprire anche la scheda.
+    if (c.telefono) {
+      azioni += '<a class="azione-rapida" href="tel:' + esc(String(c.telefono).replace(/\s/g, '')) + '"' +
+                ' onclick="event.stopPropagation()"' +
+                ' aria-label="Chiama ' + esc(nome) + '">📞 Chiama</a>'
+    }
+    if (c.email) {
+      azioni += '<a class="azione-rapida" href="mailto:' + esc(c.email) + '"' +
+                ' onclick="event.stopPropagation()"' +
+                ' aria-label="Scrivi una mail a ' + esc(nome) + '">✉️ Scrivi mail</a>'
+    }
+    azioni += '<button class="azione-rapida" onclick="event.stopPropagation(); apriContatto(\'' + c.id + '\')">✏️ Apri scheda</button>'
+
+    return '<div class="contatto-row' + (c.attivo === false ? ' inattivo' : '') + '"' +
+             ' onclick="apriContatto(\'' + c.id + '\')" role="button" tabindex="0"' +
+             ' onkeydown="if(event.key===\'Enter\'){apriContatto(\'' + c.id + '\')}">' +
+             '<div class="contatto-main">' +
+               '<div class="contatto-nome">' + esc(nome) +
+                 (c.attivo === false ? ' ' + badge('warn', '📦 Archiviato') : '') + '</div>' +
+               '<div class="contatto-sub">' + esc(contattoSub(c) || 'nessun recapito registrato') + '</div>' +
+             '</div>' +
+             '<div class="contatto-azioni">' + azioni + '</div>' +
+           '</div>'
+  }).join('')
+
+  html('rubrica-table',
+    '<div class="dim" style="margin-bottom:10px">' +
+      list.length + (list.length === 1 ? ' contatto' : ' contatti') +
+      (q ? (list.length === 1 ? ' trovato con la ricerca' : ' trovati con la ricerca') : '') +
+      '</div>' + rows)
+}
+
+// ── Scheda contatto ──────────────────────────────────────────────────────────
+
+async function nuovoContatto(categoriaIniziale) {
+  editingContattoId = null
+  await riempiSelectGruppi('c-gruppo', '')
+  var form = el('form-contatto')
+  if (form) form.reset()
+  if (el('c-categoria')) el('c-categoria').value = categoriaIniziale || rubricaTab
+  if (el('c-paese'))     el('c-paese').value = 'CH'
+  if (el('c-attivo'))    el('c-attivo').checked = true
+  if (el('contatto-card-title')) el('contatto-card-title').textContent = '➕ Nuovo contatto'
+  if (el('contatto-submit-btn')) el('contatto-submit-btn').textContent = '💾 Salva contatto'
+  html('contatto-banner', '')
+  renderAzioniRapide()
+  mostraRubricaVista('scheda')
+  if (el('c-ragione')) el('c-ragione').focus()
+}
+
+async function apriContatto(id) {
+  var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
+  if (!c) { showRubricaBanner('err', 'Contatto non trovato: ricarica la pagina.'); return }
+  editingContattoId = id
+  await riempiSelectGruppi('c-gruppo', c.gruppo_default || '')
+  if (el('c-categoria')) el('c-categoria').value = c.categoria || 'generico'
+  if (el('c-ragione'))   el('c-ragione').value   = c.ragione_sociale || ''
+  if (el('c-nome'))      el('c-nome').value      = c.nome || ''
+  if (el('c-cognome'))   el('c-cognome').value   = c.cognome || ''
+  if (el('c-indirizzo')) el('c-indirizzo').value = c.indirizzo || ''
+  if (el('c-cap'))       el('c-cap').value       = c.cap || ''
+  if (el('c-citta'))     el('c-citta').value     = c.citta || ''
+  if (el('c-paese'))     el('c-paese').value     = c.paese || 'CH'
+  if (el('c-telefono'))  el('c-telefono').value  = c.telefono || ''
+  if (el('c-email'))     el('c-email').value     = c.email || ''
+  if (el('c-sito'))      el('c-sito').value      = c.sito_web || ''
+  if (el('c-uid'))       el('c-uid').value       = c.uid_partita_iva || ''
+  if (el('c-iban'))      el('c-iban').value      = c.iban || ''
+  if (el('c-giorni'))    el('c-giorni').value    = c.giorni_pagamento == null ? '' : c.giorni_pagamento
+  if (el('c-note'))      el('c-note').value      = c.note || ''
+  if (el('c-attivo'))    el('c-attivo').checked  = c.attivo !== false
+  if (el('contatto-card-title')) el('contatto-card-title').textContent = '👤 ' + contattoNome(c)
+  if (el('contatto-submit-btn')) el('contatto-submit-btn').textContent = '💾 Salva modifiche'
+  html('contatto-banner', '')
+  renderAzioniRapide()
+  mostraRubricaVista('scheda')
+}
+
+function chiudiSchedaContatto() {
+  // Se si torna indietro senza salvare, si torna al documento di partenza
+  if (rubricaRitorno && rubricaRitorno.prefix) {
+    var rit = rubricaRitorno
+    rubricaRitorno = null
+    editingContattoId = null
+    mostraRubricaVista('lista')
+    showPage(rit.page)
+    return
+  }
+  editingContattoId = null
+  mostraRubricaVista('lista')
+  renderContattiList()
+}
+
+// Chiama / Scrivi mail sulla scheda: si aggiornano mentre si scrive il recapito,
+// così si vede subito che il numero inserito è utilizzabile.
+function renderAzioniRapide() {
+  var tel   = getVal('c-telefono')
+  var email = getVal('c-email')
+  var out = ''
+  if (tel) {
+    out += '<a class="azione-rapida" href="tel:' + esc(tel.replace(/\s/g, '')) + '">📞 Chiama ' + esc(tel) + '</a> '
+  }
+  if (email) {
+    out += '<a class="azione-rapida" href="mailto:' + esc(email) + '">✉️ Scrivi mail a ' + esc(email) + '</a>'
+  }
+  if (!out) {
+    out = '<div class="dim" style="font-size:12px">Inserisci telefono o email: qui compaiono i pulsanti per chiamare e scrivere.</div>'
+  }
+  html('contatto-azioni-rapide', out)
+}
+
+function raccogliContatto() {
+  var ragione = getVal('c-ragione')
+  var cognome = getVal('c-cognome')
+  if (!ragione && !cognome) {
+    throw new Error('Serve almeno la ragione sociale oppure il cognome: è il nome con cui il contatto compare negli elenchi.')
+  }
+  var giorni = getVal('c-giorni')
+  var giorniNum = giorni === '' ? null : parseInt(giorni, 10)
+  if (giorniNum != null && (isNaN(giorniNum) || giorniNum < 0 || giorniNum > 365)) {
+    throw new Error('I giorni di pagamento devono essere un numero fra 0 e 365.')
+  }
+  return {
+    azienda_id:      currentAziendaId,
+    categoria:       getVal('c-categoria') || 'generico',
+    ragione_sociale: ragione || null,
+    nome:            getVal('c-nome') || null,
+    cognome:         cognome || null,
+    indirizzo:       getVal('c-indirizzo') || null,
+    cap:             getVal('c-cap') || null,
+    citta:           getVal('c-citta') || null,
+    paese:           (getVal('c-paese') || 'CH').toUpperCase().slice(0, 2),
+    telefono:        getVal('c-telefono') || null,
+    email:           getVal('c-email') || null,
+    sito_web:        getVal('c-sito') || null,
+    uid_partita_iva: getVal('c-uid') || null,
+    iban:            getVal('c-iban') ? getVal('c-iban').replace(/\s/g, '').toUpperCase() : null,
+    gruppo_default:  getVal('c-gruppo') || null,
+    giorni_pagamento: giorniNum,
+    note:            getVal('c-note') || null,
+    attivo:          el('c-attivo') ? el('c-attivo').checked : true
+  }
+}
+
+async function salvaContatto(event) {
+  if (event) event.preventDefault()
+  var btn = el('contatto-submit-btn')
+  var testoBtn = btn ? btn.textContent : ''
+  html('contatto-banner', '')
+  try {
+    var payload = raccogliContatto()
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
+
+    var nuovoIdSalvato = editingContattoId
+    if (editingContattoId) {
+      const { error } = await sb.from('tm_contatti')
+        .update(payload)
+        .eq('id', editingContattoId)
+        .eq('azienda_id', currentAziendaId)
+        .select()
+      if (error) throw error
+    } else {
+      const { data, error } = await sb.from('tm_contatti').insert(payload).select()
+      if (error) throw error
+      if (data && data[0]) { editingContattoId = data[0].id; nuovoIdSalvato = data[0].id }
+    }
+
+    await loadContatti(true)
+
+    // Se si era arrivati qui da un documento («crea al volo»), si torna al
+    // documento con il contatto gia' collegato: il lavoro a meta' non si perde.
+    if (rubricaRitorno && rubricaRitorno.prefix) {
+      var rit = rubricaRitorno
+      rubricaRitorno = null
+      editingContattoId = null
+      mostraRubricaVista('lista')
+      showPage(rit.page)
+      await scegliContatto(rit.prefix, nuovoIdSalvato)
+      return
+    }
+
+    chiudiSchedaContatto()
+    showRubricaBanner('ok', 'Contatto salvato: ' + (payload.ragione_sociale || payload.cognome) + '.')
+  } catch (e) {
+    showContattoBanner('err', 'Non salvato: ' + friendlyContattoError(e))
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = testoBtn || '💾 Salva contatto' }
+  }
+}
+
+function showContattoBanner(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html('contatto-banner',
+    '<div class="fase-banner ' + tipo + '" role="alert">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + esc(msg) + '</div>' +
+    '</div>')
+}
+
+// Gli errori Postgres grezzi non dicono niente a chi li legge: qui diventano
+// frasi che indicano il campo e cosa fare.
+function friendlyContattoError(e) {
+  var m = (e && (e.message || e.msg)) ? String(e.message || e.msg) : String(e)
+  if (m.indexOf('gruppo_default') !== -1 && m.indexOf('foreign key') !== -1) {
+    return 'il gruppo scelto non esiste più. Riapri il menu «Gruppo predefinito» e scegline un altro.'
+  }
+  if (m.indexOf('categoria') !== -1 && m.indexOf('check constraint') !== -1) {
+    return 'la categoria non è valida: usa Cliente, Fornitore, Collaboratore o Generico.'
+  }
+  if (m.indexOf('row-level security') !== -1 || m.indexOf('violates row-level') !== -1) {
+    return 'accesso negato dal database. Rieffettua il login e riprova.'
+  }
+  return m
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 2 — Ricerca in rubrica dentro i form (movimento e fattura d'acquisto)
+// Un solo motore per entrambi i form: il prefisso 'f' è il movimento,
+// 'a' è la fattura d'acquisto. Gli id dei campi seguono lo stesso schema.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Mappa prefisso -> id dei campi coinvolti. Tenerla qui evita di sparpagliare
+// i nomi degli elementi in dieci funzioni diverse.
+function rubricaCampi(prefix) {
+  return (prefix === 'a')
+    ? { testo: 'a-fornitore', hidden: 'a-contatto-id', suggest: 'a-fornitore-suggest',
+        legato: 'a-contatto-legato', gruppo: 'a-gruppo', scadenza: 'a-scadenza',
+        data: 'a-data', categoria: 'fornitore' }
+    : { testo: 'f-ente', hidden: 'f-contatto-id', suggest: 'f-ente-suggest',
+        legato: 'f-contatto-legato', gruppo: 'f-gruppo', scadenza: 'f-scadenza',
+        data: 'f-data', categoria: 'fornitore' }
+}
+
+function chiudiSuggerimenti(prefix) {
+  var c = rubricaCampi(prefix)
+  html(c.suggest, '')
+  rubricaSuggest = { prefix: null, list: [], hi: -1 }
+}
+
+async function rubricaSuggerisci(prefix) {
+  var c = rubricaCampi(prefix)
+  var q = getVal(c.testo).toLowerCase()
+
+  // Scrivere a mano scollega il contatto: il testo e il collegamento devono
+  // dire la stessa cosa, altrimenti si salva il nome di uno e l'id di un altro.
+  if (el(c.hidden) && el(c.hidden).value) {
+    var legatoNome = (contattiCache || []).filter(function (x) { return x.id === el(c.hidden).value })[0]
+    if (!legatoNome || contattoNome(legatoNome).toLowerCase() !== q) {
+      scollegaContatto(prefix, true)
+    }
+  }
+
+  if (q.length < 2) { chiudiSuggerimenti(prefix); return }
+
+  try { await loadContatti() } catch (e) { /* la ricerca è un aiuto, non un requisito */ }
+
+  var termini = q.split(/\s+/)
+  var trovati = (contattiCache || []).filter(function (x) {
+    if (x.attivo === false) return false
+    var hay = (contattoNome(x) + ' ' + (x.citta || '') + ' ' + (x.email || '')).toLowerCase()
+    return termini.every(function (t) { return hay.indexOf(t) !== -1 })
+  }).slice(0, 8)
+
+  var out = trovati.map(function (x, i) {
+    return '<button type="button" class="suggest-item" role="option"' +
+           ' onclick="scegliContatto(\'' + prefix + '\', \'' + x.id + '\')">' +
+           esc(contattoNome(x)) +
+           '<span class="s-sub">' + esc(contattoSub(x) || x.categoria) + '</span>' +
+           '</button>'
+  }).join('')
+
+  // La creazione al volo è sempre in fondo: si crea solo se davvero non c'è.
+  out += '<button type="button" class="suggest-item suggest-new"' +
+         ' onclick="creaContattoAlVolo(\'' + prefix + '\')">' +
+         '➕ Crea «' + esc(getVal(c.testo)) + '» come nuovo contatto' +
+         '<span class="s-sub">lo salva in rubrica e lo collega a questo documento</span>' +
+         '</button>'
+
+  html(c.suggest, out)
+  rubricaSuggest = { prefix: prefix, list: trovati, hi: -1 }
+}
+
+// Frecce su/giù per scorrere, Invio per scegliere, Esc per chiudere.
+function rubricaTasti(event, prefix) {
+  var c = rubricaCampi(prefix)
+  var box = el(c.suggest)
+  if (!box || !box.innerHTML) return
+  var items = box.querySelectorAll('.suggest-item')
+  if (!items.length) return
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    var n = items.length
+    rubricaSuggest.hi = (event.key === 'ArrowDown')
+      ? (rubricaSuggest.hi + 1) % n
+      : (rubricaSuggest.hi - 1 + n) % n
+    for (var i = 0; i < n; i++) items[i].classList.toggle('hi', i === rubricaSuggest.hi)
+    items[rubricaSuggest.hi].scrollIntoView({ block: 'nearest' })
+  } else if (event.key === 'Enter' && rubricaSuggest.hi >= 0) {
+    event.preventDefault()
+    items[rubricaSuggest.hi].click()
+  } else if (event.key === 'Escape') {
+    chiudiSuggerimenti(prefix)
+  }
+}
+
+// Selezione di un contatto: compila da solo il gruppo predefinito e calcola la
+// scadenza. Entrambi restano modificabili — sono proposte, non imposizioni.
+async function scegliContatto(prefix, id) {
+  var c = rubricaCampi(prefix)
+  var x = (contattiCache || []).filter(function (k) { return k.id === id })[0]
+  if (!x) return
+
+  if (el(c.testo))  el(c.testo).value = contattoNome(x)
+  if (el(c.hidden)) el(c.hidden).value = id
+  chiudiSuggerimenti(prefix)
+
+  var compilati = []
+
+  // Gruppo predefinito: si propone solo se il campo è ancora vuoto, per non
+  // sovrascrivere una scelta già fatta a mano.
+  if (x.gruppo_default && el(c.gruppo)) {
+    await riempiSelectGruppi(c.gruppo, el(c.gruppo).value || x.gruppo_default)
+    if (!el(c.gruppo).value) el(c.gruppo).value = x.gruppo_default
+    if (el(c.gruppo).value === x.gruppo_default) compilati.push('gruppo ' + x.gruppo_default)
+  }
+
+  // Scadenza = data documento + giorni di pagamento del contatto.
+  // Riusa addDays(), la stessa funzione della scadenza fattura: un solo posto
+  // dove il calcolo puo' sbagliare, non due.
+  if (x.giorni_pagamento != null && el(c.scadenza) && !el(c.scadenza).value) {
+    var scad = addDays(getVal(c.data), x.giorni_pagamento)
+    if (scad) {
+      el(c.scadenza).value = scad
+      compilati.push('scadenza fra ' + x.giorni_pagamento + ' giorni')
+    }
+  }
+
+  renderContattoLegato(prefix, x, compilati)
+}
+
+// Riquadro sotto il campo: dice quale contatto è collegato e cosa è stato
+// compilato in automatico. Testo esplicito, non un colore.
+function renderContattoLegato(prefix, x, compilati) {
+  var c = rubricaCampi(prefix)
+  if (!x) { html(c.legato, ''); return }
+  var extra = (compilati && compilati.length)
+    ? '<span class="auto-hint">✨ compilato in automatico: ' + esc(compilati.join(', ')) + ' — modificabile</span>'
+    : ''
+  html(c.legato,
+    '<div class="contatto-legato">' +
+      '<span aria-hidden="true">🔗</span>' +
+      '<span>Collegato in rubrica: <strong>' + esc(contattoNome(x)) + '</strong></span>' +
+      extra +
+      '<button type="button" class="cl-x" onclick="scollegaContatto(\'' + prefix + '\')">Scollega</button>' +
+    '</div>')
+}
+
+function scollegaContatto(prefix, silenzioso) {
+  var c = rubricaCampi(prefix)
+  if (el(c.hidden)) el(c.hidden).value = ''
+  html(c.legato, '')
+  if (!silenzioso && el(c.testo)) el(c.testo).focus()
+}
+
+// Creazione al volo: si apre la scheda già compilata con quello che si stava
+// scrivendo. Al salvataggio si torna al form di partenza, con il contatto
+// collegato: non si perde il documento a metà.
+var rubricaRitorno = null   // {prefix, page} da cui si è partiti
+
+async function creaContattoAlVolo(prefix) {
+  var c = rubricaCampi(prefix)
+  var testo = getVal(c.testo)
+  chiudiSuggerimenti(prefix)
+  rubricaRitorno = { prefix: prefix, page: currentPage }
+  showPage('rubrica')
+  await initRubricaPage()
+  await nuovoContatto(c.categoria)
+  if (el('c-ragione')) el('c-ragione').value = testo
+  showContattoBanner('warn',
+    'Stai creando un contatto al volo. Appena lo salvi torni al documento, con il contatto già collegato.')
+}
+
+// ── Stato pagamento sul form movimento ───────────────────────────────────────
+
+function onMovStatoChange() {
+  var pagato = getVal('f-stato-pagamento') === 'pagato'
+  var grp = el('f-data-pagamento-group')
+  if (grp) grp.style.display = pagato ? 'block' : 'none'
+  // Proposta, non obbligo: se segno pagato e non c'è data, uso quella del movimento
+  if (pagato && el('f-data-pagamento') && !getVal('f-data-pagamento')) {
+    el('f-data-pagamento').value = getVal('f-data') || ''
+  }
+  var hint = el('f-stato-hint')
+  if (hint) {
+    hint.textContent = pagato
+      ? 'Il movimento non comparirà fra le scadenze da pagare.'
+      : 'Comparirà fra le spese da pagare, con la sua scadenza.'
+  }
+}
+
+// Regola identica al backfill della FASE 1: una spesa con data passata si
+// considera già saldata, una con data futura no. Fra un arretrato fittizio
+// (visibile e correggibile) e una spesa che sparisce, si sceglie il visibile.
+function proponiStatoDaData() {
+  var d = getVal('f-data')
+  if (!d || !el('f-stato-pagamento')) return
+  var oggi = oggiISO()
+  el('f-stato-pagamento').value = (d <= oggi) ? 'pagato' : 'aperto'
+  onMovStatoChange()
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 2 — Scarica PDF della fattura di vendita
+// Usa il CSS di stampa già esistente (@media print): il risultato è lo stesso
+// identico di Ctrl+P, senza librerie aggiuntive e senza un secondo impaginatore
+// da tenere allineato.
+// Il nome del file proposto dal browser viene dal titolo del documento: lo
+// cambiamo un attimo prima di stampare e lo rimettiamo subito dopo.
+// NOTA: nessuna pagina web può salvare un PDF senza passare dalla finestra di
+// stampa — è una protezione del browser. Qui la finestra si apre già con il
+// nome giusto e la destinazione «Salva come PDF» da scegliere una volta sola.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// «Fattura_2026-003_Skinner.pdf»: niente spazi, niente accenti, niente
+// caratteri che i file system rifiutano.
+function nomeFilePdfFattura(f) {
+  if (!f) return 'Fattura'
+  var tipo = (f.tipo === 'nota_credito') ? 'NotaCredito' : 'Fattura'
+  var num  = f.numero || 'bozza'
+  var chi  = (f.cliente_nome || '')
+    .normalize ? (f.cliente_nome || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '') : (f.cliente_nome || '')
+  // Solo la prima parola del cliente: il nome del file resta corto e leggibile
+  chi = chi.replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/)[0] || ''
+  return [tipo, num, chi].filter(Boolean).join('_').replace(/\s+/g, '_')
+}
+
+function scaricaFatturaPDF() {
+  var f = currentDetailFattura
+  var nome = nomeFilePdfFattura(f)
+  var titoloPrima = document.title
+  document.title = nome
+  // Il ripristino va fatto dopo la stampa, non subito: alcuni browser leggono
+  // il titolo quando la finestra si è già aperta.
+  var ripristina = function () {
+    document.title = titoloPrima
+    window.removeEventListener('afterprint', ripristina)
+  }
+  window.addEventListener('afterprint', ripristina)
+  window.print()
+  // Rete di sicurezza: se «afterprint» non arriva (succede su qualche browser),
+  // il titolo torna comunque a posto.
+  setTimeout(ripristina, 60000)
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -4423,6 +5123,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'export')      { initExportPage() }
       if (pageId === 'fatture')     { initFatturePage() }
       if (pageId === 'acquisti')    { initAcquistiPage() }
+      if (pageId === 'rubrica')     { initRubricaPage() }
       if (pageId === 'impostazioni'){ initImpostazioniPage() }
       if (pageId === 'setup')       { /* già caricata */ }
     })
@@ -4430,7 +5131,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // Imposta data di default nel form (oggi)
   var fData = el('f-data')
-  if (fData) { fData.value = new Date().toISOString().split('T')[0] }
+  if (fData) { fData.value = oggiISO() }
 
   // Chiudi le modali cliccando lo sfondo o premendo Esc
   var clsOverlay = el('classify-overlay')
@@ -4519,6 +5220,29 @@ function closeSidebar() {
   var btn = document.getElementById('hamburger-btn')
   if (btn) btn.setAttribute('aria-expanded', 'false')
 }
+
+// FASE 2 — il menu dei suggerimenti della rubrica si chiude cliccando altrove.
+// Senza questo resterebbe aperto sopra il resto del modulo.
+document.addEventListener('click', function (ev) {
+  ['f', 'a'].forEach(function (prefix) {
+    var c = rubricaCampi(prefix)
+    var box = el(c.suggest)
+    if (!box || !box.innerHTML) return
+    var campo = el(c.testo)
+    if (box.contains(ev.target) || (campo && campo === ev.target)) return
+    html(c.suggest, '')
+  })
+})
+
+// La data del movimento decide lo stato proposto: passata = gia' saldata,
+// futura = ancora da pagare. Stessa regola del backfill della FASE 1.
+document.addEventListener('DOMContentLoaded', function () {
+  var d = el('f-data')
+  if (d) d.addEventListener('change', function () {
+    // solo su un movimento nuovo: in modifica lo stato e' quello salvato
+    if (!editingMovimentoId) proponiStatoDaData()
+  })
+})
 
 // Listener AGGIUNTIVO (non tocca l'entry point esistente): chiude il menu quando
 // si tocca una voce, si fa logout, o si torna a larghezza desktop.
