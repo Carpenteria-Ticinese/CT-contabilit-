@@ -256,6 +256,9 @@ async function doLogin() {
     showPage('setup')
     runSetupCheck()
     await refreshDaClassificareCount()
+    // FASE 4 — badge delle scadenze e, se serve, la finestrella di riepilogo
+    await refreshScadenzeCount()
+    forseMostraFinestraScadenze()
   } catch (e) {
     if (errDiv) { errDiv.style.display = 'flex' }
     if (errMsg) { errMsg.textContent = e.message || 'Errore di accesso.' }
@@ -2738,8 +2741,10 @@ async function setIncassata(id, toIncassata) {
       : { stato_pagamento: 'aperto', data_pagamento: null }
     const { error } = await sb.from('tm_conta_fatture').update(patch).eq('id', id).eq('azienda_id', currentAziendaId).select()
     if (error) throw error
+    flussiCache = null            // FASE 4: badge e cruscotto devono rileggere
     await loadFattureList()
     await viewFattura(id)
+    await refreshScadenzeCount()
   } catch (e) {
     showFattureBanner('fatture-detail-banner', 'err', 'Aggiornamento incasso: ' + friendlyFatturaError(e))
   }
@@ -3769,7 +3774,9 @@ async function toggleAcquistoPagato(id, toPagato) {
       .update({ stato_pagamento: toPagato ? 'pagato' : 'aperto' })
       .eq('id', id).eq('azienda_id', currentAziendaId).select()
     if (error) throw error
+    flussiCache = null            // FASE 4: badge e cruscotto devono rileggere
     await loadAcquistiList()
+    await refreshScadenzeCount()
   } catch (e) {
     showFattureBanner('acquisti-list-banner', 'err', 'Aggiornamento stato: ' + (e.message || e))
   }
@@ -3833,6 +3840,13 @@ async function initImpostazioniPage() {
     showFattureBanner('impostazioni-banner', 'err', 'Azienda non trovata: rieffettua il login.')
     return
   }
+  // FASE 4 — le due voci degli avvisi stanno in tm_conta_impostazioni, non in
+  // tm_aziende: si leggono e si salvano a parte.
+  try {
+    await loadImpostazioniConta(true)
+    if (el('imp-giorni-preavviso')) el('imp-giorni-preavviso').value = giorniPreavviso()
+    if (el('imp-finestra-scadenze')) el('imp-finestra-scadenze').checked = finestraScadenzeAttiva()
+  } catch (_) { /* i dati della ditta si caricano lo stesso */ }
   html('impostazioni-banner', loadingRow('Caricamento dati azienda…'))
   try {
     const { data, error } = await sb.from('tm_aziende').select('*').eq('id', currentAziendaId).single()
@@ -3885,6 +3899,21 @@ function impostazioniMancanti(a) {
   return miss
 }
 
+// FASE 4 — salva le due voci degli avvisi. Separata dal salvataggio dei dati
+// ditta perche' finisce in un'altra tabella: se una fallisce, l'altra resta.
+async function salvaAvvisiScadenze() {
+  var g = el('imp-giorni-preavviso') ? parseInt(el('imp-giorni-preavviso').value, 10) : 7
+  if (isNaN(g) || g < 0 || g > 365) {
+    throw new Error('I giorni di preavviso devono essere un numero fra 0 e 365.')
+  }
+  var mostra = el('imp-finestra-scadenze') ? el('imp-finestra-scadenze').checked : true
+  await salvaImpostazioneConta('giorni_preavviso_scadenze', g,
+    'Giorni di anticipo con cui una scadenza entra nel blocco «in scadenza».')
+  await salvaImpostazioneConta('mostra_finestra_scadenze', mostra ? 'si' : 'no',
+    'si = la finestra di riepilogo compare una volta al giorno all-apertura.')
+  await refreshScadenzeCount()
+}
+
 async function saveImpostazioni() {
   if (!currentAziendaId) {
     showFattureBanner('impostazioni-banner', 'err', 'Azienda non trovata: rieffettua il login.')
@@ -3927,11 +3956,22 @@ async function saveImpostazioni() {
       return
     }
     aziendaInfo = data[0]
+
+    // FASE 4 — le due voci degli avvisi vanno in tm_conta_impostazioni.
+    // Se falliscono, i dati della ditta restano salvati: si avvisa e basta.
+    var avvisiOk = true
+    try { await salvaAvvisiScadenze() }
+    catch (eAvv) {
+      avvisiOk = false
+      showFattureBanner('impostazioni-banner', 'warn',
+        'Dati della ditta salvati. Gli avvisi scadenze NO: ' + (eAvv.message || eAvv))
+    }
+
     var missing = impostazioniMancanti(aziendaInfo)
     if (missing.length) {
       showFattureBanner('impostazioni-banner', 'warn', 'Salvato. ⚠️ Per fatture complete mancano ancora: ' + missing.join(', ') + '.')
-    } else {
-      showFattureBanner('impostazioni-banner', 'ok', 'Impostazioni salvate. I dati compaiono nelle nuove fatture.')
+    } else if (avvisiOk) {
+      showFattureBanner('impostazioni-banner', 'ok', 'Impostazioni salvate, avvisi scadenze compresi.')
     }
   } catch (e) {
     var m = e && e.message ? e.message : String(e)
@@ -5700,6 +5740,400 @@ async function preparaCampoGruppo() {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 4 — SCADENZE E AVVISI
+//
+// Legge SOLO v_conta_flussi, come il Cruscotto. Nessun SQL nuovo: la vista ha
+// gia' data_scadenza, stato_pagamento e verso.
+//
+// I giorni si scrivono a parole — «scaduto da 4 giorni», mai «-4»: un numero
+// negativo davanti a una data va interpretato, una frase no.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let impostazioniConta = null   // chiave -> valore, da tm_conta_impostazioni
+let scadenzeCache     = null   // ultimo calcolo dei blocchi (per il badge)
+
+// ── Impostazioni del modulo ──────────────────────────────────────────────────
+
+async function loadImpostazioniConta(force) {
+  if (impostazioniConta && !force) return impostazioniConta
+  impostazioniConta = {}
+  if (!currentAziendaId) return impostazioniConta
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_impostazioni')
+      .select('chiave, valore')
+      .eq('azienda_id', currentAziendaId)
+    if (error) throw error
+    ;(data || []).forEach(function (r) { impostazioniConta[r.chiave] = r.valore })
+  } catch (e) {
+    console.warn('Impostazioni contabilità non lette:', e.message || e)
+  }
+  return impostazioniConta
+}
+
+function impostazione(chiave, seManca) {
+  if (!impostazioniConta || impostazioniConta[chiave] == null) return seManca
+  return impostazioniConta[chiave]
+}
+
+function giorniPreavviso() {
+  var n = parseInt(impostazione('giorni_preavviso_scadenze', '7'), 10)
+  return (isNaN(n) || n < 0) ? 7 : n
+}
+
+function finestraScadenzeAttiva() {
+  return impostazione('mostra_finestra_scadenze', 'si') !== 'no'
+}
+
+async function salvaImpostazioneConta(chiave, valore, note) {
+  const { error } = await sb
+    .from('tm_conta_impostazioni')
+    .upsert({ azienda_id: currentAziendaId, chiave: chiave, valore: String(valore), note: note || null },
+            { onConflict: 'azienda_id,chiave' })
+    .select()
+  if (error) throw error
+  if (impostazioniConta) impostazioniConta[chiave] = String(valore)
+}
+
+// ── Aritmetica delle date ────────────────────────────────────────────────────
+
+// Differenza in giorni interi fra due date 'AAAA-MM-GG'.
+// Si passa da Date.UTC per la sola sottrazione: e' l'unico modo di non farsi
+// rovinare il conto dall'ora legale, che due volte l'anno accorcia o allunga
+// un giorno di un'ora e farebbe arrotondare male. Nessuna data viene MAI
+// formattata da qui: per quello ci sono dataISO() e oggiISO() della FASE 2.
+function diffGiorni(dataA, dataB) {
+  if (!dataA || !dataB) return null
+  var a = String(dataA).split('-'), b = String(dataB).split('-')
+  if (a.length < 3 || b.length < 3) return null
+  var ua = Date.UTC(+a[0], +a[1] - 1, +a[2])
+  var ub = Date.UTC(+b[0], +b[1] - 1, +b[2])
+  if (isNaN(ua) || isNaN(ub)) return null
+  return Math.round((ua - ub) / 86400000)
+}
+
+// I giorni a parole. Singolare e plurale corretti: «1 giorno», non «1 giorni».
+function giorniAParole(dataScadenza, oggi) {
+  var d = diffGiorni(dataScadenza, oggi)
+  if (d == null) return { testo: 'senza scadenza', cls: 'assente' }
+  if (d === 0)   return { testo: 'scade oggi', cls: 'oggi' }
+  if (d < 0) {
+    var n = -d
+    return { testo: 'scaduto da ' + n + (n === 1 ? ' giorno' : ' giorni'), cls: 'ritardo' }
+  }
+  return { testo: 'scade fra ' + d + (d === 1 ? ' giorno' : ' giorni'), cls: 'vicino' }
+}
+
+// ── I quattro blocchi ────────────────────────────────────────────────────────
+
+// Una riga senza data_scadenza non puo' stare in nessuno dei tre blocchi: senza
+// scadenza non c'e' modo di dire se e' in ritardo. Finisce nel blocco grigio,
+// che e' un invito a completare il dato, non un avviso.
+function calcolaScadenze(righe, oggi, preavviso) {
+  var b = {
+    scaduto:   { chiave: 'scaduto',   icona: '🔴', titolo: 'Scaduto da pagare',    righe: [], somma: 0 },
+    inScadenza:{ chiave: 'inScadenza',icona: '🟠', titolo: 'In scadenza',          righe: [], somma: 0 },
+    incasso:   { chiave: 'incasso',   icona: '🔵', titolo: 'Incasso non arrivato', righe: [], somma: 0 },
+    senzaData: { chiave: 'senzaData', icona: '⚪', titolo: 'Senza scadenza — da completare', righe: [], somma: 0 }
+  }
+  var limite = addDays(oggi, preavviso)
+
+  for (var i = 0; i < (righe || []).length; i++) {
+    var r = righe[i]
+    if (r.stato_pagamento !== 'aperto') continue
+    if (!confermata(r)) continue          // le righe da confermare non sono avvisi
+    var imp = safeNum(r.importo_totale) || 0
+
+    if (!r.data_scadenza) { b.senzaData.righe.push(r); b.senzaData.somma += imp; continue }
+
+    if (r.verso === 'uscita') {
+      if (r.data_scadenza < oggi) { b.scaduto.righe.push(r); b.scaduto.somma += imp }
+      else if (r.data_scadenza <= limite) { b.inScadenza.righe.push(r); b.inScadenza.somma += imp }
+      // oltre il preavviso: non e' ancora un avviso, non compare
+    } else {
+      // Un incasso e' «non arrivato» dal giorno DOPO la scadenza.
+      if (r.data_scadenza < oggi) { b.incasso.righe.push(r); b.incasso.somma += imp }
+    }
+  }
+
+  // La piu' urgente in cima: chi e' scaduto da piu' tempo, per primo.
+  ;['scaduto', 'inScadenza', 'incasso', 'senzaData'].forEach(function (k) {
+    b[k].righe.sort(function (x, y) {
+      return String(x.data_scadenza || '9999-12-31').localeCompare(String(y.data_scadenza || '9999-12-31'))
+    })
+  })
+  return b
+}
+
+// Il conteggio del badge: i TRE blocchi, senza il grigio.
+// Il blocco grigio e' un promemoria di compilazione, non una scadenza.
+function contaScadenzeUrgenti(b) {
+  return b.scaduto.righe.length + b.inScadenza.righe.length + b.incasso.righe.length
+}
+
+// ── La schermata ─────────────────────────────────────────────────────────────
+
+async function initScadenzePage() {
+  if (!currentAziendaId) {
+    showScadenzeBanner('err', 'Azienda non trovata: rieffettua il login.')
+    return
+  }
+  html('scad-blocchi', loadingRow('Caricamento scadenze…'))
+  try {
+    await loadImpostazioniConta(true)
+    await loadFlussi(true)
+    renderScadenze()
+    await refreshScadenzeCount()
+  } catch (e) {
+    html('scad-blocchi', '')
+    showScadenzeBanner('err', 'Scadenze non caricate: ' + (e.message || e))
+  }
+}
+
+function showScadenzeBanner(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html('scadenze-banner',
+    '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + esc(msg) + '</div>' +
+    '</div>')
+}
+
+function renderScadenze() {
+  var oggi = oggiISO()
+  var pre  = giorniPreavviso()
+  var b    = calcolaScadenze(flussiCache || [], oggi, pre)
+  scadenzeCache = b
+
+  var nota = el('scad-nota-preavviso-testo')
+  if (nota) {
+    nota.textContent = 'Una fattura entra fra quelle «in scadenza» ' + pre +
+      (pre === 1 ? ' giorno' : ' giorni') + ' prima della data di scadenza. ' +
+      'Si cambia da «Impostazioni ditta».'
+  }
+
+  html('scad-blocchi',
+    bloccoScadenze(b.scaduto,    'rosso',   'Fatture da pagare la cui data di scadenza è già passata.') +
+    bloccoScadenze(b.inScadenza, 'arancio', 'Da pagare entro i prossimi ' + pre + (pre === 1 ? ' giorno' : ' giorni') + '.') +
+    bloccoScadenze(b.incasso,    'blu',     'Fatture emesse e non ancora incassate, con la scadenza già passata.') +
+    bloccoScadenze(b.senzaData,  'grigio',  'Documenti aperti a cui manca la data di scadenza: senza quella non si può dire se sono in ritardo.')
+  )
+}
+
+function bloccoScadenze(blocco, colore, spiegazione) {
+  var n = blocco.righe.length
+  var conta = (n === 0) ? 'nessun documento' : (n === 1 ? '1 documento' : n + ' documenti')
+
+  var corpo = n
+    ? blocco.righe.map(function (r) { return rigaScadenza(r, blocco.chiave) }).join('')
+    : '<div class="scad-vuoto">Nessuna scadenza in questo blocco. ' + esc(spiegazione) + '</div>'
+
+  return '<div class="scad-blocco ' + colore + '">' +
+    '<div class="scad-testa">' +
+      '<span aria-hidden="true">' + blocco.icona + '</span>' +
+      '<span class="scad-titolo">' + esc(blocco.titolo.toUpperCase()) + '</span>' +
+      '<span class="scad-conta">' + esc(conta) + '</span>' +
+      (n ? '<span class="scad-somma">' + esc(fmtNumIt(blocco.somma)) + ' CHF</span>' : '') +
+    '</div>' +
+    '<div class="scad-corpo">' + corpo + '</div>' +
+  '</div>'
+}
+
+function rigaScadenza(r, blocco) {
+  var oggi = oggiISO()
+  var q = giorniAParole(r.data_scadenza, oggi)
+  var e = etichettaPagamento(r.verso, 'pagato')     // «Pagato» o «Incassato»
+
+  var doc = []
+  if (r.descrizione) doc.push(r.descrizione)
+  else doc.push(r.verso === 'entrata' ? 'Fattura' : 'Documento')
+  if (r.data_documento) doc.push('del ' + fmtDate(r.data_documento))
+  if (r.conto_codice) doc.push('conto ' + r.conto_codice + ' ' + (r.conto_descrizione || ''))
+
+  var quando = r.data_scadenza
+    ? 'Scadenza ' + fmtDate(r.data_scadenza) + ' — ' + q.testo
+    : 'Nessuna data di scadenza registrata'
+
+  return '<div class="scad-riga">' +
+    // Nel blocco grigio l'icona resta neutra: li' non c'e' nessuna urgenza,
+    // manca solo un dato. Un pallino rosso direbbe il contrario.
+    '<span class="scad-riga-icona" aria-hidden="true">' +
+      (blocco === 'senzaData' ? '⚪' : (r.verso === 'entrata' ? '🔵' : '🔴')) + '</span>' +
+    '<div class="scad-riga-main">' +
+      '<div class="scad-nome">' + esc(r.controparte_nome || '—') + '</div>' +
+      '<div class="scad-doc">' + esc(doc.join(' · ')) + '</div>' +
+      '<div class="scad-quando ' + q.cls + '">' + esc(quando) + '</div>' +
+    '</div>' +
+    '<div class="scad-riga-imp">' + esc(fmtNumIt(safeNum(r.importo_totale) || 0)) + ' CHF</div>' +
+    '<div class="scad-riga-azioni">' +
+      '<button type="button" class="azione-rapida" ' +
+        'onclick="segnaSaldatoDaScadenze(\'' + esc(r.tabella_origine) + '\', \'' + esc(r.id_origine) + '\', \'' + esc(r.verso) + '\')">' +
+        '✅ Segna ' + esc(e.testo.toLowerCase()) + '</button>' +
+      '<button type="button" class="azione-rapida" ' +
+        'onclick="apriDocumentoScadenza(\'' + esc(r.tabella_origine) + '\', \'' + esc(r.id_origine) + '\')">' +
+        '✏️ Apri</button>' +
+    '</div>' +
+  '</div>'
+}
+
+// ── Le azioni ────────────────────────────────────────────────────────────────
+
+// Scrive stato_pagamento e data_pagamento sulla tabella di origine.
+// Sulle fatture di vendita questi due campi sono nella whitelist del trigger di
+// immutabilita' (FASE 1): l'UPDATE passa. Se arrivasse un errore di
+// immutabilita' vorrebbe dire che si sta scrivendo un campo sbagliato — e in
+// quel caso si deve correggere la chiamata, non aggirare il trigger.
+async function segnaSaldatoDaScadenze(tabella, id, verso) {
+  if (!currentAziendaId) return
+  var e = etichettaPagamento(verso, 'pagato')
+  try {
+    const { error } = await sb.from(tabella)
+      .update({ stato_pagamento: 'pagato', data_pagamento: oggiISO() })
+      .eq('id', id)
+      .eq('azienda_id', currentAziendaId)
+      .select()
+    if (error) throw error
+
+    // Si aggiorna la copia in memoria: la riga sparisce dal blocco e i conteggi
+    // si rifanno senza ricaricare la pagina.
+    ;(flussiCache || []).forEach(function (r) {
+      if (r.id_origine === id) { r.stato_pagamento = 'pagato'; r.data_pagamento = oggiISO() }
+    })
+    renderScadenze()
+    await refreshScadenzeCount()
+    showScadenzeBanner('ok', 'Segnato come ' + e.testo.toLowerCase() + ' in data odierna.')
+  } catch (err) {
+    var m = String(err.message || err)
+    if (m.indexOf('sola lettura') !== -1 || m.indexOf('immutabil') !== -1) {
+      showScadenzeBanner('err',
+        'Il database ha rifiutato la modifica come se si stesse cambiando un dato congelato della fattura. ' +
+        'Non è un problema da aggirare: segnalalo, perché vuol dire che questa azione sta scrivendo un campo sbagliato. ' +
+        'Messaggio originale: ' + m)
+    } else {
+      showScadenzeBanner('err', 'Non salvato: ' + m)
+    }
+  }
+}
+
+// Porta il documento nella sua schermata.
+async function apriDocumentoScadenza(tabella, id) {
+  try {
+    if (tabella === 'tm_conta_fatture') {
+      showPage('fatture')
+      await initFatturePage()
+      await viewFattura(id)
+    } else if (tabella === 'tm_conta_fatture_acquisto') {
+      showPage('acquisti')
+      await initAcquistiPage()
+      await viewAcquisto(id)
+    } else {
+      // movimenti propri: si aprono direttamente in modifica
+      await startEditMovimento(id)
+    }
+  } catch (e) {
+    showScadenzeBanner('err', 'Impossibile aprire il documento: ' + (e.message || e))
+  }
+}
+
+// ── FASE 4B — il badge nel menu ──────────────────────────────────────────────
+// Stessa classe .nav-badge di «Da classificare», stesso posto nella voce.
+// Unica differenza: a zero non c'e' nessun pallino.
+async function refreshScadenzeCount() {
+  if (!currentUser || !currentAziendaId) return 0
+  try {
+    await loadImpostazioniConta()
+    var righe = await loadFlussi()
+    var b = calcolaScadenze(righe, oggiISO(), giorniPreavviso())
+    scadenzeCache = b
+    var n = contaScadenzeUrgenti(b)
+
+    var badge = el('nav-badge-scadenze')
+    if (badge) {
+      if (n > 0) {
+        badge.style.display = ''
+        badge.textContent = String(n)
+        badge.setAttribute('aria-label', n === 1 ? '1 scadenza da controllare' : n + ' scadenze da controllare')
+      } else {
+        // Zero non si mostra: un pallino con lo 0 e' rumore.
+        badge.style.display = 'none'
+        badge.textContent = ''
+        badge.removeAttribute('aria-label')
+      }
+    }
+    return n
+  } catch (_) { return 0 }   // non bloccante: il badge non deve fermare l'app
+}
+
+// ── FASE 4C — la finestrella all'apertura ────────────────────────────────────
+
+const CHIAVE_VISTA_IL = 'ct_scadenze_vista_il'
+
+// localStorage e non sessionStorage: sessionStorage si azzera a ogni chiusura
+// del browser, e la finestra tornerebbe dieci volte al giorno.
+function scadenzeGiaVisteOggi() {
+  try { return localStorage.getItem(CHIAVE_VISTA_IL) === oggiISO() }
+  catch (_) { return false }     // navigazione privata: si comporta come «non vista»
+}
+
+function segnaScadenzeViste() {
+  try { localStorage.setItem(CHIAVE_VISTA_IL, oggiISO()) } catch (_) { /* non essenziale */ }
+}
+
+async function forseMostraFinestraScadenze() {
+  // 3. solo a utente autenticato, mai sulla pagina di accesso
+  if (!currentUser || !currentAziendaId || currentPage === 'login') return
+  // 2. non e' gia' comparsa oggi
+  if (scadenzeGiaVisteOggi()) return
+  await loadImpostazioniConta()
+  if (!finestraScadenzeAttiva()) return
+
+  var n = await refreshScadenzeCount()
+  // 1. c'e' almeno una riga nei tre blocchi. Se non c'e' niente in sospeso,
+  //    la finestra non compare: nessuno vuole un avviso che dice «tutto bene».
+  if (!n) return
+
+  mostraFinestraScadenze(scadenzeCache)
+}
+
+function mostraFinestraScadenze(b) {
+  if (!b) return
+  // Solo il riepilogo: la finestra si legge in due secondi, il dettaglio sta
+  // nella schermata. Le righe a zero non si mostrano.
+  var righe = [
+    { icona: '🔴', testo: etichettaBlocco(b.scaduto.righe.length, 'fattura scaduta', 'fatture scadute'), dato: b.scaduto },
+    { icona: '🟠', testo: etichettaBlocco(b.inScadenza.righe.length, 'in scadenza', 'in scadenza'),      dato: b.inScadenza },
+    { icona: '🔵', testo: etichettaBlocco(b.incasso.righe.length, 'incasso non arrivato', 'incassi non arrivati'), dato: b.incasso }
+  ].filter(function (x) { return x.dato.righe.length > 0 })
+
+  html('scad-modal-body', righe.map(function (x) {
+    return '<div class="scad-sommario-riga">' +
+      '<span aria-hidden="true">' + x.icona + '</span>' +
+      '<span class="scad-sommario-testo">' + esc(x.testo) + '</span>' +
+      '<span class="scad-sommario-imp">' + esc(fmtNumIt(x.dato.somma)) + ' CHF</span>' +
+    '</div>'
+  }).join(''))
+
+  var ov = el('scadenze-overlay')
+  if (ov) ov.style.display = 'flex'
+  segnaScadenzeViste()      // segnata come vista appena compare, non alla chiusura
+}
+
+function etichettaBlocco(n, singolare, plurale) {
+  return n + ' ' + (n === 1 ? singolare : plurale)
+}
+
+function chiudiFinestraScadenze() {
+  var ov = el('scadenze-overlay')
+  if (ov) ov.style.display = 'none'
+}
+
+function vaiAlleScadenze() {
+  chiudiFinestraScadenze()
+  showPage('scadenze')
+  initScadenzePage()
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -5716,6 +6150,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'acquisti')    { initAcquistiPage() }
       if (pageId === 'rubrica')     { initRubricaPage() }
       if (pageId === 'cruscotto')   { initCruscottoPage() }
+      if (pageId === 'scadenze')    { initScadenzePage() }
       if (pageId === 'impostazioni'){ initImpostazioniPage() }
       if (pageId === 'setup')       { /* già caricata */ }
     })
@@ -5743,7 +6178,10 @@ document.addEventListener('DOMContentLoaded', function () {
     var so = el('storia-overlay')
     if (so && so.style.display !== 'none') { closeStoria(); return }
     var o = el('classify-overlay')
-    if (o && o.style.display !== 'none') closeClassifyPanel()
+    if (o && o.style.display !== 'none') { closeClassifyPanel(); return }
+    // FASE 4 — la finestrella delle scadenze si chiude anche con Esc
+    var sc = el('scadenze-overlay')
+    if (sc && sc.style.display !== 'none') chiudiFinestraScadenze()
   })
 
   // Mostra istruzioni SQL (visibili prima dell'auth)
@@ -5756,6 +6194,7 @@ document.addEventListener('DOMContentLoaded', function () {
       loadAziendaId().then(function () {
         updateSidebarAuth()
         refreshDaClassificareCount()
+        refreshScadenzeCount()
         if (currentPage === 'login') {
           showPage('setup')
           runSetupCheck()
@@ -5767,6 +6206,10 @@ document.addEventListener('DOMContentLoaded', function () {
       updateSidebarAuth()
       var badgeNav = el('nav-badge-movimenti')
       if (badgeNav) badgeNav.textContent = '0'
+      var badgeScad = el('nav-badge-scadenze')
+      if (badgeScad) { badgeScad.style.display = 'none'; badgeScad.textContent = '' }
+      flussiCache = null
+      impostazioniConta = null
       showPage('login')
     }
   })
@@ -5781,6 +6224,8 @@ document.addEventListener('DOMContentLoaded', function () {
         showPage('setup')
         runSetupCheck()
         refreshDaClassificareCount()
+        // FASE 4 — all'avvio: badge, e la finestrella se c'e' qualcosa in sospeso
+        refreshScadenzeCount().then(function () { forseMostraFinestraScadenze() })
       })
     } else {
       showPage('login')
