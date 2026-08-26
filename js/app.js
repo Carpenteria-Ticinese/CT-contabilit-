@@ -163,6 +163,26 @@ function fmtImporto(importo, valuta) {
   return esc(n.toLocaleString('it-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (valuta || 'CHF'))
 }
 
+// Numero in formato italiano: 15.000,00 — punto migliaia, virgola decimali.
+// REGOLA FISSA del progetto: mai il formato svizzero 15'000.00.
+// Si passa da qui per ogni cifra mostrata nel cruscotto.
+function fmtNumIt(n) {
+  if (n == null || isNaN(n)) return '0,00'
+  // minimumGroupingDigits: 1 forza il punto anche sotto le cinque cifre.
+  // Senza, l'italiano scrive «1200,00» e mette il punto solo da 10.000 in su:
+  // due cifre uguali si leggerebbero in due modi diversi nella stessa colonna.
+  try {
+    return Number(n).toLocaleString('it-IT', {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+      useGrouping: true, minimumGroupingDigits: 1
+    })
+  } catch (_) {
+    // Browser che non conosce minimumGroupingDigits: si ripiega sul raggruppamento
+    // predefinito, che resta leggibile.
+    return Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  }
+}
+
 // Converte in numero finito oppure null (mai NaN che si propaga nei calcoli)
 function safeNum(v) {
   if (v == null || v === '') return null
@@ -755,7 +775,7 @@ async function ensureContiIva() {
   try {
     const { data, error } = await sb
       .from('tm_conta_piano_conti')
-      .select('id, codice_conto, descrizione, tipo, azienda_id, attivo')
+      .select('id, codice_conto, descrizione, tipo, azienda_id, attivo, gruppo_codice')
       .eq('paese', 'CH')
       .eq('attivo', true)
       .order('codice_conto')
@@ -977,6 +997,7 @@ async function openSingleClassify(m, prefill) {
   await ensureContiIva()
   await loadCantieri()
   el('cls-conto').innerHTML = buildContoOptions('', prefill ? prefill.conto_id : null)
+  preparaCampoGruppo()
   el('cls-iva').innerHTML = buildIvaOptions(prefill ? prefill.codice_iva_id : null)
   el('cls-cantiere').innerHTML = buildCantiereOptions(prefill ? prefill.cantiere_id : m.cantiere_id, true)
   setIvaInclusa(prefill ? (prefill.iva_inclusa !== false) : true)
@@ -1033,6 +1054,7 @@ async function openBulkPanel() {
   await ensureContiIva()
   await loadCantieri()
   el('cls-conto').innerHTML = buildContoOptions('', null)
+  preparaCampoGruppo()
   el('cls-iva').innerHTML = buildIvaOptions(null)
   el('cls-cantiere-comune').innerHTML = buildCantiereOptions(null, true)
   setIvaInclusa(true)
@@ -1077,6 +1099,8 @@ async function createCustomConto() {
       contiCache.sort(function (a, b) { return String(a.codice_conto).localeCompare(String(b.codice_conto)) })
     }
     el('cls-conto').innerHTML = buildContoOptions('', nuovo ? nuovo.id : null)
+    // Conto creato al volo: anche qui il gruppo si riallinea al nuovo conto.
+    aggiornaGruppoDaConto(true)
     if (el('cls-conto-search')) el('cls-conto-search').value = ''
     if (el('nc-codice')) el('nc-codice').value = ''
     if (el('nc-descrizione')) el('nc-descrizione').value = ''
@@ -1133,7 +1157,8 @@ async function suggestClassificazione(mov) {
 
 function applySuggestion(s) {
   if (!s) return
-  if (s.conto_id) el('cls-conto').innerHTML = buildContoOptions('', s.conto_id)
+  // Il suggerimento cambia il conto dopo l'apertura: il gruppo deve seguirlo.
+  if (s.conto_id) { el('cls-conto').innerHTML = buildContoOptions('', s.conto_id); aggiornaGruppoDaConto(true) }
   if (s.codice_iva_id) el('cls-iva').innerHTML = buildIvaOptions(s.codice_iva_id)
   setIvaInclusa(typeof s.iva_inclusa === 'boolean' ? s.iva_inclusa : true)
 
@@ -1203,6 +1228,10 @@ async function saveClassificazione() {
       .upsert(rows, { onConflict: 'origine_tipo,origine_id' })
       .select()
     if (error) throw error
+
+    // L'override del gruppo si scrive DOPO: la classificazione e' gia' salvata,
+    // e un errore qui non deve farla perdere.
+    await salvaOverrideGruppo(classifyMode === 'single' ? [classifyTargets[0]] : classifyTargets)
 
     closeClassifyPanel()
     if (currentPage === 'movimenti') await loadDaClassificare()
@@ -5109,6 +5138,568 @@ function scaricaFatturaPDF() {
   setTimeout(ripristina, 60000)
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 3 — CRUSCOTTO
+//
+// Legge SOLO v_conta_flussi. Mai le tre tabelle direttamente: se i totali si
+// calcolassero anche altrove, prima o poi darebbero numeri diversi.
+//
+// IL CRUSCOTTO E' DI CASSA. Il periodo si applica alla data in cui il denaro si
+// e' mosso (data_pagamento), non alla data del documento. Risponde a «quanto e'
+// uscito e quanto e' entrato in questo periodo».
+// Per questo i suoi totali NON coincidono con quelli della schermata Export,
+// che filtra per data del documento (competenza) e comprende anche spese e
+// regia di App Cantieri. Sono due domande diverse, non un errore.
+// Il confronto che invece deve tornare e' nel BLOCCO 7 di SQL_FASE3.sql.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let flussiCache    = null     // righe di v_conta_flussi per l'azienda corrente
+let cruscottoModo  = 'anno'   // 'anno' | 'trimestre' | 'mese' | 'custom'
+let ivaPeriodiCache = null    // periodi IVA (vuoto finche' CT non e' assoggettata)
+
+// ── Periodo ──────────────────────────────────────────────────────────────────
+
+// Calcolo puro del periodo: nessun accesso al DOM, cosi' lo usano sia il
+// Cruscotto sia l'Export senza che la stessa aritmetica sia scritta due volte.
+function calcolaPeriodo(modo, anno, trimestre, mese) {
+  anno = parseInt(anno, 10) || new Date().getFullYear()
+  if (modo === 'trimestre') {
+    var t = parseInt(trimestre, 10) || 1
+    var m1 = (t - 1) * 3 + 1
+    return { da: anno + '-' + pad2(m1) + '-01', a: ultimoGiornoMese(anno, m1 + 2) }
+  }
+  if (modo === 'mese') {
+    var m = parseInt(mese, 10) || 1
+    return { da: anno + '-' + pad2(m) + '-01', a: ultimoGiornoMese(anno, m) }
+  }
+  // anno intero: in Svizzera l'anno fiscale coincide con quello solare
+  return { da: anno + '-01-01', a: anno + '-12-31' }
+}
+
+function setCruscottoModo(modo) {
+  cruscottoModo = modo
+  var modi = ['anno', 'trimestre', 'mese', 'custom']
+  for (var i = 0; i < modi.length; i++) {
+    var b = el('cru-modo-' + modi[i])
+    if (b) { if (modi[i] === modo) b.classList.add('active'); else b.classList.remove('active') }
+  }
+  if (el('cru-anno-group'))      el('cru-anno-group').style.display      = (modo !== 'custom') ? 'block' : 'none'
+  if (el('cru-trimestre-group')) el('cru-trimestre-group').style.display = (modo === 'trimestre') ? 'block' : 'none'
+  if (el('cru-mese-group'))      el('cru-mese-group').style.display      = (modo === 'mese') ? 'block' : 'none'
+  if (modo === 'custom') renderCruscotto()
+  else applicaPeriodoCruscotto()
+}
+
+function applicaPeriodoCruscotto() {
+  if (cruscottoModo === 'custom') return
+  var p = calcolaPeriodo(cruscottoModo, getVal('cru-anno'), getVal('cru-trimestre'), getVal('cru-mese'))
+  setVal('cru-da', p.da)
+  setVal('cru-a', p.a)
+  renderCruscotto()
+}
+
+function onPeriodoCruscottoManuale() { setCruscottoModo('custom') }
+
+function periodoCruscotto() { return { da: getVal('cru-da'), a: getVal('cru-a') } }
+
+// ── Dati ─────────────────────────────────────────────────────────────────────
+
+async function loadFlussi(force) {
+  if (flussiCache && !force) return flussiCache
+  if (!currentAziendaId) { flussiCache = []; return flussiCache }
+  const { data, error } = await sb
+    .from('v_conta_flussi')
+    .select('id_origine, tabella_origine, origine_tipo, verso, controparte_nome, descrizione,' +
+            ' data_documento, data_scadenza, importo_totale, importo_iva, stato_pagamento,' +
+            ' data_pagamento, conto_codice, conto_descrizione, gruppo_codice, gruppo_manuale,' +
+            ' gruppo_da_conto, stato_conferma')
+    .eq('azienda_id', currentAziendaId)
+  if (error) throw error
+  flussiCache = data || []
+  return flussiCache
+}
+
+async function loadIvaPeriodi(force) {
+  if (ivaPeriodiCache && !force) return ivaPeriodiCache
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_iva_periodi')
+      .select('id, valido_da, valido_a, metodo, aliquota_saldo, criterio')
+      .eq('azienda_id', currentAziendaId)
+      .order('valido_da')
+    if (error) throw error
+    ivaPeriodiCache = data || []
+  } catch (e) {
+    ivaPeriodiCache = []
+    console.warn('Periodi IVA non letti:', e.message || e)
+  }
+  return ivaPeriodiCache
+}
+
+// La data che conta per la cassa. Ripiego su data_documento per le fatture
+// storiche: fino alla FASE 1 l'incasso non registrava nessuna data, quindi il
+// dato non esiste. Le righe cosi' ottenute vengono marcate nell'elenco.
+function dataCassa(r) { return r.data_pagamento || r.data_documento }
+function haRipiegoData(r) { return !r.data_pagamento && r.stato_pagamento === 'pagato' }
+
+// Nulla che sia «da confermare» entra nei totali: oggi nessuno lo produce, lo
+// fara' il Ponte AI della FASE 5. Se il filtro mancasse, i totali cambierebbero
+// da soli il giorno in cui quella fase arriva.
+function confermata(r) { return r.stato_conferma !== 'da_confermare' }
+
+// ── Calcolo dei quattro totali ───────────────────────────────────────────────
+
+function calcolaTotaliCruscotto(righe, da, a) {
+  var t = {
+    speso:       { importo: 0, righe: [] },
+    incassato:   { importo: 0, righe: [] },
+    daPagare:    { importo: 0, righe: [] },
+    daIncassare: { importo: 0, righe: [] }
+  }
+  for (var i = 0; i < righe.length; i++) {
+    var r = righe[i]
+    if (!confermata(r)) continue
+    var imp = safeNum(r.importo_totale) || 0
+
+    if (r.stato_pagamento === 'pagato') {
+      // SPESO e INCASSATO guardano il periodo: dicono quanto si e' mosso.
+      if (!inPeriodo(dataCassa(r), da, a)) continue
+      if (r.verso === 'uscita')  { t.speso.importo += imp;     t.speso.righe.push(r) }
+      else                       { t.incassato.importo += imp; t.incassato.righe.push(r) }
+    } else {
+      // DA PAGARE e DA INCASSARE ignorano il periodo: sono una fotografia di
+      // oggi. «Quanto devo ancora» non e' una domanda su un intervallo.
+      if (r.verso === 'uscita')  { t.daPagare.importo += imp;    t.daPagare.righe.push(r) }
+      else                       { t.daIncassare.importo += imp; t.daIncassare.righe.push(r) }
+    }
+  }
+  return t
+}
+
+// Le barre dei gruppi seguono la stessa regola di cassa dei riquadri: sono la
+// scomposizione di SPESO, quindi devono sommare esattamente a SPESO.
+function calcolaGruppi(righeSpeso) {
+  var per = {}
+  for (var i = 0; i < righeSpeso.length; i++) {
+    var r = righeSpeso[i]
+    var k = r.gruppo_codice || '__nessuno__'
+    if (!per[k]) per[k] = { codice: r.gruppo_codice || null, importo: 0, righe: [] }
+    per[k].importo += safeNum(r.importo_totale) || 0
+    per[k].righe.push(r)
+  }
+  var lista = Object.keys(per).map(function (k) { return per[k] })
+  // Ordinate per importo. «Non assegnato» sempre in fondo, qualunque sia la cifra:
+  // non e' un gruppo, e' un lavoro che manca.
+  lista.sort(function (x, y) {
+    if (!x.codice && y.codice) return 1
+    if (x.codice && !y.codice) return -1
+    return y.importo - x.importo
+  })
+  return lista
+}
+
+function nomeGruppo(codice) {
+  if (!codice) return 'Non assegnato'
+  var g = (gruppiCache || []).filter(function (x) { return x.codice === codice })[0]
+  return g ? g.nome : codice
+}
+
+// ── Disegno della schermata ──────────────────────────────────────────────────
+
+async function initCruscottoPage() {
+  if (!currentAziendaId) {
+    showCruscottoBanner('err', 'Azienda non trovata: rieffettua il login.')
+    return
+  }
+  html('cru-riquadri', loadingRow('Caricamento movimenti…'))
+  try {
+    await loadGruppi()
+    await loadIvaPeriodi(true)
+    await loadFlussi(true)
+    popolaAnniCruscotto()
+    setCruscottoModo('anno')     // default all'apertura: anno in corso
+  } catch (e) {
+    html('cru-riquadri', '')
+    showCruscottoBanner('err', 'Cruscotto non caricato: ' + (e.message || e))
+  }
+}
+
+function popolaAnniCruscotto() {
+  var sel = el('cru-anno')
+  if (!sel) return
+  var anni = {}
+  ;(flussiCache || []).forEach(function (r) {
+    var d = dataCassa(r)
+    if (d && String(d).length >= 4) anni[String(d).slice(0, 4)] = true
+  })
+  anni[String(new Date().getFullYear())] = true   // l'anno corrente c'e' sempre
+  var lista = Object.keys(anni).sort().reverse()
+  var prec = sel.value
+  sel.innerHTML = lista.map(function (y) { return '<option value="' + y + '">' + y + '</option>' }).join('')
+  sel.value = (prec && lista.indexOf(prec) !== -1) ? prec : String(new Date().getFullYear())
+}
+
+function showCruscottoBanner(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html('cruscotto-banner',
+    '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + esc(msg) + '</div>' +
+    '</div>')
+}
+
+function renderCruscotto() {
+  if (!flussiCache) return
+  var p = periodoCruscotto()
+  var t = calcolaTotaliCruscotto(flussiCache, p.da, p.a)
+
+  renderRiquadri(t)
+  renderIvaRiga(p)
+  renderGruppi(t.speso)
+  chiudiElencoCruscotto()
+}
+
+// Un riquadro: etichetta, importo con valuta scritta, numero di documenti.
+// Mai un numero da solo, mai il solo colore a dare l'informazione.
+function boxCruscotto(id, cls, icona, etichetta, dato, notaVuoto) {
+  var n = dato.righe.length
+  var vuoto = (n === 0)
+  var conta = vuoto ? 'nessun documento' : (n === 1 ? '1 documento' : n + ' documenti')
+  return '<button type="button" class="cru-box ' + cls + (vuoto ? ' vuoto' : '') + '"' +
+           ' id="' + id + '"' +
+           (vuoto ? ' aria-disabled="true"' : ' onclick="apriElencoCruscotto(\'' + id + '\')"') +
+           ' aria-label="' + esc(etichetta + ': ' + fmtNumIt(dato.importo) + ' franchi, ' + conta) + '">' +
+           '<span class="cru-box-etichetta"><span aria-hidden="true">' + icona + '</span>' + esc(etichetta) + '</span>' +
+           '<div class="cru-box-importo">' + esc(fmtNumIt(dato.importo)) +
+             '<span class="cru-box-valuta"> CHF</span></div>' +
+           '<div class="cru-box-conta">' + esc(conta) + '</div>' +
+           (vuoto && notaVuoto ? '<div class="cru-box-nota">' + esc(notaVuoto) + '</div>' : '') +
+         '</button>'
+}
+
+function renderRiquadri(t) {
+  // Se non c'e' nulla in sospeso, il numero zero da solo sembra un dato mancante:
+  // la frase accanto dice che e' un risultato.
+  var notaPagare    = (t.daPagare.righe.length === 0)    ? 'Tutto pagato' : ''
+  var notaIncassare = (t.daIncassare.righe.length === 0) ? 'Tutto incassato' : ''
+
+  html('cru-riquadri',
+    boxCruscotto('cru-box-speso',       'uscita',        '💸', 'Speso',        t.speso) +
+    boxCruscotto('cru-box-incassato',   'entrata',       '💰', 'Incassato',    t.incassato) +
+    boxCruscotto('cru-box-dapagare',    'attesa-uscita', '⏳', 'Da pagare',    t.daPagare, notaPagare) +
+    boxCruscotto('cru-box-daincassare', 'attesa-entrata','🔵', 'Da incassare', t.daIncassare, notaIncassare)
+  )
+}
+
+// Riga IVA: compare SOLO se esiste un periodo IVA in vigore. Mostrare importi a
+// zero suggerirebbe un calcolo fatto, mentre qui l'IVA semplicemente non c'e'.
+function renderIvaRiga(p) {
+  var attivi = (ivaPeriodiCache || []).filter(function (x) {
+    if (x.valido_da && p.a && x.valido_da > p.a) return false          // inizia dopo il periodo
+    if (x.valido_a  && p.da && x.valido_a  < p.da) return false        // finito prima del periodo
+    return true
+  })
+
+  if (!attivi.length) {
+    html('cru-iva',
+      '<div class="cru-iva-riga">' +
+        '<span aria-hidden="true">🧾</span>' +
+        '<strong>IVA non attiva</strong>' +
+        '<span class="dim">Carpenteria Ticinese non è assoggettata: non c\'è nessuna IVA da calcolare in questo periodo.</span>' +
+        '<button type="button" class="link-btn link-conf" onclick="showPage(\'impostazioni\'); initImpostazioniPage()">Apri le impostazioni ditta</button>' +
+      '</div>')
+    return
+  }
+
+  var per = attivi[0]
+  var metodo = per.metodo === 'saldo'
+    ? 'aliquota saldo ' + fmtNumIt(safeNum(per.aliquota_saldo) || 0) + ' %'
+    : 'metodo effettivo'
+  html('cru-iva',
+    '<div class="cru-iva-riga">' +
+      '<span aria-hidden="true">🧾</span>' +
+      '<strong>IVA attiva</strong>' +
+      '<span>' + esc(metodo + ' · criterio ' + (per.criterio || '—')) +
+        ' · in vigore dal ' + esc(fmtDate(per.valido_da)) + '</span>' +
+    '</div>')
+}
+
+function renderGruppi(speso) {
+  var sub = el('cru-gruppi-sottotitolo')
+  if (sub) sub.textContent = 'Come si scompone il totale «Speso» del periodo. Le percentuali sono calcolate su quel totale.'
+
+  if (!speso.righe.length) {
+    html('cru-gruppi',
+      '<div class="cru-vuoto">' +
+        '<strong>Nessuna spesa saldata in questo periodo.</strong><br>' +
+        'Quando ci saranno spese saldate, qui compare come si dividono fra i nove gruppi.' +
+      '</div>')
+    return
+  }
+
+  var lista = calcolaGruppi(speso.righe)
+  var totale = speso.importo
+
+  // Tutte le spese senza gruppo: le barre non direbbero niente.
+  var conGruppo = lista.filter(function (g) { return g.codice })
+  if (!conGruppo.length) {
+    html('cru-gruppi',
+      '<div class="cru-vuoto">' +
+        '<strong>Nessun movimento classificato per gruppo.</strong><br>' +
+        'Il gruppo si ricava dal conto contabile: finché i movimenti non sono classificati, ' +
+        'non c\'è modo di sapere a quale gruppo appartengono.<br>' +
+        '<button type="button" class="btn-primary" style="margin-top:10px" ' +
+        'onclick="showPage(\'movimenti\'); loadDaClassificare()">Vai a «Da classificare»</button>' +
+      '</div>')
+    return
+  }
+
+  var rows = lista.map(function (g) {
+    var perc = totale ? (g.importo / totale * 100) : 0
+    var nonAss = !g.codice
+    var etichetta = nomeGruppo(g.codice)
+    var n = g.righe.length
+    return '<button type="button" class="gruppo-riga' + (nonAss ? ' non-assegnato' : '') + '"' +
+             ' onclick="apriElencoCruscotto(\'gruppo\', \'' + (g.codice || '') + '\')"' +
+             ' aria-label="' + esc(etichetta + ': ' + fmtNumIt(g.importo) + ' franchi, ' +
+                                   fmtNumIt(perc) + ' per cento, ' + n + (n === 1 ? ' documento' : ' documenti')) + '">' +
+             '<span class="gruppo-riga-testa">' +
+               (nonAss ? '' : '<span class="gruppo-cod">' + esc(g.codice) + '</span>') +
+               '<span class="gruppo-nome">' + esc(etichetta) + '</span>' +
+               '<span class="gruppo-importo">' + esc(fmtNumIt(g.importo)) + ' CHF</span>' +
+               '<span class="gruppo-perc">' + esc(fmtNumIt(perc)) + ' %</span>' +
+             '</span>' +
+             '<span class="gruppo-barra-sfondo">' +
+               '<span class="gruppo-barra" style="width:' + Math.max(0, Math.min(100, perc)).toFixed(1) + '%"></span>' +
+             '</span>' +
+           '</button>'
+  }).join('')
+
+  var nonAssegnate = lista.filter(function (g) { return !g.codice })[0]
+  var avviso = nonAssegnate
+    ? '<div class="nota-cruscotto" style="margin-top:12px">' +
+        '<span aria-hidden="true">⚠️</span>' +
+        '<span><strong>' + esc(fmtNumIt(nonAssegnate.importo)) + ' CHF</strong> non hanno ancora un gruppo, ' +
+        'perché i documenti non sono classificati o il loro conto non è associato a nessun gruppo. ' +
+        '<button type="button" class="link-btn" onclick="showPage(\'movimenti\'); loadDaClassificare()">Classifica questi movimenti</button></span>' +
+      '</div>'
+    : ''
+
+  html('cru-gruppi', rows + avviso)
+}
+
+// ── Elenco filtrato ──────────────────────────────────────────────────────────
+
+function apriElencoCruscotto(quale, param) {
+  var p = periodoCruscotto()
+  var t = calcolaTotaliCruscotto(flussiCache || [], p.da, p.a)
+  var righe = [], titolo = '', sotto = ''
+
+  if (quale === 'cru-box-speso') {
+    righe = t.speso.righe;       titolo = '💸 Speso nel periodo'
+    sotto = 'Documenti il cui pagamento è avvenuto fra il ' + fmtDate(p.da) + ' e il ' + fmtDate(p.a) + '.'
+  } else if (quale === 'cru-box-incassato') {
+    righe = t.incassato.righe;   titolo = '💰 Incassato nel periodo'
+    sotto = 'Documenti incassati fra il ' + fmtDate(p.da) + ' e il ' + fmtDate(p.a) + '.'
+  } else if (quale === 'cru-box-dapagare') {
+    righe = t.daPagare.righe;    titolo = '⏳ Da pagare'
+    sotto = 'Tutto quello che resta da pagare, a qualunque data: questo elenco non dipende dal periodo scelto.'
+  } else if (quale === 'cru-box-daincassare') {
+    righe = t.daIncassare.righe; titolo = '🔵 Da incassare'
+    sotto = 'Tutto quello che resta da incassare, a qualunque data: questo elenco non dipende dal periodo scelto.'
+  } else if (quale === 'gruppo') {
+    var g = calcolaGruppi(t.speso.righe).filter(function (x) { return (x.codice || '') === (param || '') })[0]
+    righe = g ? g.righe : []
+    titolo = '📦 ' + nomeGruppo(param || null)
+    sotto = 'Spese pagate nel periodo che appartengono a questo gruppo.'
+  }
+
+  if (el('cru-elenco-titolo'))      el('cru-elenco-titolo').textContent = titolo
+  if (el('cru-elenco-sottotitolo')) el('cru-elenco-sottotitolo').textContent = sotto
+
+  if (!righe.length) {
+    html('cru-elenco', '<div class="cru-vuoto">Nessun documento in questo elenco.</div>')
+  } else {
+    righe = righe.slice().sort(function (x, y) {
+      return String(dataCassa(y) || '').localeCompare(String(dataCassa(x) || ''))
+    })
+    html('cru-elenco', righe.map(function (r) {
+      var conto = r.conto_codice
+        ? r.conto_codice + ' · ' + (r.conto_descrizione || '')
+        : 'non classificato'
+      return '<div class="cru-elenco-riga">' +
+        '<span class="cru-elenco-nome">' + esc(r.controparte_nome || '—') + '</span>' +
+        '<span class="cru-elenco-meta">' + esc(fmtDate(dataCassa(r))) + ' · conto ' + esc(conto) + '</span>' +
+        (haRipiegoData(r) ? '<span class="cru-tag-ripiego">data incasso non registrata</span>' : '') +
+        '<span class="cru-elenco-imp">' + esc(fmtNumIt(safeNum(r.importo_totale) || 0)) + ' CHF</span>' +
+      '</div>'
+    }).join(''))
+  }
+
+  var card = el('cru-elenco-card')
+  if (card) { card.style.display = 'block'; card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }
+}
+
+function chiudiElencoCruscotto() {
+  var card = el('cru-elenco-card')
+  if (card) card.style.display = 'none'
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 3.2 — Il gruppo proposto dal conto, nella classificazione
+//
+// Il gruppo NON e' un campo indipendente: e' un derivato del conto. Qui lo si
+// mostra e lo si puo' forzare, ma finche' resta uguale a quello del conto NON
+// viene salvato niente: la riga continua a seguire il conto.
+// Si scrive un override solo quando l'utente sceglie deliberatamente altro.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Le tre tabelle su cui un override si puo' scrivere. 'spesa' e 'regia' sono di
+// App Cantieri: fuori perimetro, non si toccano.
+function tabellaPerOrigine(origineTipo) {
+  if (origineTipo === 'proprio')  return 'tm_conta_movimenti_propri'
+  if (origineTipo === 'acquisto') return 'tm_conta_fatture_acquisto'
+  if (origineTipo === 'fattura')  return 'tm_conta_fatture'
+  return null
+}
+
+// Il gruppo che il conto selezionato suggerisce.
+function gruppoDelContoSelezionato() {
+  var id = getVal('cls-conto')
+  if (!id) return null
+  var c = (contiCache || []).filter(function (x) { return x.id === id })[0]
+  return c ? (c.gruppo_codice || null) : null
+}
+
+// Ridisegna il menu del gruppo dopo un cambio di conto.
+// Regola: se l'utente non ha ancora forzato niente, il gruppo segue il conto.
+// Se ha forzato, resta com'e' — e l'avviso spiega la differenza.
+async function aggiornaGruppoDaConto(forzaRiallineo) {
+  var sel = el('cls-gruppo')
+  if (!sel) return
+  await loadGruppi()
+  var dalConto = gruppoDelContoSelezionato()
+  var attuale  = sel.value
+  var scelto   = (forzaRiallineo || !clsGruppoForzato) ? (dalConto || '') : attuale
+  sel.innerHTML = buildGruppoOptionsCls(scelto)
+  if (forzaRiallineo) clsGruppoForzato = false
+  renderNotaGruppo()
+}
+
+// Il campo resta visibile anche quando e' vuoto: «Non assegnato» e' scritto,
+// non lasciato indovinare da un menu vuoto.
+function buildGruppoOptionsCls(selected) {
+  var out = '<option value=""' + (!selected ? ' selected' : '') + '>— Non assegnato —</option>'
+  ;(gruppiCache || []).forEach(function (g) {
+    out += '<option value="' + esc(g.codice) + '"' + (g.codice === selected ? ' selected' : '') + '>' +
+           esc(g.codice + ' · ' + g.nome) + '</option>'
+  })
+  return out
+}
+
+let clsGruppoForzato = false   // true = l'utente ha scelto a mano, non si ricalcola
+
+function onClsGruppoChange() {
+  clsGruppoForzato = true
+  renderNotaGruppo()
+}
+
+function renderNotaGruppo() {
+  var sel = el('cls-gruppo')
+  if (!sel) return
+  var scelto   = sel.value || null
+  var dalConto = gruppoDelContoSelezionato()
+
+  // Nota sotto il campo: dice DA DOVE viene il valore, in parole.
+  var nota = ''
+  if (!clsGruppoForzato && dalConto && scelto === dalConto) {
+    nota = '<span class="gruppo-proposto">✨ proposto dal conto — modificabile</span>'
+  } else if (clsGruppoForzato) {
+    nota = '<span class="gruppo-proposto">✍️ scelto a mano — resta così finché non lo cambi</span>'
+  } else if (!dalConto && !scelto) {
+    nota = '<span class="dim" style="font-size:11px">Il conto scelto non appartiene a nessun gruppo di spesa: resta «Non assegnato».</span>'
+  }
+  html('cls-gruppo-nota', nota)
+
+  // Avviso NON bloccante quando conto e gruppo dicono cose diverse.
+  if (dalConto && scelto && scelto !== dalConto) {
+    html('cls-gruppo-avviso',
+      '<div class="gruppo-discorde">' +
+        '<span aria-hidden="true">⚠️</span>' +
+        '<span><strong>Attenzione:</strong> il conto dice <strong>' + esc(nomeGruppo(dalConto)) +
+        '</strong>, il gruppo dice <strong>' + esc(nomeGruppo(scelto)) + '</strong>. ' +
+        'Il commercialista vedrà <strong>' + esc(nomeGruppo(dalConto)) +
+        '</strong>, il cruscotto <strong>' + esc(nomeGruppo(scelto)) + '</strong>. ' +
+        'Puoi salvare lo stesso: è solo un avviso.</span>' +
+      '</div>')
+  } else {
+    html('cls-gruppo-avviso', '')
+  }
+}
+
+// Salvataggio dell'override, dopo la classificazione.
+// Scrive NULL quando il gruppo coincide con quello del conto: cosi' la riga
+// torna a seguire il conto e un domani cambiare conto cambia anche il gruppo.
+async function salvaOverrideGruppo(movimenti) {
+  var sel = el('cls-gruppo')
+  if (!sel) return
+  var scelto   = sel.value || null
+  var dalConto = gruppoDelContoSelezionato()
+  var override = (scelto && scelto !== dalConto) ? scelto : null
+
+  for (var i = 0; i < movimenti.length; i++) {
+    var m = movimenti[i]
+    var tab = tabellaPerOrigine(m.origine_tipo)
+    if (!tab) continue        // spese e regia: fuori perimetro, niente da scrivere
+    try {
+      const { error } = await sb.from(tab)
+        .update({ gruppo_codice: override })
+        .eq('id', m.origine_id)
+        .eq('azienda_id', currentAziendaId)
+        .select()
+      if (error) throw error
+    } catch (e) {
+      // Non blocca la classificazione, che e' gia' salvata: avvisa e basta.
+      console.warn('Override gruppo non salvato per ' + m.origine_id + ':', e.message || e)
+      showClsBanner('warn', 'Classificazione salvata, ma il gruppo forzato non è stato scritto: ' + (e.message || e))
+    }
+  }
+  flussiCache = null   // il cruscotto dovra' rileggere
+}
+
+// Prepara il campo gruppo all'apertura della modale di classificazione.
+// Se il movimento ha gia' un override salvato, lo ripropone: aprire e
+// risalvare una classificazione non deve cancellare una scelta fatta prima.
+async function preparaCampoGruppo() {
+  clsGruppoForzato = false
+  var grp = el('cls-gruppo-group')
+  var target = classifyTargets && classifyTargets.length ? classifyTargets : []
+
+  // Il campo si mostra solo se l'override e' scrivibile da qualche parte.
+  // Per 'spesa' e 'regia' (App Cantieri) non c'e' nessuna colonna da scrivere.
+  var scrivibile = target.some(function (m) { return !!tabellaPerOrigine(m.origine_tipo) })
+  if (grp) grp.style.display = scrivibile ? 'block' : 'none'
+  if (!scrivibile) return
+
+  await aggiornaGruppoDaConto(true)
+
+  // Un solo movimento: si recupera l'override gia' salvato, se c'e'.
+  if (target.length === 1) {
+    try {
+      var righe = await loadFlussi()
+      var r = (righe || []).filter(function (x) { return x.id_origine === target[0].origine_id })[0]
+      if (r && r.gruppo_manuale) {
+        var sel = el('cls-gruppo')
+        if (sel) {
+          sel.innerHTML = buildGruppoOptionsCls(r.gruppo_manuale)
+          clsGruppoForzato = true
+          renderNotaGruppo()
+        }
+      }
+    } catch (_) { /* senza la vista si resta sul gruppo del conto */ }
+  }
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -5124,6 +5715,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'fatture')     { initFatturePage() }
       if (pageId === 'acquisti')    { initAcquistiPage() }
       if (pageId === 'rubrica')     { initRubricaPage() }
+      if (pageId === 'cruscotto')   { initCruscottoPage() }
       if (pageId === 'impostazioni'){ initImpostazioniPage() }
       if (pageId === 'setup')       { /* già caricata */ }
     })
