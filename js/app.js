@@ -5835,7 +5835,11 @@ function calcolaScadenze(righe, oggi, preavviso) {
     scaduto:   { chiave: 'scaduto',   icona: '🔴', titolo: 'Scaduto da pagare',    righe: [], somma: 0 },
     inScadenza:{ chiave: 'inScadenza',icona: '🟠', titolo: 'In scadenza',          righe: [], somma: 0 },
     incasso:   { chiave: 'incasso',   icona: '🔵', titolo: 'Incasso non arrivato', righe: [], somma: 0 },
-    senzaData: { chiave: 'senzaData', icona: '⚪', titolo: 'Senza scadenza — da completare', righe: [], somma: 0 }
+    senzaData: { chiave: 'senzaData', icona: '⚪', titolo: 'Senza scadenza — da completare', righe: [], somma: 0 },
+    // Non e' un blocco: e' il resto. Posizioni aperte che non sono ancora un
+    // avviso — uscite oltre il preavviso, entrate non ancora scadute.
+    // Servono solo a dire quante sono, senza mescolare urgenza e apertura.
+    altre:     { chiave: 'altre',     righe: [], somma: 0 }
   }
   var limite = addDays(oggi, preavviso)
 
@@ -5850,10 +5854,12 @@ function calcolaScadenze(righe, oggi, preavviso) {
     if (r.verso === 'uscita') {
       if (r.data_scadenza < oggi) { b.scaduto.righe.push(r); b.scaduto.somma += imp }
       else if (r.data_scadenza <= limite) { b.inScadenza.righe.push(r); b.inScadenza.somma += imp }
-      // oltre il preavviso: non e' ancora un avviso, non compare
+      // Oltre il preavviso: non e' ancora un avviso. Si conta soltanto.
+      else { b.altre.righe.push(r); b.altre.somma += imp }
     } else {
       // Un incasso e' «non arrivato» dal giorno DOPO la scadenza.
       if (r.data_scadenza < oggi) { b.incasso.righe.push(r); b.incasso.somma += imp }
+      else { b.altre.righe.push(r); b.altre.somma += imp }
     }
   }
 
@@ -5917,8 +5923,33 @@ function renderScadenze() {
     bloccoScadenze(b.scaduto,    'rosso',   'Fatture da pagare la cui data di scadenza è già passata.') +
     bloccoScadenze(b.inScadenza, 'arancio', 'Da pagare entro i prossimi ' + pre + (pre === 1 ? ' giorno' : ' giorni') + '.') +
     bloccoScadenze(b.incasso,    'blu',     'Fatture emesse e non ancora incassate, con la scadenza già passata.') +
-    bloccoScadenze(b.senzaData,  'grigio',  'Documenti aperti a cui manca la data di scadenza: senza quella non si può dire se sono in ritardo.')
+    bloccoScadenze(b.senzaData,  'grigio',  'Documenti aperti a cui manca la data di scadenza: senza quella non si può dire se sono in ritardo.') +
+    rigaAltrePosizioni(b.altre)
   )
+}
+
+// Il conto delle posizioni aperte che NON sono un avviso.
+// Questa schermata risponde a «cosa e' urgente», il Cruscotto a «quanto devo
+// ancora»: sono due domande diverse e i due totali non coincidono. Questa riga
+// tiene visibile la differenza invece di lasciarla sembrare un numero che balla.
+// Scorciatoia usata dal rimando in fondo alla schermata Scadenze.
+function vaiAlCruscotto() {
+  showPage('cruscotto')
+  initCruscottoPage()
+}
+
+function rigaAltrePosizioni(altre) {
+  var n = altre.righe.length
+  if (!n) return ''        // se non ce ne sono, la riga non compare
+  var testo = (n === 1)
+    ? "Una posizione aperta non ancora in scadenza"
+    : 'Altre ' + n + ' posizioni aperte non ancora in scadenza'
+  return '<div class="nota-cruscotto" id="scad-altre">' +
+      '<span aria-hidden="true">📊</span>' +
+      '<span>' + esc(testo) + ', per ' + esc(fmtNumIt(altre.somma)) + ' CHF. ' +
+        '<button type="button" class="link-btn" onclick="vaiAlCruscotto()">' +
+        (n === 1 ? 'Vedila nel Cruscotto' : 'Vedile nel Cruscotto') + '</button></span>' +
+    '</div>'
 }
 
 function bloccoScadenze(blocco, colore, spiegazione) {
