@@ -1650,3 +1650,38 @@ tbody tr.row-clickable { cursor: pointer; }
   .scad-riga-imp { text-align: left; min-width: 0; }
   .scad-somma { margin-left: 0; width: 100%; }
 }
+
+/* ══ FASE 5A — Ponte copia/incolla ═══════════════════════════════════════ */
+
+/* Le segnalazioni della lettura. Icona SEMPRE accompagnata dal testo: qui si
+   dice all utente che cosa non e stato scritto nel modulo e perche, e un
+   colore da solo non lo direbbe. */
+.lettura-nota {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 13px;
+  margin-bottom: 10px;
+  border-radius: var(--radius);
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.lettura-nota.avviso {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+.lettura-nota strong { font-weight: 700; }
+.lettura-nota ul { margin: 5px 0 0 18px; }
+.lettura-nota li { margin-bottom: 3px; }
+
+/* La casella dove si incolla la risposta: a tutta larghezza e in carattere
+   a spaziatura fissa, cosi si vede subito se il testo e stato tagliato. */
+#ponte-ai-testo {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
