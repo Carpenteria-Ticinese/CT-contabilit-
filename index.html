@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=14" />
+  <link rel="stylesheet" href="css/style.css?v=15" />
 </head>
 <body>
 
@@ -33,6 +33,11 @@
     <button class="nav-item" data-page="setup">
       <span aria-hidden="true">⚙️</span>
       <span>Setup</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="cruscotto">
+      <span aria-hidden="true">📊</span>
+      <span>Cruscotto</span>
     </button>
 
     <button class="nav-item auth-only" data-page="movimenti">
@@ -159,6 +164,115 @@
     </div>
 
     <!-- ══ PAGINA: Da classificare (Fase 2 — lista) ════════════════════ -->
+    <!-- ══ PAGINA: Cruscotto (Fase 3) ═══════════════════════════ -->
+    <div id="page-cruscotto" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Cruscotto</div>
+          <div class="page-subtitle">
+            Quanto è uscito e quanto è entrato, e che cosa resta da pagare e da incassare.
+          </div>
+        </div>
+      </div>
+
+      <div id="cruscotto-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+      <!-- ── Periodo: stessi controlli della schermata Export ────────────── -->
+      <div class="card">
+        <div class="card-title">📅 Periodo</div>
+
+        <div class="periodo-modi" role="group" aria-label="Tipo di periodo">
+          <button type="button" class="modo-btn active" id="cru-modo-anno"      onclick="setCruscottoModo('anno')">📅 Anno intero</button>
+          <button type="button" class="modo-btn"        id="cru-modo-trimestre" onclick="setCruscottoModo('trimestre')">🗓 Trimestre</button>
+          <button type="button" class="modo-btn"        id="cru-modo-mese"      onclick="setCruscottoModo('mese')">📆 Mese</button>
+          <button type="button" class="modo-btn"        id="cru-modo-custom"    onclick="setCruscottoModo('custom')">✏️ Personalizzato</button>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1" id="cru-anno-group">
+            <label for="cru-anno" class="form-label">Anno</label>
+            <select id="cru-anno" class="form-input" onchange="applicaPeriodoCruscotto()"></select>
+          </div>
+          <div class="form-group" style="flex:1; display:none" id="cru-trimestre-group">
+            <label for="cru-trimestre" class="form-label">Trimestre</label>
+            <select id="cru-trimestre" class="form-input" onchange="applicaPeriodoCruscotto()">
+              <option value="1">T1 — gennaio/marzo</option>
+              <option value="2">T2 — aprile/giugno</option>
+              <option value="3">T3 — luglio/settembre</option>
+              <option value="4">T4 — ottobre/dicembre</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1; display:none" id="cru-mese-group">
+            <label for="cru-mese" class="form-label">Mese</label>
+            <select id="cru-mese" class="form-input" onchange="applicaPeriodoCruscotto()">
+              <option value="1">Gennaio</option><option value="2">Febbraio</option><option value="3">Marzo</option>
+              <option value="4">Aprile</option><option value="5">Maggio</option><option value="6">Giugno</option>
+              <option value="7">Luglio</option><option value="8">Agosto</option><option value="9">Settembre</option>
+              <option value="10">Ottobre</option><option value="11">Novembre</option><option value="12">Dicembre</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="cru-da" class="form-label">Da</label>
+            <input type="date" id="cru-da" class="form-input" onchange="onPeriodoCruscottoManuale()" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="cru-a" class="form-label">A</label>
+            <input type="date" id="cru-a" class="form-input" onchange="onPeriodoCruscottoManuale()" />
+          </div>
+        </div>
+
+        <!-- SCRITTA OBBLIGATORIA 1: quale data decide il periodo -->
+        <div class="nota-cruscotto" id="cru-nota-data">
+          <span aria-hidden="true">🕑</span>
+          <span>Periodo calcolato sulla data di pagamento/incasso</span>
+        </div>
+      </div>
+
+      <!-- ── RIGA 1: i quattro riquadri ──────────────────────────────────── -->
+      <div id="cru-riquadri" class="cru-riquadri"></div>
+
+      <!-- SCRITTA OBBLIGATORIA 2: che cosa NON è compreso -->
+      <div class="nota-cruscotto avviso" id="cru-nota-perimetro">
+        <span aria-hidden="true">ℹ️</span>
+        <span>Non include spese di cantiere e regia (App Cantieri)</span>
+      </div>
+
+      <div class="nota-cruscotto" id="cru-nota-periodo">
+        <span aria-hidden="true">💡</span>
+        <span>
+          <strong>Speso</strong> e <strong>Incassato</strong> contano solo il periodo scelto:
+          dicono quanto denaro si è mosso.
+          <strong>Da pagare</strong> e <strong>Da incassare</strong> ignorano il periodo:
+          sono una fotografia di oggi, cioè quanto resta in sospeso in tutto.
+        </span>
+      </div>
+
+      <!-- ── RIGA 2: IVA ─────────────────────────────────────────────────── -->
+      <div id="cru-iva"></div>
+
+      <!-- ── RIGA 3: i nove gruppi ───────────────────────────────────────── -->
+      <div class="card">
+        <div class="card-title">📦 Spese per gruppo</div>
+        <div class="form-hint" style="margin-bottom:12px" id="cru-gruppi-sottotitolo"></div>
+        <div id="cru-gruppi"></div>
+      </div>
+
+      <!-- ── Elenco filtrato (si apre cliccando un riquadro o un gruppo) ── -->
+      <div class="card" id="cru-elenco-card" style="display:none">
+        <div class="card-title" id="cru-elenco-titolo">Elenco</div>
+        <div id="cru-elenco-sottotitolo" class="form-hint" style="margin-bottom:12px"></div>
+        <div id="cru-elenco"></div>
+        <div class="form-actions" style="margin-top:14px">
+          <button type="button" class="btn-secondary" onclick="chiudiElencoCruscotto()">Chiudi elenco</button>
+        </div>
+      </div>
+
+    </div>
+
     <div id="page-movimenti" class="page">
 
       <div class="page-header">
@@ -1264,7 +1378,7 @@
             <button type="button" class="link-btn" onclick="toggleNuovoConto()" id="cls-nuovo-conto-toggle">+ Nuovo conto</button>
           </label>
           <input type="text" id="cls-conto-search" class="form-input" placeholder="🔍 Cerca conto (codice o descrizione)…" oninput="filterConti()" autocomplete="off" />
-          <select id="cls-conto" class="form-input" style="margin-top:8px" onchange="recalcIvaDisplay()" size="6"></select>
+          <select id="cls-conto" class="form-input" style="margin-top:8px" onchange="recalcIvaDisplay(); aggiornaGruppoDaConto()" size="6"></select>
         </div>
 
         <!-- Mini-form nuovo conto -->
@@ -1296,6 +1410,13 @@
         </div>
 
         <!-- CODICE IVA -->
+        <div class="form-group" id="cls-gruppo-group">
+          <label for="cls-gruppo" class="form-label">Gruppo di costo</label>
+          <select id="cls-gruppo" class="form-input" onchange="onClsGruppoChange()"></select>
+          <div id="cls-gruppo-nota"></div>
+          <div id="cls-gruppo-avviso"></div>
+        </div>
+
         <div class="form-group">
           <label for="cls-iva" class="form-label">Codice IVA <span class="req" aria-hidden="true">*</span></label>
           <select id="cls-iva" class="form-input" onchange="recalcIvaDisplay()"></select>
@@ -1377,7 +1498,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=14"></script>
+<script src="js/app.js?v=15"></script>
 
 </body>
 </html>
