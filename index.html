@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=15" />
+  <link rel="stylesheet" href="css/style.css?v=16" />
 </head>
 <body>
 
@@ -38,6 +38,13 @@
     <button class="nav-item auth-only" data-page="cruscotto">
       <span aria-hidden="true">📊</span>
       <span>Cruscotto</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="scadenze">
+      <span aria-hidden="true">📅</span>
+      <span>Scadenze</span>
+      <span class="nav-badge badge-scadenze" id="nav-badge-scadenze"
+            style="display:none" aria-live="polite"></span>
     </button>
 
     <button class="nav-item auth-only" data-page="movimenti">
@@ -270,6 +277,29 @@
           <button type="button" class="btn-secondary" onclick="chiudiElencoCruscotto()">Chiudi elenco</button>
         </div>
       </div>
+
+    </div>
+
+    <!-- ══ PAGINA: Scadenze (Fase 4) ════════════════════════════ -->
+    <div id="page-scadenze" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Scadenze</div>
+          <div class="page-subtitle">
+            Che cosa è in ritardo, che cosa scade a giorni, e quali incassi non sono arrivati.
+          </div>
+        </div>
+      </div>
+
+      <div id="scadenze-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+      <div class="nota-cruscotto" id="scad-nota-preavviso">
+        <span aria-hidden="true">🕑</span>
+        <span id="scad-nota-preavviso-testo"></span>
+      </div>
+
+      <div id="scad-blocchi"></div>
 
     </div>
 
@@ -1283,6 +1313,30 @@
       </div>
 
       <div class="card">
+      <div class="card">
+        <div class="card-title">⏰ Avvisi scadenze</div>
+        <div class="form-hint" style="margin-bottom:12px">
+          Riguardano la schermata «Scadenze» e il pallino rosso nel menu.
+          Sono salvati nel modulo contabilità, non nei dati della ditta.
+        </div>
+
+        <label class="form-label-check">
+          <input type="checkbox" id="imp-finestra-scadenze" checked />
+          <span>Mostra la finestra all&rsquo;apertura
+            <span class="dim">(una volta al giorno, e solo se c&rsquo;è qualcosa in sospeso)</span>
+          </span>
+        </label>
+
+        <div class="form-group" style="max-width:260px; margin-top:12px">
+          <label for="imp-giorni-preavviso" class="form-label">Giorni di preavviso</label>
+          <input type="number" id="imp-giorni-preavviso" class="form-input"
+                 min="0" max="365" step="1" placeholder="7" />
+          <div class="form-hint">
+            Giorni. Quanto prima della scadenza una fattura entra fra quelle «in scadenza».
+          </div>
+        </div>
+      </div>
+
         <div class="form-actions" style="margin-top:0">
           <button type="button" class="btn-primary" id="imp-save-btn" onclick="saveImpostazioni()">💾 Salva impostazioni</button>
           <button type="button" class="btn-secondary" onclick="initImpostazioniPage()">↺ Ricarica</button>
@@ -1333,6 +1387,28 @@
   </main>
 
   <!-- ══ MODALE: Storia modifiche (audit) — Fase 4 ════════════════════════ -->
+  <!-- ══ FINESTRELLA: riepilogo scadenze all'apertura (Fase 4C) ═══════════ -->
+  <div id="scadenze-overlay" class="modal-overlay" style="display:none"
+       role="dialog" aria-modal="true" aria-labelledby="scad-modal-title"
+       onclick="if(event.target===this) chiudiFinestraScadenze()">
+    <div class="modal-card" style="max-width:480px">
+      <div class="modal-header">
+        <div class="modal-title" id="scad-modal-title">⏰ Scadenze da controllare</div>
+        <button class="modal-close" onclick="chiudiFinestraScadenze()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="scad-modal-body"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-note">Ricompare domani. Si spegne da «Impostazioni ditta».</div>
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-primary" onclick="vaiAlleScadenze()">Vedi le scadenze</button>
+          <button type="button" class="btn-secondary" onclick="chiudiFinestraScadenze()">Chiudi</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="storia-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="storia-title">
     <div class="modal-card">
       <div class="modal-header">
@@ -1498,7 +1574,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=15"></script>
+<script src="js/app.js?v=16"></script>
 
 </body>
 </html>
