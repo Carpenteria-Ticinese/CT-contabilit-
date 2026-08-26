@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=12" />
+  <link rel="stylesheet" href="css/style.css?v=13" />
 </head>
 <body>
 
@@ -462,14 +462,28 @@
             </div>
           </div>
           <div class="form-row" style="margin-bottom:12px">
+            <!-- Due filtri separati, non uno solo: lo stato del DOCUMENTO e lo
+                 stato dell'INCASSO sono due domande diverse. Prima erano
+                 schiacciate in un menu unico, dove l'incasso prendeva il posto
+                 di "Emessa" e non si poteva piu' sapere quale fosse quale.
+                 Ogni menu ha la sua etichetta sopra: mai la parola "Stato" da sola. -->
             <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="fatture-filtro-stato" class="form-label">Stato</label>
+              <label for="fatture-filtro-stato" class="form-label">Stato documento</label>
               <select id="fatture-filtro-stato" class="form-input" onchange="renderFattureTable()">
                 <option value="">Tutti</option>
                 <option value="bozza">Bozza</option>
                 <option value="emessa">Emessa</option>
-                <option value="pagata">Pagata</option>
                 <option value="annullata">Annullata</option>
+              </select>
+            </div>
+            <!-- Separazione visiva: il bordo a sinistra stacca i due menu, cosi'
+                 a colpo d'occhio non si scambia l'uno per l'altro. -->
+            <div class="form-group" style="flex:1; margin-bottom:0; padding-left:14px; border-left:1px solid var(--border)">
+              <label for="fatture-filtro-incasso" class="form-label">Stato incasso</label>
+              <select id="fatture-filtro-incasso" class="form-input" onchange="renderFattureTable()">
+                <option value="">Tutti</option>
+                <option value="aperto">🔵 Da incassare</option>
+                <option value="pagato">✅ Incassato</option>
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
@@ -635,8 +649,8 @@
               <label for="acquisti-filtro-stato" class="form-label">Stato pagamento</label>
               <select id="acquisti-filtro-stato" class="form-input" onchange="renderAcquistiTable()">
                 <option value="">Tutti</option>
-                <option value="da_pagare">Da pagare</option>
-                <option value="pagata">Pagata</option>
+                <option value="aperto">⏳ Da pagare</option>
+                <option value="pagato">✅ Pagato</option>
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
@@ -745,8 +759,8 @@
             <div class="form-group" style="flex:1">
               <label for="a-stato" class="form-label">Stato pagamento</label>
               <select id="a-stato" class="form-input" onchange="onAcquistoStatoChange()">
-                <option value="da_pagare" selected>Da pagare</option>
-                <option value="pagata">Pagata</option>
+                <option value="aperto" selected>⏳ Da pagare</option>
+                <option value="pagato">✅ Pagato</option>
               </select>
             </div>
           </div>
@@ -1101,7 +1115,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=12"></script>
+<script src="js/app.js?v=13"></script>
 
 </body>
 </html>
