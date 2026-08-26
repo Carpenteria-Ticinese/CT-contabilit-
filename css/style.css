@@ -1169,3 +1169,180 @@ tbody tr.row-clickable { cursor: pointer; }
   .modal-overlay { padding: 16px 10px; }
   .modal-card { max-height: calc(100vh - 32px); }
 }
+
+/* ══ FASE 2 — Rubrica contatti ═══════════════════════════════════════════ */
+
+/* ── Schede Clienti / Fornitori / Collaboratori ──────────────────────────
+   Ogni scheda porta il nome per esteso e il numero di contatti: chi legge
+   non deve contare le righe ne' indovinare quale scheda e' attiva dal solo
+   colore (c'e' anche il bordo inferiore e aria-selected). */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text2);
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  white-space: nowrap;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.tab:hover { background: var(--bg); color: var(--text); }
+.tab[aria-selected="true"] {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  background: var(--primary-lt);
+}
+.tab-count {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--border);
+  color: var(--text2);
+}
+.tab[aria-selected="true"] .tab-count { background: var(--primary); color: #fff; }
+
+/* ── Barra ricerca in alto a destra ──────────────────────────────────── */
+.rubrica-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.rubrica-toolbar .spacer { flex: 1; min-width: 12px; }
+.rubrica-search { min-width: 240px; }
+
+/* ── Elenco contatti ─────────────────────────────────────────────────── */
+.contatto-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.contatto-row:hover { border-color: var(--primary); background: var(--primary-lt); }
+.contatto-row.inattivo { opacity: .6; }
+.contatto-main { flex: 1; min-width: 0; }
+.contatto-nome { font-weight: 600; color: var(--text); }
+.contatto-sub {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contatto-azioni { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Azioni rapide: icona SEMPRE con etichetta testuale accanto */
+.azione-rapida {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+  min-height: 34px;
+}
+.azione-rapida:hover { background: var(--bg); border-color: var(--primary); color: var(--primary); }
+
+/* ── Campo con ricerca in rubrica (form movimento e acquisto) ────────── */
+.rubrica-pick { position: relative; }
+.rubrica-suggest {
+  position: absolute;
+  z-index: 60;
+  left: 0; right: 0;
+  top: calc(100% + 2px);
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 16px rgba(0,0,0,.12);
+}
+.rubrica-suggest:empty { display: none; }
+.suggest-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.suggest-item:last-child { border-bottom: none; }
+.suggest-item:hover, .suggest-item.hi { background: var(--primary-lt); }
+.suggest-item .s-sub { display: block; font-size: 11px; color: var(--text2); margin-top: 1px; }
+.suggest-item.suggest-new { color: var(--primary); font-weight: 600; }
+
+/* Riquadro «contatto collegato», sotto il campo */
+.contatto-legato {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  background: var(--primary-lt);
+  border: 1px solid var(--primary);
+  font-size: 12px;
+  color: var(--text);
+}
+.contatto-legato .cl-x {
+  margin-left: auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text2);
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+/* Campo compilato automaticamente: si vede che e' stato proposto,
+   e resta modificabile. Il testo lo dice, non solo il colore. */
+.auto-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--gold);
+  background: var(--gold-lt);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+@media (max-width: 900px) {
+  .contatto-row { flex-wrap: wrap; }
+  .contatto-azioni { width: 100%; }
+  .rubrica-search { min-width: 100%; }
+  .tab { padding: 9px 12px; font-size: 13px; }
+}
