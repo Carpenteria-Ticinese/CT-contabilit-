@@ -1346,3 +1346,217 @@ tbody tr.row-clickable { cursor: pointer; }
   .rubrica-search { min-width: 100%; }
   .tab { padding: 9px 12px; font-size: 13px; }
 }
+
+/* ══ FASE 3 — Cruscotto ══════════════════════════════════════════════════ */
+
+/* ── Note in chiaro sotto i controlli ─────────────────────────────────────
+   Non sono decorazioni: dicono su quale data e' calcolato il periodo e che
+   cosa NON e' compreso nei totali. Un numero senza queste due frasi si presta
+   a essere letto come se fosse tutto il conto dell'azienda. */
+.nota-cruscotto {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.5;
+}
+.nota-cruscotto.avviso {
+  background: var(--gold-lt);
+  border-color: var(--gold);
+  color: var(--text);
+  font-weight: 600;
+}
+.nota-cruscotto strong { color: var(--text); }
+
+/* ── I quattro riquadri ──────────────────────────────────────────────────
+   Due colonne su desktop, una su telefono. Ogni riquadro porta etichetta,
+   importo con la valuta scritta, e il numero di documenti: mai un numero nudo. */
+.cru-riquadri {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.cru-box {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  font-family: inherit;
+}
+.cru-box:hover  { border-color: var(--primary); background: var(--primary-lt); }
+.cru-box:focus  { outline: 3px solid rgba(45,106,79,.35); outline-offset: 2px; }
+.cru-box.vuoto  { cursor: default; opacity: .85; }
+.cru-box.vuoto:hover { border-color: var(--border); background: var(--surface); }
+
+.cru-box.uscita  { border-left-color: var(--err); }
+.cru-box.entrata { border-left-color: var(--ok); }
+.cru-box.attesa-uscita  { border-left-color: var(--warn); }
+.cru-box.attesa-entrata { border-left-color: var(--info); }
+
+.cru-box-etichetta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+.cru-box-importo {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+.cru-box-valuta { font-size: 14px; font-weight: 600; color: var(--text2); margin-left: 3px; }
+.cru-box-conta  { font-size: 12px; color: var(--text2); margin-top: 4px; }
+.cru-box-nota   { font-size: 11px; color: var(--ok); margin-top: 6px; font-weight: 600; }
+
+/* ── Barre dei gruppi ────────────────────────────────────────────────────
+   La barra e' un supporto alla lettura, non l'informazione: importo e
+   percentuale sono sempre scritti in cifre accanto al nome. */
+.gruppo-riga {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 9px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+}
+.gruppo-riga:hover { background: var(--bg); }
+.gruppo-riga:focus { outline: 2px solid rgba(45,106,79,.35); outline-offset: 1px; }
+.gruppo-riga.non-assegnato { cursor: pointer; }
+.gruppo-riga-testa {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.gruppo-nome { font-weight: 600; color: var(--text); }
+.gruppo-cod {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--text2);
+}
+.gruppo-importo { margin-left: auto; font-weight: 700; color: var(--text); }
+.gruppo-perc { font-size: 12px; color: var(--text2); min-width: 52px; text-align: right; }
+.gruppo-barra-sfondo {
+  height: 9px;
+  border-radius: 5px;
+  background: var(--border);
+  overflow: hidden;
+}
+.gruppo-barra {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--primary);
+  min-width: 2px;
+}
+.gruppo-riga.non-assegnato .gruppo-nome,
+.gruppo-riga.non-assegnato .gruppo-importo { color: var(--text2); }
+.gruppo-riga.non-assegnato .gruppo-barra { background: var(--text3); }
+
+/* ── Stato vuoto: dice che zero e' un risultato, non un guasto ─────────── */
+.cru-vuoto {
+  padding: 18px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cru-vuoto strong { color: var(--text); }
+
+/* ── Riga IVA ───────────────────────────────────────────────────────────── */
+.cru-iva-riga {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 13px 16px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+}
+.cru-iva-riga .link-conf { margin-left: auto; }
+
+/* ── Elenco filtrato ────────────────────────────────────────────────────── */
+.cru-elenco-riga {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.cru-elenco-riga:last-child { border-bottom: none; }
+.cru-elenco-nome { font-weight: 600; flex: 1; min-width: 140px; }
+.cru-elenco-meta { font-size: 12px; color: var(--text2); }
+.cru-elenco-imp  { font-weight: 700; margin-left: auto; }
+.cru-tag-ripiego {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* ── FASE 3.2 — gruppo proposto dal conto, nella classificazione ────────── */
+.gruppo-proposto {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold);
+  background: var(--gold-lt);
+  border-radius: 4px;
+  padding: 2px 7px;
+  margin-top: 6px;
+}
+.gruppo-discorde {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .cru-riquadri { grid-template-columns: 1fr; }
+  .cru-box-importo { font-size: 21px; }
+  .gruppo-importo { margin-left: 0; }
+}
