@@ -97,6 +97,42 @@ function badge(cls, label) {
   return '<span class="badge badge-' + cls + '">' + esc(label) + '</span>'
 }
 
+// ── Vocabolario del pagamento ────────────────────────────────────────────────
+// Nel database i valori sono due soli: 'aperto' e 'pagato'.
+// A schermo diventano quattro parole diverse, a seconda della direzione del
+// denaro: «Pagato» su una fattura che abbiamo emesso noi non vuol dire niente,
+// quella si incassa.
+// TUTTE le etichette di stato pagamento escono da qui. Nessuna scritta a mano
+// altrove: e' cosi' che i vocabolari tornano a divergere.
+function etichettaPagamento(verso, stato) {
+  var pagato = stato === 'pagato'
+  if (verso === 'entrata') {
+    return pagato
+      ? { icona: '✅', testo: 'Incassato',    cls: 'ok'   }
+      : { icona: '🔵', testo: 'Da incassare', cls: 'warn' }
+  }
+  return pagato
+    ? { icona: '✅', testo: 'Pagato',    cls: 'ok'   }
+    : { icona: '⏳', testo: 'Da pagare', cls: 'warn' }
+}
+
+// Badge completo: icona SEMPRE seguita dall'etichetta testuale.
+// Mai il solo colore, mai la sola icona: chi legge deve capire senza dover
+// interpretare una sfumatura.
+function badgePagamento(verso, stato) {
+  var e = etichettaPagamento(verso, stato)
+  return badge(e.cls, e.icona + ' ' + e.testo)
+}
+
+// Testo del bottone che porta ALLO stato indicato.
+// Deriva dallo stesso vocabolario dei badge, cosi' anche le azioni dicono
+// «Segna da incassare» su una vendita e «Segna pagato» su un acquisto, senza
+// che nessuno debba ricordarsi a mano quale parola va dove.
+function azionePagamento(verso, statoTarget) {
+  var e = etichettaPagamento(verso, statoTarget)
+  return (statoTarget === 'pagato' ? '✅' : '↩️') + ' Segna ' + e.testo.toLowerCase()
+}
+
 function loadingRow(msg) {
   return '<div class="loading-row"><span class="spinner" aria-hidden="true"></span><span>' + esc(msg) + '</span></div>'
 }
@@ -327,7 +363,7 @@ async function loadCanalA() {
         .from('tm_conta_fatture')
         .select('id, numero, data_emissione, cliente_nome, totale, valuta, tipo, stato')
         .eq('azienda_id', currentAziendaId)
-        .in('stato', ['emessa', 'pagata'])
+        .eq('stato', 'emessa')
         .order('data_emissione', { ascending: false })
       if (error) throw error
       for (var f = 0; f < (data || []).length; f++) {
@@ -1637,9 +1673,9 @@ async function loadExportDataset(force) {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture')
-      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, tipo, iban, rif_fattura_id')
+      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id')
       .eq('azienda_id', currentAziendaId)
-      .in('stato', ['emessa', 'pagata'])
+      .eq('stato', 'emessa')
     if (error) throw error
     fatture = data || []
     for (var i = 0; i < fatture.length; i++) numeroById[fatture[i].id] = fatture[i].numero
@@ -1750,7 +1786,7 @@ function buildSheetAcquisti(list, ds) {
       safeNum(x.iva_importo) != null ? safeNum(x.iva_importo) : '',
       safeNum(x.importo) || 0,
       x.valuta || 'CHF',
-      x.stato_pagamento === 'pagata' ? 'Pagata' : 'Da pagare',
+      etichettaPagamento('uscita', x.stato_pagamento).testo,
       x.data_pagamento || '',
       x.metodo_pagamento || '',
       c ? contoLabel(c.conto_id) : '',
@@ -2120,8 +2156,11 @@ function friendlyFatturaError(e) {
 }
 
 function statoFatturaBadge(stato) {
-  var map  = { bozza: 'info', emessa: 'warn', pagata: 'ok', annullata: 'err' }
-  var icon = { bozza: '✏️', emessa: '📨', pagata: '✅', annullata: '🚫' }
+  // Solo ciclo di vita del documento: l'incasso e' un'altra cosa e ha il suo
+  // badge separato (badgePagamento). Un badge unico che mostrava l'incasso al
+  // posto di «emessa» faceva sparire l'informazione che la fattura era emessa.
+  var map  = { bozza: 'info', emessa: 'warn', annullata: 'err' }
+  var icon = { bozza: '✏️', emessa: '📨', annullata: '🚫' }
   return badge(map[stato] || 'info', (icon[stato] || '') + ' ' + (stato || ''))
 }
 
@@ -2136,7 +2175,7 @@ async function loadFattureList() {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture')
-      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, tipo, created_at')
+      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at')
       .eq('azienda_id', currentAziendaId)
       .order('created_at', { ascending: false })
     if (error) throw error
@@ -2165,6 +2204,9 @@ function clearFattureSearch() {
 
 function renderFattureTable() {
   var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : ''
+  // Due filtri distinti: lo stato del DOCUMENTO e lo stato dell'INCASSO.
+  // Sono due domande diverse e prima erano schiacciate in un menu solo.
+  var incasso = el('fatture-filtro-incasso') ? el('fatture-filtro-incasso').value : ''
   var anno  = el('fatture-filtro-anno') ? el('fatture-filtro-anno').value : ''
   var q = el('fatture-search') ? el('fatture-search').value.trim().toLowerCase() : ''
 
@@ -2175,6 +2217,7 @@ function renderFattureTable() {
   // filtri esistenti (stato/anno)
   var list = fattureList.filter(function (f) {
     if (stato && f.stato !== stato) return false
+    if (incasso && f.stato_pagamento !== incasso) return false
     if (anno && String(f.anno) !== String(anno)) return false
     return true
   })
@@ -2195,7 +2238,7 @@ function renderFattureTable() {
   }
 
   if (!list.length) {
-    var filtroAttivo = q || stato || anno
+    var filtroAttivo = q || stato || incasso || anno
     var msg = filtroAttivo
       ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.'
       : 'Nessuna fattura.'
@@ -2208,7 +2251,10 @@ function renderFattureTable() {
       '<td class="dim">' + esc(fmtDate(f.data_emissione)) + '</td>' +
       '<td>' + esc(f.cliente_nome || '') + (f.tipo === 'nota_credito' ? ' ' + badge('warn', 'Nota credito') : '') + '</td>' +
       '<td class="num">' + fmtImporto(f.totale, f.valuta) + '</td>' +
-      '<td>' + statoFatturaBadge(f.stato) + '</td>' +
+      '<td>' + statoFatturaBadge(f.stato) +
+        // L'incasso si mostra solo sulle fatture emesse: su una bozza non
+        // significa niente, su una annullata sarebbe fuorviante.
+        (f.stato === 'emessa' ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '') + '</td>' +
       '<td class="row-actions">' + fattureRowActions(f) + '</td>' +
     '</tr>'
   }).join('')
@@ -2622,15 +2668,26 @@ async function deleteBozza(id) {
   }
 }
 
-async function setPagata(id, toPagata) {
-  html('fatture-detail-banner', loadingRow('Aggiornamento stato…'))
+// Registra l'incasso di una fattura emessa.
+// Prima l'incasso veniva scritto dentro il campo «stato», cioe' sopra il ciclo
+// di vita del documento, e la DATA non veniva salvata da nessuna parte.
+// Ora l'incasso ha un campo suo e una data sua, e lo stato del documento
+// (emessa) non viene piu' toccato.
+async function setIncassata(id, toIncassata) {
+  html('fatture-detail-banner', loadingRow('Aggiornamento incasso…'))
   try {
-    const { error } = await sb.from('tm_conta_fatture').update({ stato: toPagata ? 'pagata' : 'emessa' }).eq('id', id).eq('azienda_id', currentAziendaId).select()
+    var patch = toIncassata
+      // Data proposta: oggi. Resta correggibile a mano dalla scheda.
+      ? { stato_pagamento: 'pagato', data_pagamento: new Date().toISOString().split('T')[0] }
+      // Togliendo l'incasso si toglie anche la data: una data di incasso su una
+      // fattura che risulta non incassata sarebbe un dato falso.
+      : { stato_pagamento: 'aperto', data_pagamento: null }
+    const { error } = await sb.from('tm_conta_fatture').update(patch).eq('id', id).eq('azienda_id', currentAziendaId).select()
     if (error) throw error
     await loadFattureList()
     await viewFattura(id)
   } catch (e) {
-    showFattureBanner('fatture-detail-banner', 'err', 'Aggiornamento stato: ' + friendlyFatturaError(e))
+    showFattureBanner('fatture-detail-banner', 'err', 'Aggiornamento incasso: ' + friendlyFatturaError(e))
   }
 }
 
@@ -3092,12 +3149,16 @@ function renderDetailActions(f) {
   } else if (f.stato === 'emessa') {
     // Emessa → NON modificabile: si corregge con una nota di credito
     a += '<span class="lock-tag" title="Documento definitivo">🔒 Emessa — sola lettura</span>'
-    a += '<button class="btn-secondary" onclick="setPagata(\'' + f.id + '\', true)">✅ Segna come pagata</button>'
+    // Il bottone dipende dall'INCASSO, non piu' dallo stato del documento:
+    // una fattura incassata resta emessa, non diventa un'altra cosa.
+    a += (f.stato_pagamento === 'pagato')
+      ? '<button class="btn-secondary" onclick="setIncassata(\'' + f.id + '\', false)">' + azionePagamento('entrata', 'aperto') + '</button>'
+      : '<button class="btn-secondary" onclick="setIncassata(\'' + f.id + '\', true)">' + azionePagamento('entrata', 'pagato') + '</button>'
     if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
-  } else if (f.stato === 'pagata') {
-    a += '<span class="lock-tag" title="Documento definitivo">🔒 Emessa — sola lettura</span>'
-    a += '<button class="btn-secondary" onclick="setPagata(\'' + f.id + '\', false)">↩️ Segna non pagata</button>'
-    if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
+  } else if (f.stato === 'annullata') {
+    // Ramo che prima non esisteva: lo stato annullata era gia ammesso dal
+    // database ma nell'interfaccia la scheda restava senza indicazioni.
+    a += '<span class="lock-tag" title="Documento annullato">🚫 Annullata — sola lettura</span>'
   }
   a += '<button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>'
   a += '</div>'
@@ -3166,7 +3227,7 @@ function renderAcquistoDetail(a) {
     return '<div class="ro-lbl">' + esc(lbl) + '</div><div class="ro-val' + (mono ? ' mono' : '') + '">' + val + '</div>'
   }
   var impo = safeNum(a.imponibile), ivaI = safeNum(a.iva_importo)
-  var pagata = a.stato_pagamento === 'pagata'
+  var pagato = a.stato_pagamento === 'pagato'
 
   var body = '<div class="ro-grid">' +
     '<div class="ro-section">Documento</div>' +
@@ -3184,8 +3245,8 @@ function renderAcquistoDetail(a) {
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Pagamento</div>' +
     riga('Stato', statoAcquistoBadge(a.stato_pagamento)) +
-    (pagata || a.data_pagamento ? riga('Data pagamento', a.data_pagamento ? esc(fmtDate(a.data_pagamento)) : '—') : '') +
-    (pagata || a.metodo_pagamento ? riga('Metodo', esc(a.metodo_pagamento || '—')) : '') +
+    (pagato || a.data_pagamento ? riga('Data pagamento', a.data_pagamento ? esc(fmtDate(a.data_pagamento)) : '—') : '') +
+    (pagato || a.metodo_pagamento ? riga('Metodo', esc(a.metodo_pagamento || '—')) : '') +
     (a.riferimento_pagamento ? riga('Riferimento', esc(a.riferimento_pagamento)) : '') +
     (a.note ? '<div class="ro-sep"></div><div class="ro-section">Note</div><div class="ro-lbl"></div><div class="ro-val" style="font-weight:400;white-space:pre-line">' + esc(a.note) + '</div>' : '') +
     '</div>'
@@ -3207,9 +3268,9 @@ function renderAcquistoDetail(a) {
   html('acquisti-detail-actions',
     '<div class="form-actions" style="margin-top:0">' +
       '<button class="btn-primary" onclick="editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
-      (a.stato_pagamento === 'pagata'
-        ? '<button class="btn-secondary" onclick="toggleAcquistoPagata(\'' + a.id + '\', false)">↩️ Segna da pagare</button>'
-        : '<button class="btn-secondary" onclick="toggleAcquistoPagata(\'' + a.id + '\', true)">✅ Segna pagata</button>') +
+      (a.stato_pagamento === 'pagato'
+        ? '<button class="btn-secondary" onclick="toggleAcquistoPagato(\'' + a.id + '\', false)">' + azionePagamento('uscita', 'aperto') + '</button>'
+        : '<button class="btn-secondary" onclick="toggleAcquistoPagato(\'' + a.id + '\', true)">' + azionePagamento('uscita', 'pagato') + '</button>') +
       '<button class="btn-secondary" onclick="deleteAcquisto(\'' + a.id + '\')">🗑️ Elimina</button>' +
       '<button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>' +
     '</div>')
@@ -3227,7 +3288,7 @@ async function loadAcquistiList() {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, doc_path, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, metodo_pagamento, riferimento_pagamento')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, doc_path, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, metodo_pagamento, riferimento_pagamento, gruppo_codice, contatto_id')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -3239,16 +3300,18 @@ async function loadAcquistiList() {
 }
 
 function statoAcquistoBadge(stato) {
-  return stato === 'pagata' ? badge('ok', '✅ Pagata') : badge('warn', '⏳ Da pagare')
+  // Etichetta e icona dall'helper unico: una fattura d'acquisto e' sempre
+  // denaro in uscita, quindi «Da pagare» / «Pagato».
+  return badgePagamento('uscita', stato)
 }
 
 function acquistiRowActions(a) {
-  var pagata = a.stato_pagamento === 'pagata'
+  var pagato = a.stato_pagamento === 'pagato'
   return allegatoBtn(a.doc_path, 'acquisti-list-banner') +
     '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
-    (pagata
-      ? '<button class="icon-btn" title="Segna da pagare" onclick="event.stopPropagation(); toggleAcquistoPagata(\'' + a.id + '\', false)">↩︎</button>'
-      : '<button class="icon-btn" title="Segna pagata" onclick="event.stopPropagation(); toggleAcquistoPagata(\'' + a.id + '\', true)">✅</button>') +
+    (pagato
+      ? '<button class="icon-btn" title="' + esc(azionePagamento('uscita', 'aperto')) + '" onclick="event.stopPropagation(); toggleAcquistoPagato(\'' + a.id + '\', false)">↩︎</button>'
+      : '<button class="icon-btn" title="' + esc(azionePagamento('uscita', 'pagato')) + '" onclick="event.stopPropagation(); toggleAcquistoPagato(\'' + a.id + '\', true)">✅</button>') +
     '<button class="icon-btn danger" title="Elimina" onclick="event.stopPropagation(); deleteAcquisto(\'' + a.id + '\')">🗑️</button>'
 }
 
@@ -3291,9 +3354,9 @@ function renderAcquistiTable() {
     var ivaSub = (impo != null || ivaI != null)
       ? '<span class="cell-sub">imp. ' + fmtNum2(impo) + ' · IVA ' + fmtNum2(ivaI) + '</span>'
       : ''
-    // riga secondaria compatta: pagamento (es. "Pagata il 14.07 · Bonifico")
+    // riga secondaria compatta: pagamento (es. "Pagato il 14.07 · Bonifico")
     var paySub = ''
-    if (a.stato_pagamento === 'pagata') {
+    if (a.stato_pagamento === 'pagato') {
       var parts = []
       if (a.data_pagamento) parts.push('il ' + fmtDate(a.data_pagamento))
       if (a.metodo_pagamento) parts.push(a.metodo_pagamento)
@@ -3382,18 +3445,18 @@ function updateAcquistoIvaSummary() {
 
 // ── Stato/dati di pagamento ──────────────────────────────────────────────────
 function onAcquistoStatoChange() {
-  var pagata = getVal('a-stato') === 'pagata'
+  var pagato = getVal('a-stato') === 'pagato'
   var grp = el('a-pagamento-group')
-  if (grp) { if (pagata) grp.classList.remove('pay-dim'); else grp.classList.add('pay-dim') }
+  if (grp) { if (pagato) grp.classList.remove('pay-dim'); else grp.classList.add('pay-dim') }
   var ids = ['a-data-pagamento', 'a-metodo', 'a-riferimento']
-  for (var i = 0; i < ids.length; i++) { var e = el(ids[i]); if (e) e.disabled = !pagata }
-  // proposta (non obbligatoria): se segno "pagata" e la data è vuota → oggi
-  if (pagata && !getVal('a-data-pagamento')) setVal('a-data-pagamento', new Date().toISOString().split('T')[0])
+  for (var i = 0; i < ids.length; i++) { var e = el(ids[i]); if (e) e.disabled = !pagato }
+  // proposta (non obbligatoria): se segno "pagato" e la data è vuota → oggi
+  if (pagato && !getVal('a-data-pagamento')) setVal('a-data-pagamento', new Date().toISOString().split('T')[0])
   var hint = el('a-pagamento-hint')
   if (hint) {
-    hint.textContent = pagata
+    hint.textContent = pagato
       ? 'Data proposta modificabile, non obbligatoria.'
-      : 'Si attivano quando lo stato è «Pagata». I dati già inseriti restano salvati.'
+      : 'Si attivano quando lo stato è «Pagato». I dati già inseriti restano salvati.'
   }
 }
 
@@ -3405,7 +3468,7 @@ function fillAcquistoForm(v) {
   setVal('a-importo',   v.importo == null ? '' : v.importo)
   setVal('a-valuta',    v.valuta || 'CHF')
   setVal('a-scadenza',  v.scadenza || '')
-  setVal('a-stato',     v.stato_pagamento || 'da_pagare')
+  setVal('a-stato',     v.stato_pagamento || 'aperto')
   setVal('a-note',      v.note || '')
   // IVA: il menu va costruito prima di impostare il valore
   var ivaSel = el('a-codice-iva')
@@ -3488,7 +3551,7 @@ async function newAcquisto() {
   showAcquistiView('edit')
   await ensureContiIva()      // per il menu Codice IVA
   await loadAziendaInfo()     // per la nota "non soggetto IVA"
-  fillAcquistoForm({ data: new Date().toISOString().split('T')[0], valuta: 'CHF', stato_pagamento: 'da_pagare' })
+  fillAcquistoForm({ data: new Date().toISOString().split('T')[0], valuta: 'CHF', stato_pagamento: 'aperto' })
 }
 
 async function editAcquisto(id) {
@@ -3503,7 +3566,7 @@ async function editAcquisto(id) {
       fornitore: data.fornitore || '', numero_fornitore: data.numero_fornitore || '',
       data: data.data || '', importo: data.importo == null ? '' : data.importo,
       valuta: data.valuta || 'CHF', scadenza: data.scadenza || '',
-      stato_pagamento: data.stato_pagamento || 'da_pagare', note: data.note || '',
+      stato_pagamento: data.stato_pagamento || 'aperto', note: data.note || '',
       codice_iva_id: data.codice_iva_id || null,
       imponibile: data.imponibile, iva_importo: data.iva_importo,
       data_pagamento: data.data_pagamento || '', metodo_pagamento: data.metodo_pagamento || '',
@@ -3538,7 +3601,7 @@ function collectAcquisto() {
     importo:          importo,
     valuta:           getVal('a-valuta') || 'CHF',
     scadenza:         getVal('a-scadenza') || null,
-    stato_pagamento:  getVal('a-stato') || 'da_pagare',
+    stato_pagamento:  getVal('a-stato') || 'aperto',
     note:             getVal('a-note') || null,
     // IVA (restano NULL se non si sceglie un codice: si salva solo il totale)
     codice_iva_id:    getVal('a-codice-iva') || null,
@@ -3632,11 +3695,11 @@ async function deleteAcquisto(id) {
   }
 }
 
-async function toggleAcquistoPagata(id, toPagata) {
+async function toggleAcquistoPagato(id, toPagato) {
   if (!currentAziendaId) return
   try {
     const { error } = await sb.from('tm_conta_fatture_acquisto')
-      .update({ stato_pagamento: toPagata ? 'pagata' : 'da_pagare' })
+      .update({ stato_pagamento: toPagato ? 'pagato' : 'aperto' })
       .eq('id', id).eq('azienda_id', currentAziendaId).select()
     if (error) throw error
     await loadAcquistiList()
