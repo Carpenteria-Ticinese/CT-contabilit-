@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=16" />
+  <link rel="stylesheet" href="css/style.css?v=17" />
 </head>
 <body>
 
@@ -1096,6 +1096,52 @@
 
         <div id="acquisti-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
 
+        <!-- ══ FASE 5A — Ponte copia/incolla verso Claude ═══════════════════ -->
+        <div class="card" id="ponte-ai">
+          <div class="card-title">📋 Lettura della fattura</div>
+          <div class="form-hint" style="margin-bottom:12px">
+            Invece di copiare i dati a mano: copia il prompt, aprilo in Claude allegando
+            la foto o il PDF, e riporta qui la risposta. I campi si compilano da soli.
+          </div>
+
+          <div class="form-actions" style="margin-top:0">
+            <button type="button" class="btn-secondary" onclick="copiaPromptFattura()">
+              📋 Copia prompt
+            </button>
+            <button type="button" class="btn-secondary" onclick="apriIncollaRisposta()">
+              📥 Incolla risposta
+            </button>
+          </div>
+
+          <div id="ponte-ai-banner" role="status" aria-live="polite" style="margin-top:12px"></div>
+
+          <!-- Casella per la risposta: chiusa finché non serve -->
+          <div id="ponte-ai-incolla" style="display:none; margin-top:14px">
+            <div class="form-group">
+              <label for="ponte-ai-testo" class="form-label">
+                Risposta di Claude <span class="dim">(il testo JSON, anche con i backtick)</span>
+              </label>
+              <textarea id="ponte-ai-testo" class="form-input" rows="10"
+                        placeholder="Incolla qui tutta la risposta, così come te la dà Claude."
+                        aria-describedby="ponte-ai-aiuto"></textarea>
+              <div class="form-hint" id="ponte-ai-aiuto">
+                Non serve ripulirla: i backtick e il testo attorno vengono tolti da soli.
+              </div>
+            </div>
+            <div class="form-actions" style="margin-top:0">
+              <button type="button" class="btn-primary" onclick="applicaRispostaAI()">
+                ✅ Compila il modulo
+              </button>
+              <button type="button" class="btn-secondary" onclick="chiudiIncollaRisposta()">
+                Annulla
+              </button>
+            </div>
+          </div>
+
+          <!-- Segnalazioni della lettura: compaiono dopo aver compilato -->
+          <div id="ponte-ai-note" style="margin-top:12px"></div>
+        </div>
+
         <div class="card">
           <div class="card-title">🏢 Fornitore e documento</div>
           <div class="form-group rubrica-pick">
@@ -1574,7 +1620,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=16"></script>
+<script src="js/app.js?v=17"></script>
 
 </body>
 </html>
