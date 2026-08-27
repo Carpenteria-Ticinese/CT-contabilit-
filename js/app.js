@@ -105,15 +105,22 @@ function badge(cls, label) {
 // TUTTE le etichette di stato pagamento escono da qui. Nessuna scritta a mano
 // altrove: e' cosi' che i vocabolari tornano a divergere.
 function etichettaPagamento(verso, stato) {
-  var pagato = stato === 'pagato'
+  // FASE 8 — gli stati sono TRE. Prima erano due e la funzione era binaria:
+  // «tutto cio' che non e' pagato» diventava «Da pagare». Con 'parziale' quella
+  // scorciatoia direbbe che una fattura pagata a meta' non e' stata toccata.
+  //
+  // Queste sono le etichette di STATO DI UN DOCUMENTO. I riquadri della
+  // Situazione restano «Da pagare» / «Da incassare» perche' li' non e' lo stato
+  // di un documento: e' il totale di quanto resta da versare. Due cose diverse,
+  // due nomi diversi.
   if (verso === 'entrata') {
-    return pagato
-      ? { icona: '✅', testo: 'Incassato',    cls: 'ok'   }
-      : { icona: '🔵', testo: 'Da incassare', cls: 'warn' }
+    if (stato === 'pagato')   return { icona: '✅', testo: 'Incassato',          cls: 'ok'   }
+    if (stato === 'parziale') return { icona: '🟠', testo: 'Incassato in parte', cls: 'warn' }
+    return { icona: '🔵', testo: 'Non incassato', cls: 'warn' }
   }
-  return pagato
-    ? { icona: '✅', testo: 'Pagato',    cls: 'ok'   }
-    : { icona: '⏳', testo: 'Da pagare', cls: 'warn' }
+  if (stato === 'pagato')   return { icona: '✅', testo: 'Pagato',          cls: 'ok'   }
+  if (stato === 'parziale') return { icona: '🟠', testo: 'Pagato in parte', cls: 'warn' }
+  return { icona: '⏳', testo: 'Non pagato', cls: 'warn' }
 }
 
 // Badge completo: icona SEMPRE seguita dall'etichetta testuale.
@@ -1881,9 +1888,10 @@ function docsPeriodo(ds, da, a) {
 function buildSheetVendite(list, ds, negativo, mappaAllegati) {
   var head = ['Numero', 'Data', 'Cliente', 'Cantiere', 'Imponibile', 'IVA', 'Totale', 'Valuta', 'Stato pagamento', 'IBAN']
   if (negativo) head.push('Rif. fattura stornata')
-  // FASE 7 — la colonna compare SOLO nel pacchetto. Senza mappa questo foglio
+  // FASE 7 — le colonne compaiono SOLO nel pacchetto. Senza mappa questo foglio
   // resta identico a quello dell'export Excel di sempre.
-  if (mappaAllegati) head.push('ALLEGATO')
+  // FASE 8 — PAGATO e RESIDUO: vedi la nota sul foglio Acquisti.
+  if (mappaAllegati) head.push('PAGATO', 'RESIDUO', 'ALLEGATO')
   var aoa = [head]
   var segno = negativo ? -1 : 1
   for (var i = 0; i < list.length; i++) {
@@ -1902,7 +1910,12 @@ function buildSheetVendite(list, ds, negativo, mappaAllegati) {
       (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
     ]
     if (negativo) riga.push(ds.numeroById[f.rif_fattura_id] || '—')
-    if (mappaAllegati) riga.push(mappaAllegati['vendite:' + f.id] || '')
+    if (mappaAllegati) {
+      var pagatoF = totalePagatoDi('tm_conta_fatture', f.id)
+      riga.push(round2(segno * pagatoF),
+                round2(segno * ((safeNum(f.totale) || 0) - pagatoF)),
+                mappaAllegati['vendite:' + f.id] || '')
+    }
     aoa.push(riga)
   }
   return aoa
@@ -1911,7 +1924,10 @@ function buildSheetVendite(list, ds, negativo, mappaAllegati) {
 function buildSheetAcquisti(list, ds, mappaAllegati) {
   var head = ['Fornitore', 'Numero fornitore', 'Data', 'Imponibile', 'IVA', 'Totale', 'Valuta',
               'Stato pagamento', 'Data pagamento', 'Metodo pagamento', 'Conto', 'Codice IVA']
-  if (mappaAllegati) head.push('ALLEGATO')
+  // FASE 8 — PAGATO e RESIDUO servono al commercialista per debitori e
+  // creditori a fine anno: senza, un documento pagato a meta' sembra aperto
+  // per l'intero importo. Le rate non entrano: non sono documenti.
+  if (mappaAllegati) head.push('PAGATO', 'RESIDUO', 'ALLEGATO')
   var aoa = [head]
   for (var i = 0; i < list.length; i++) {
     var x = list[i]
@@ -1930,7 +1946,12 @@ function buildSheetAcquisti(list, ds, mappaAllegati) {
       c ? contoLabel(c.conto_id) : '',
       c ? ivaLabel(c.codice_iva_id) : ''
     ])
-    if (mappaAllegati) aoa[aoa.length - 1].push(mappaAllegati['acquisti:' + x.id] || '')
+    if (mappaAllegati) {
+      var pagatoX = totalePagatoDi('tm_conta_fatture_acquisto', x.id)
+      aoa[aoa.length - 1].push(round2(pagatoX),
+                               round2((safeNum(x.importo) || 0) - pagatoX),
+                               mappaAllegati['acquisti:' + x.id] || '')
+    }
   }
   return aoa
 }
@@ -2842,24 +2863,14 @@ async function deleteBozza(id) {
 // di vita del documento, e la DATA non veniva salvata da nessuna parte.
 // Ora l'incasso ha un campo suo e una data sua, e lo stato del documento
 // (emessa) non viene piu' toccato.
+// FASE 8 — questa funzione non esiste piu' come azione dell'interfaccia.
+// «Segna incassata» in un clic scriveva stato_pagamento a mano: adesso lo
+// stato lo calcola il trigger dai pagamenti, e togliere un incasso significa
+// cancellare i versamenti registrati, uno per uno, con la loro conferma.
+// Resta qui solo per intercettare eventuali chiamate rimaste in giro.
 async function setIncassata(id, toIncassata) {
-  html('fatture-detail-banner', loadingRow('Aggiornamento incasso…'))
-  try {
-    var patch = toIncassata
-      // Data proposta: oggi. Resta correggibile a mano dalla scheda.
-      ? { stato_pagamento: 'pagato', data_pagamento: oggiISO() }
-      // Togliendo l'incasso si toglie anche la data: una data di incasso su una
-      // fattura che risulta non incassata sarebbe un dato falso.
-      : { stato_pagamento: 'aperto', data_pagamento: null }
-    const { error } = await sb.from('tm_conta_fatture').update(patch).eq('id', id).eq('azienda_id', currentAziendaId).select()
-    if (error) throw error
-    flussiCache = null            // FASE 4: badge e cruscotto devono rileggere
-    await loadFattureList()
-    await viewFattura(id)
-    await refreshScadenzeCount()
-  } catch (e) {
-    showFattureBanner('fatture-detail-banner', 'err', 'Aggiornamento incasso: ' + friendlyFatturaError(e))
-  }
+  console.warn('setIncassata non e piu in uso: usare apriRegistraPagamento o eliminaPagamento.')
+  window.alert('Per registrare o togliere un incasso usa il riquadro «Pagamenti» nella scheda della fattura.')
 }
 
 async function creaNotaCredito(id) {
@@ -3144,6 +3155,13 @@ async function viewFattura(id) {
     }
     renderFatturaPrint(f, righe || [], rifInfo)
     renderDetailActions(f)
+    // FASE 8 — pagamenti e rate. Solo sui documenti veri: su una bozza non
+    // esiste ancora niente da pagare.
+    try {
+      await loadPagamenti(); await loadRate()
+      html('fatture-pagamenti', f.stato === 'bozza' ? ''
+        : boxPagamentiHtml('tm_conta_fatture', f.id, f.totale, 'entrata', f.cliente_nome))
+    } catch (ePag) { html('fatture-pagamenti', '') }
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
@@ -3331,9 +3349,13 @@ function renderDetailActions(f) {
     a += '<span class="lock-tag" title="Documento definitivo">🔒 Emessa — sola lettura</span>'
     // Il bottone dipende dall'INCASSO, non piu' dallo stato del documento:
     // una fattura incassata resta emessa, non diventa un'altra cosa.
-    a += (f.stato_pagamento === 'pagato')
-      ? '<button class="btn-secondary" onclick="setIncassata(\'' + f.id + '\', false)">' + azionePagamento('entrata', 'aperto') + '</button>'
-      : '<button class="btn-secondary" onclick="setIncassata(\'' + f.id + '\', true)">' + azionePagamento('entrata', 'pagato') + '</button>'
+    // FASE 8 — niente piu' «Segna incassata / non incassata»: un clic solo che
+    // cancella tre versamenti registrati e' troppo facile da premere per sbaglio.
+    // Al suo posto si registra un pagamento, e i pagamenti si tolgono uno per
+    // uno dall'elenco, con una conferma che dice importo e data.
+    a += '<button class="btn-primary" onclick="apriRegistraPagamento(\'tm_conta_fatture\', \'' +
+         f.id + '\', ' + (safeNum(f.totale) || 0) + ', \'entrata\', \'' +
+         esc(String(f.cliente_nome || '').replace(/'/g, '')) + '\')">➕ Registra incasso</button>'
     if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
   } else if (f.stato === 'annullata') {
     // Ramo che prima non esisteva: lo stato annullata era gia ammesso dal
@@ -3443,14 +3465,21 @@ function renderAcquistoDetail(a) {
     body += '<div class="dim" style="margin-top:16px">Nessun allegato.</div>'
   }
   html('acquisti-detail-body', body)
+  // FASE 8 — pagamenti e rate sotto il dettaglio dell'acquisto.
+  loadPagamenti().then(function () { return loadRate() }).then(function () {
+    html('acquisti-pagamenti',
+      boxPagamentiHtml('tm_conta_fatture_acquisto', a.id, a.importo, 'uscita', a.fornitore))
+  }).catch(function () { html('acquisti-pagamenti', '') })
 
   // Azioni: Modifica sempre consentita sugli acquisti
   html('acquisti-detail-actions',
     '<div class="form-actions" style="margin-top:0">' +
       '<button class="btn-primary" onclick="editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
-      (a.stato_pagamento === 'pagato'
-        ? '<button class="btn-secondary" onclick="toggleAcquistoPagato(\'' + a.id + '\', false)">' + azionePagamento('uscita', 'aperto') + '</button>'
-        : '<button class="btn-secondary" onclick="toggleAcquistoPagato(\'' + a.id + '\', true)">' + azionePagamento('uscita', 'pagato') + '</button>') +
+      // FASE 8 — vedi la nota sulle fatture di vendita: si registra un pagamento,
+      // non si «segna pagato» in un colpo solo.
+      '<button class="btn-primary" onclick="apriRegistraPagamento(\'tm_conta_fatture_acquisto\', \'' +
+        a.id + '\', ' + (safeNum(a.importo) || 0) + ', \'uscita\', \'' +
+        esc(String(a.fornitore || '').replace(/'/g, '')) + '\')">➕ Registra pagamento</button>' +
       '<button class="btn-secondary" onclick="deleteAcquisto(\'' + a.id + '\')">🗑️ Elimina</button>' +
       '<button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>' +
     '</div>')
@@ -3494,8 +3523,10 @@ function acquistiRowActions(a) {
   return allegatoBtn(a.doc_path, 'acquisti-list-banner') +
     '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
     (pagato
-      ? '<button class="icon-btn" title="' + esc(azionePagamento('uscita', 'aperto')) + '" onclick="event.stopPropagation(); toggleAcquistoPagato(\'' + a.id + '\', false)">↩︎</button>'
-      : '<button class="icon-btn" title="' + esc(azionePagamento('uscita', 'pagato')) + '" onclick="event.stopPropagation(); toggleAcquistoPagato(\'' + a.id + '\', true)">✅</button>') +
+      // FASE 8 — l'icona apre la modale del pagamento invece di segnare
+      // pagato in un colpo: l'importo va scelto, puo' essere un acconto.
+      ? ''
+      : '<button class="icon-btn" title="Registra un pagamento" onclick="event.stopPropagation(); apriRegistraPagamento(\'tm_conta_fatture_acquisto\', \'' + a.id + '\', ' + (safeNum(a.importo) || 0) + ', \'uscita\', \'\')">💳</button>') +
     '<button class="icon-btn danger" title="Elimina" onclick="event.stopPropagation(); deleteAcquisto(\'' + a.id + '\')">🗑️</button>'
 }
 
@@ -3698,7 +3729,18 @@ function fillAcquistoForm(v) {
   setVal('a-importo',   v.importo == null ? '' : v.importo)
   setVal('a-valuta',    v.valuta || 'CHF')
   setVal('a-scadenza',  v.scadenza || '')
+  // FASE 8 — sola lettura: il valore arriva dal documento, che a sua volta lo
+  // ha ricevuto dal trigger. Qui non si sceglie piu' niente.
   setVal('a-stato',     v.stato_pagamento || 'aperto')
+  var chkGia = el('a-gia-pagata')
+  if (chkGia) {
+    // La spunta ha senso solo su un documento NUOVO: su uno esistente i
+    // pagamenti si aggiungono dalla scheda, uno per uno.
+    var nuovo = !editingAcquistoId
+    var grp = el('a-gia-pagata-group')
+    if (grp) grp.style.display = nuovo ? 'block' : 'none'
+    chkGia.checked = false
+  }
   // FASE 2: gruppo e contatto collegato
   if (el('a-contatto-id')) el('a-contatto-id').value = v.contatto_id || ''
   riempiSelectGruppi('a-gruppo', v.gruppo_codice || '')
@@ -3843,7 +3885,9 @@ function collectAcquisto() {
     importo:          importo,
     valuta:           getVal('a-valuta') || 'CHF',
     scadenza:         getVal('a-scadenza') || null,
-    stato_pagamento:  getVal('a-stato') || 'aperto',
+    // FASE 8 — stato_pagamento NON si scrive piu' da qui: lo calcola il trigger
+    // dai pagamenti registrati. Scriverlo a mano creerebbe la seconda verita'
+    // che abbiamo passato tre fasi a togliere di mezzo.
     // FASE 2: raggruppamento e collegamento alla rubrica
     gruppo_codice:    getVal('a-gruppo') || null,
     contatto_id:      getVal('a-contatto-id') || null,
@@ -3852,10 +3896,39 @@ function collectAcquisto() {
     codice_iva_id:    getVal('a-codice-iva') || null,
     imponibile:       impo,
     iva_importo:      ivaI,
-    // pagamento (conservati anche se lo stato torna "da pagare")
-    data_pagamento:        getVal('a-data-pagamento') || null,
-    metodo_pagamento:      getVal('a-metodo') || null,
-    riferimento_pagamento: getVal('a-riferimento') || null
+    // FASE 8 — data, metodo e riferimento stanno su OGNI pagamento, in
+    // tm_conta_pagamenti: un documento pagato in tre volte ha tre metodi, e
+    // queste colonne non potrebbero dirlo. Restano nel database come storico
+    // (vedi i COMMENT in SQL_FASE8.sql) ma non si scrivono piu'.
+    note:                  getVal('a-note') || null
+  }
+}
+
+// FASE 8 — se alla creazione si spunta «gia' pagata per intero», si registra
+// subito un pagamento con la data del documento. Cosi' non si perde
+// l'inserimento veloce di una fattura arrivata gia' saldata, senza rimettere
+// in piedi la scrittura a mano dello stato.
+async function creaPagamentoSeGiaPagata(idAcquisto, importo, dataDoc) {
+  var chk = el('a-gia-pagata')
+  if (!chk || !chk.checked) return
+  var imp = safeNum(importo)
+  if (imp == null || imp <= 0) return
+  try {
+    const { error } = await sb.from('tm_conta_pagamenti').insert({
+      azienda_id: currentAziendaId,
+      tabella_origine: 'tm_conta_fatture_acquisto',
+      id_origine: idAcquisto,
+      data: dataDoc || oggiISO(),
+      importo: imp,
+      note: 'Registrato alla creazione con «gia pagata per intero».',
+      created_by: currentUser ? currentUser.id : null
+    }).select()
+    if (error) throw error
+    invalidaCachePagamenti()
+  } catch (e) {
+    showFattureBanner('acquisti-edit-banner', 'warn',
+      'Fattura salvata, ma il pagamento non e stato registrato: ' + (e.message || e) +
+      ' — puoi aggiungerlo dalla scheda del documento.')
   }
 }
 
@@ -3890,6 +3963,11 @@ async function saveAcquisto() {
       const { data, error } = await sb.from('tm_conta_fatture_acquisto').insert(payload).select()
       if (error) throw error
       editingAcquistoId = data && data[0] ? data[0].id : null
+      // FASE 8 — se era spuntato «gia pagata per intero», il pagamento si crea
+      // adesso: prima non esisteva ancora l'id del documento a cui collegarlo.
+      if (editingAcquistoId) {
+        await creaPagamentoSeGiaPagata(editingAcquistoId, payload.importo, payload.data)
+      }
     }
     acquistoDocPath = doc_path
     acquistoOriginal = null
@@ -3940,19 +4018,10 @@ async function deleteAcquisto(id) {
   }
 }
 
+// FASE 8 — vedi la nota su setIncassata: sostituita dai pagamenti.
 async function toggleAcquistoPagato(id, toPagato) {
-  if (!currentAziendaId) return
-  try {
-    const { error } = await sb.from('tm_conta_fatture_acquisto')
-      .update({ stato_pagamento: toPagato ? 'pagato' : 'aperto' })
-      .eq('id', id).eq('azienda_id', currentAziendaId).select()
-    if (error) throw error
-    flussiCache = null            // FASE 4: badge e cruscotto devono rileggere
-    await loadAcquistiList()
-    await refreshScadenzeCount()
-  } catch (e) {
-    showFattureBanner('acquisti-list-banner', 'err', 'Aggiornamento stato: ' + (e.message || e))
-  }
+  console.warn('toggleAcquistoPagato non e piu in uso: usare apriRegistraPagamento o eliminaPagamento.')
+  window.alert('Per registrare o togliere un pagamento usa il riquadro «Pagamenti» nella scheda del documento.')
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -4289,9 +4358,12 @@ async function handleInserimentoSubmit(event) {
       }
     }
 
-    // Stato del pagamento: 'pagato' vuol dire che il denaro e' gia' uscito.
-    var statoPag = el('f-stato-pagamento') ? el('f-stato-pagamento').value : 'pagato'
-    var dataPag  = el('f-data-pagamento') ? el('f-data-pagamento').value : ''
+    // FASE 8 — lo stato non si sceglie piu': se il movimento e' gia' stato
+    // pagato lo si dice con la spunta, e si crea un pagamento vero. La regola
+    // della FASE 2 resta come PROPOSTA: una spesa con data passata di norma
+    // e' gia' uscita, e la spunta parte gia' attiva.
+    var giaPagato = el('f-gia-pagata') ? el('f-gia-pagata').checked : false
+    var dataPag   = el('f-data-pagamento') ? el('f-data-pagamento').value : ''
 
     var payload = {
       azienda_id:    currentAziendaId,
@@ -4310,8 +4382,8 @@ async function handleInserimentoSubmit(event) {
       verso:           'uscita',            // il Canale B registra solo uscite
       origine:         'manuale',
       stato_conferma:  'confermato',        // inserito a mano da chi lo sa
-      stato_pagamento: statoPag,
-      data_pagamento:  (statoPag === 'pagato' ? (dataPag || dataVal) : null),
+      // stato_pagamento e data_pagamento NON si scrivono: li mette il trigger
+      // quando il pagamento viene registrato, subito sotto.
       data_scadenza:   (el('f-scadenza') && el('f-scadenza').value) || null,
       gruppo_codice:   (el('f-gruppo') && el('f-gruppo').value) || null,
       contatto_id:     (el('f-contatto-id') && el('f-contatto-id').value) || null
@@ -4333,11 +4405,33 @@ async function handleInserimentoSubmit(event) {
       }
     } else {
       payload.created_by = currentUser.id
-      const { error } = await sb
+      const { data: creatoMov, error } = await sb
         .from('tm_conta_movimenti_propri')
         .insert(payload)
         .select()
       if (error) throw error
+
+      // FASE 8 — «gia' pagata»: si registra il versamento, e il trigger porta
+      // il movimento a 'pagato' da solo.
+      if (giaPagato && creatoMov && creatoMov[0]) {
+        try {
+          const { error: ePag } = await sb.from('tm_conta_pagamenti').insert({
+            azienda_id: currentAziendaId,
+            tabella_origine: 'tm_conta_movimenti_propri',
+            id_origine: creatoMov[0].id,
+            data: dataPag || dataVal,
+            importo: importoVal,
+            note: 'Registrato alla creazione con «gia pagata».',
+            created_by: currentUser.id
+          }).select()
+          if (ePag) throw ePag
+          invalidaCachePagamenti()
+        } catch (ePg) {
+          showInserimentoBanner('warn', 'Movimento salvato, pagamento NO',
+            'Il movimento c e, ma il pagamento non e stato registrato: ' + (ePg.message || ePg) +
+            ' — puoi aggiungerlo dalla scheda del documento.')
+        }
+      }
       resetInserimentoForm()
       if (allegatoFallito) {
         showInserimentoBanner('warn', 'Movimento salvato (senza allegato)', 'L\'allegato non è stato caricato: ' + allegatoFallito + ' — Il movimento è comunque in «Da classificare».')
@@ -5329,7 +5423,7 @@ async function creaContattoAlVolo(prefix) {
 // ── Stato pagamento sul form movimento ───────────────────────────────────────
 
 function onMovStatoChange() {
-  var pagato = getVal('f-stato-pagamento') === 'pagato'
+  var pagato = el('f-gia-pagata') ? el('f-gia-pagata').checked : false
   var grp = el('f-data-pagamento-group')
   if (grp) grp.style.display = pagato ? 'block' : 'none'
   // Proposta, non obbligo: se segno pagato e non c'è data, uso quella del movimento
@@ -5351,7 +5445,9 @@ function proponiStatoDaData() {
   var d = getVal('f-data')
   if (!d || !el('f-stato-pagamento')) return
   var oggi = oggiISO()
-  el('f-stato-pagamento').value = (d <= oggi) ? 'pagato' : 'aperto'
+  // FASE 8 — la proposta muove la SPUNTA, non piu' un menu di stato.
+  var chk = el('f-gia-pagata')
+  if (chk) chk.checked = (d <= oggi)
   onMovStatoChange()
 }
 
@@ -5472,7 +5568,7 @@ async function loadFlussi(force) {
     .select('id_origine, tabella_origine, origine_tipo, verso, controparte_nome, descrizione,' +
             ' data_documento, data_scadenza, importo_totale, importo_iva, stato_pagamento,' +
             ' data_pagamento, conto_codice, conto_descrizione, gruppo_codice, gruppo_manuale,' +
-            ' gruppo_da_conto, stato_conferma')
+            ' gruppo_da_conto, stato_conferma, importo_pagato, residuo, prossima_rata')
     .eq('azienda_id', currentAziendaId)
   if (error) throw error
   flussiCache = data || []
@@ -5521,18 +5617,42 @@ function calcolaTotaliCruscotto(righe, da, a) {
     if (!confermata(r)) continue
     var imp = safeNum(r.importo_totale) || 0
 
-    if (r.stato_pagamento === 'pagato') {
-      // SPESO e INCASSATO guardano il periodo: dicono quanto si e' mosso.
-      if (!inPeriodo(dataCassa(r), da, a)) continue
-      if (r.verso === 'uscita')  { t.speso.importo += imp;     t.speso.righe.push(r) }
-      else                       { t.incassato.importo += imp; t.incassato.righe.push(r) }
-    } else {
-      // DA PAGARE e DA INCASSARE ignorano il periodo: sono una fotografia di
-      // oggi. «Quanto devo ancora» non e' una domanda su un intervallo.
-      if (r.verso === 'uscita')  { t.daPagare.importo += imp;    t.daPagare.righe.push(r) }
-      else                       { t.daIncassare.importo += imp; t.daIncassare.righe.push(r) }
+    // FASE 8 — DA PAGARE e DA INCASSARE sono i RESIDUI, non gli importi interi.
+    // Prima un documento non saldato contava per tutto il suo valore: con i
+    // pagamenti parziali sarebbe un debito gonfiato di quanto e' gia' stato
+    // versato. Ignorano il periodo: «quanto devo ancora» e' una fotografia di
+    // oggi, non una domanda su un intervallo.
+    var res = safeNum(r.residuo)
+    if (res == null) res = imp - (safeNum(r.importo_pagato) || 0)   // vista vecchia
+    if (r.stato_pagamento !== 'pagato' && Math.abs(res) > 0.005) {
+      if (r.verso === 'uscita')  { t.daPagare.importo += res;    t.daPagare.righe.push(r) }
+      else                       { t.daIncassare.importo += res; t.daIncassare.righe.push(r) }
     }
   }
+  return t
+}
+
+// FASE 8 — SPESO e INCASSATO non si leggono piu' dai documenti ma dai
+// PAGAMENTI: sono la somma di quello che si e' davvero mosso nel periodo.
+// Prima si sommava l'importo intero dei documenti in stato 'pagato', il che
+// con i versamenti parziali non direbbe piu' la verita': un documento da 400
+// pagato per 200 muoveva 200, non 400 e nemmeno 0.
+function sommaPagamentiPeriodo(t, pagamenti, righe, da, a) {
+  // indice documento -> verso, per sapere se un pagamento e' entrata o uscita
+  var verso = {}, doc = {}
+  ;(righe || []).forEach(function (r) {
+    if (!confermata(r)) return          // le righe da confermare restano fuori
+    verso[r.tabella_origine + ':' + r.id_origine] = r.verso
+    doc[r.tabella_origine + ':' + r.id_origine] = r
+  })
+  ;(pagamenti || []).forEach(function (pg) {
+    var k = pg.tabella_origine + ':' + pg.id_origine
+    if (!verso[k]) return               // documento non visibile o da confermare
+    if (!inPeriodo(pg.data, da, a)) return
+    var imp = safeNum(pg.importo) || 0
+    if (verso[k] === 'uscita') { t.speso.importo += imp;     t.speso.righe.push(doc[k]) }
+    else                       { t.incassato.importo += imp; t.incassato.righe.push(doc[k]) }
+  })
   return t
 }
 
@@ -5576,6 +5696,7 @@ async function initCruscottoPage() {
     await loadGruppi()
     await loadIvaPeriodi(true)
     await loadFlussi(true)
+    await loadPagamenti(true)        // FASE 8: SPESO e INCASSATO vengono da qui
     popolaAnniCruscotto()
     setCruscottoModo('anno')     // default all'apertura: anno in corso
   } catch (e) {
@@ -5591,6 +5712,11 @@ function popolaAnniCruscotto() {
   ;(flussiCache || []).forEach(function (r) {
     var d = dataCassa(r)
     if (d && String(d).length >= 4) anni[String(d).slice(0, 4)] = true
+  })
+  // FASE 8 — anche gli anni in cui si e' pagato, che possono essere diversi
+  // da quelli dei documenti.
+  ;(pagamentiCache || []).forEach(function (pg) {
+    if (pg.data && String(pg.data).length >= 4) anni[String(pg.data).slice(0, 4)] = true
   })
   anni[String(new Date().getFullYear())] = true   // l'anno corrente c'e' sempre
   var lista = Object.keys(anni).sort().reverse()
@@ -5612,6 +5738,8 @@ function renderCruscotto() {
   if (!flussiCache) return
   var p = periodoCruscotto()
   var t = calcolaTotaliCruscotto(flussiCache, p.da, p.a)
+  // FASE 8 — SPESO e INCASSATO sono la somma dei PAGAMENTI del periodo.
+  sommaPagamentiPeriodo(t, pagamentiCache, flussiCache, p.da, p.a)
 
   renderRiquadri(t)
   renderSaldoPeriodo(t)
@@ -5788,6 +5916,7 @@ function renderGruppi(speso) {
 function apriElencoCruscotto(quale, param) {
   var p = periodoCruscotto()
   var t = calcolaTotaliCruscotto(flussiCache || [], p.da, p.a)
+  sommaPagamentiPeriodo(t, pagamentiCache, flussiCache, p.da, p.a)
   var righe = [], titolo = '', sotto = ''
 
   if (quale === 'cru-box-speso') {
@@ -6100,9 +6229,47 @@ function calcolaScadenze(righe, oggi, preavviso) {
 
   for (var i = 0; i < (righe || []).length; i++) {
     var r = righe[i]
-    if (r.stato_pagamento !== 'aperto') continue
+    // FASE 8 — PRIMA: «!== 'aperto'», cioe' «salta tutto cio' che non e' intatto».
+    // Con l'arrivo di 'parziale' quella riga avrebbe saltato anche le fatture
+    // pagate a meta': sarebbero sparite da TUTTE le fasce delle scadenze,
+    // SCADUTO compreso, senza nessun errore. Proprio i documenti che meritano
+    // piu' attenzione. Adesso si salta solo cio' che e' saldato davvero.
+    if (r.stato_pagamento === 'pagato') continue
     if (!confermata(r)) continue          // le righe da confermare non sono avvisi
-    var imp = safeNum(r.importo_totale) || 0
+    // FASE 8 — quello che scade e' il RESIDUO, non l'importo pieno: su una
+    // fattura da 400 con 200 gia' versati, restano da pagare 200.
+    var res = safeNum(r.residuo)
+    if (res == null) res = (safeNum(r.importo_totale) || 0) - (safeNum(r.importo_pagato) || 0)
+    var imp = res
+
+    // FASE 8 — un documento con un piano rateale compare per la PROSSIMA RATA
+    // non pagata, non per il residuo totale: e' quella la cifra che scade a
+    // quella data. Il residuo totale si scrive accanto, fra parentesi, cosi'
+    // non si perde di vista il quadro.
+    var rate = rateDi(r.tabella_origine, r.id_origine)
+    var nonPagate = rate.filter(function (x) { return !x.pagamento_id })
+    if (nonPagate.length) {
+      var pross = nonPagate.slice().sort(function (x, y) {
+        return String(x.data_prevista).localeCompare(String(y.data_prevista))
+      })[0]
+      // Si usa una COPIA della riga: la vista non va modificata, la stanno
+      // leggendo anche il cruscotto e i cantieri.
+      var rr = Object.assign({}, r, {
+        data_scadenza: pross.data_prevista,
+        _rata: pross,
+        _rateTotali: rate.length,
+        _residuoTotale: res
+      })
+      imp = safeNum(pross.importo_previsto) || 0
+      rr._importoRata = imp
+      if (r.verso === 'uscita') {
+        if (pross.data_prevista < oggi) { b.scaduto.righe.push(rr); b.scaduto.somma += imp }
+        else if (pross.data_prevista <= limite) { b.inScadenza.righe.push(rr); b.inScadenza.somma += imp }
+      } else {
+        if (pross.data_prevista < oggi) { b.incasso.righe.push(rr); b.incasso.somma += imp }
+      }
+      continue
+    }
 
     if (!r.data_scadenza) { b.senzaData.righe.push(r); b.senzaData.somma += imp; continue }
 
@@ -6144,6 +6311,8 @@ async function initScadenzePage() {
   try {
     await loadImpostazioniConta(true)
     await loadFlussi(true)
+    await loadPagamenti(true)
+    await loadRate(true)
     renderScadenze()
     await refreshScadenzeCount()
   } catch (e) {
@@ -6241,6 +6410,12 @@ function rigaScadenza(r, blocco) {
     ? 'Scadenza ' + fmtDate(r.data_scadenza) + ' — ' + q.testo
     : 'Nessuna data di scadenza registrata'
 
+  // FASE 8 — se si sta guardando una rata, la riga lo dice: «rata 2 di 4».
+  // Senza, sembrerebbe che scada l'intera fattura.
+  if (r._rata) {
+    doc.push('rata ' + r._rata.numero_rata + ' di ' + r._rateTotali)
+  }
+
   return '<div class="scad-riga">' +
     // Nel blocco grigio l'icona resta neutra: li' non c'e' nessuna urgenza,
     // manca solo un dato. Un pallino rosso direbbe il contrario.
@@ -6251,11 +6426,24 @@ function rigaScadenza(r, blocco) {
       '<div class="scad-doc">' + esc(doc.join(' · ')) + '</div>' +
       '<div class="scad-quando ' + q.cls + '">' + esc(quando) + '</div>' +
     '</div>' +
-    '<div class="scad-riga-imp">' + esc(fmtNumIt(safeNum(r.importo_totale) || 0)) + ' CHF</div>' +
+    '<div class="scad-riga-imp">' +
+      esc(fmtNumIt(r._importoRata != null ? r._importoRata
+                   : (safeNum(r.residuo) != null ? safeNum(r.residuo) : (safeNum(r.importo_totale) || 0)))) + ' CHF' +
+      // Il residuo totale accanto alla rata: dice quanto resta in tutto, senza
+      // che si debba sommare le rate a mente.
+      (r._rata && r._residuoTotale != null && Math.abs(r._residuoTotale - r._importoRata) > 0.005
+        ? '<span class="scad-residuo-tot">residuo totale ' + esc(fmtNumIt(r._residuoTotale)) + ' CHF</span>'
+        : '') +
+    '</div>' +
     '<div class="scad-riga-azioni">' +
       '<button type="button" class="azione-rapida" ' +
-        'onclick="segnaSaldatoDaScadenze(\'' + esc(r.tabella_origine) + '\', \'' + esc(r.id_origine) + '\', \'' + esc(r.verso) + '\')">' +
-        '✅ Segna ' + esc(e.testo.toLowerCase()) + '</button>' +
+        'onclick="segnaSaldatoDaScadenze(\'' + esc(r.tabella_origine) + '\', \'' + esc(r.id_origine) +
+          '\', \'' + esc(r.verso) + '\', ' + (r._importoRata != null ? r._importoRata
+            : (safeNum(r.residuo) != null ? safeNum(r.residuo) : (safeNum(r.importo_totale) || 0))) +
+          (r._rata ? ', \'' + esc(r._rata.id) + '\'' : '') + ')">' +
+        // Il testo dice CHE COSA si sta saldando: la rata o tutto il resto.
+        '✅ ' + (r._rata ? 'Salda la rata ' + r._rata.numero_rata
+                          : 'Salda ' + esc(e.testo.toLowerCase())) + '</button>' +
       '<button type="button" class="azione-rapida" ' +
         'onclick="apriDocumentoScadenza(\'' + esc(r.tabella_origine) + '\', \'' + esc(r.id_origine) + '\')">' +
         '✏️ Apri</button>' +
@@ -6270,22 +6458,35 @@ function rigaScadenza(r, blocco) {
 // immutabilita' (FASE 1): l'UPDATE passa. Se arrivasse un errore di
 // immutabilita' vorrebbe dire che si sta scrivendo un campo sbagliato — e in
 // quel caso si deve correggere la chiamata, non aggirare il trigger.
-async function segnaSaldatoDaScadenze(tabella, id, verso) {
+// FASE 8 — non si scrive piu' lo stato: si registra il PAGAMENTO, e lo stato
+// lo ricalcola il trigger. L'importo e' il residuo, oppure la rata se il
+// documento ne ha una in scadenza: e' quello che si sta davvero pagando.
+async function segnaSaldatoDaScadenze(tabella, id, verso, importoDaSaldare, idRata) {
   if (!currentAziendaId) return
   var e = etichettaPagamento(verso, 'pagato')
   try {
-    const { error } = await sb.from(tabella)
-      .update({ stato_pagamento: 'pagato', data_pagamento: oggiISO() })
-      .eq('id', id)
-      .eq('azienda_id', currentAziendaId)
-      .select()
+    var imp = safeNum(importoDaSaldare)
+    if (imp == null || imp <= 0) throw new Error('Importo da saldare non valido.')
+
+    const { data: creato, error } = await sb.from('tm_conta_pagamenti').insert({
+      azienda_id: currentAziendaId,
+      tabella_origine: tabella, id_origine: id,
+      data: oggiISO(), importo: imp,
+      created_by: currentUser ? currentUser.id : null
+    }).select()
     if (error) throw error
 
-    // Si aggiorna la copia in memoria: la riga sparisce dal blocco e i conteggi
-    // si rifanno senza ricaricare la pagina.
-    ;(flussiCache || []).forEach(function (r) {
-      if (r.id_origine === id) { r.stato_pagamento = 'pagato'; r.data_pagamento = oggiISO() }
-    })
+    if (idRata && creato && creato[0]) {
+      try {
+        await sb.from('tm_conta_rate').update({ pagamento_id: creato[0].id })
+          .eq('id', idRata).eq('azienda_id', currentAziendaId).select()
+      } catch (eR) { console.warn('Rata non collegata:', eR.message || eR) }
+    }
+    invalidaCachePagamenti()
+    await loadFlussi(true); await loadPagamenti(true); await loadRate(true)
+
+    // I flussi sono stati riletti: la riga sparisce dal blocco e i conteggi si
+    // rifanno senza ricaricare la pagina.
     renderScadenze()
     await refreshScadenzeCount()
     showScadenzeBanner('ok', 'Segnato come ' + e.testo.toLowerCase() + ' in data odierna.')
@@ -6889,14 +7090,21 @@ function contiCantiere(cantiereId) {
     if (cantiereDelFlusso(r) !== cantiereId) return
     var imp = safeNum(r.importo_totale) || 0
 
+    // FASE 8 — incassato e residuo vengono dai pagamenti veri, non dallo stato:
+    // una fattura incassata a meta' contribuisce per meta' a entrambi.
+    var pagato = safeNum(r.importo_pagato) || 0
+    var res = safeNum(r.residuo)
+    if (res == null) res = imp - pagato
+
     if (r.verso === 'entrata') {
-      // Il FATTURATO conta il documento emesso, a prescindere dall'incasso.
+      // Il FATTURATO conta il documento emesso, a prescindere dall'incasso:
+      // e' quello che decide il margine, e non cambia con la FASE 8.
       c.fatturato.importo += imp; c.fatturato.righe.push(r)
-      if (r.stato_pagamento === 'pagato') { c.incassato.importo += imp; c.incassato.righe.push(r) }
-      else { c.daIncassare.importo += imp; c.daIncassare.righe.push(r) }
+      if (pagato > 0.005)      { c.incassato.importo += pagato;   c.incassato.righe.push(r) }
+      if (Math.abs(res) > 0.005) { c.daIncassare.importo += res;  c.daIncassare.righe.push(r) }
     } else {
       c.fornitori.importo += imp; c.fornitori.righe.push(r)
-      if (r.stato_pagamento !== 'pagato') c.fornitoriDaPagare += imp
+      if (Math.abs(res) > 0.005) c.fornitoriDaPagare += res
     }
   })
 
@@ -6956,6 +7164,7 @@ async function initCantieriPage() {
     await loadImpostazioniConta(true)
     await loadCantieri()
     await loadFlussi(true)
+    await loadPagamenti(true)
     await loadMappaCantieri(true)
     await loadSpeseCantiere(true)
     await loadRegiaCantiere(true)
@@ -7579,6 +7788,7 @@ async function generaPacchetto() {
     var JSZipLib = await caricaJSZip()
 
     mostraProgressoPacchetto('Raccolta dei documenti…', 5)
+    await loadPagamenti(true)      // FASE 8: servono per le colonne PAGATO e RESIDUO
     var r = await raccogliDocumentiPacchetto(da, a)
     if (!r.voci.length) {
       bannerPacchetto('warn', 'Nessun documento in questo periodo: non è stato creato nessun file.')
@@ -7889,6 +8099,478 @@ async function allegaPdfFattura(input) {
   } finally {
     if (input) input.value = ''
   }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 8 — PAGAMENTI PARZIALI E RATE
+//
+// TRE CONCETTI CHE NON SI MESCOLANO MAI:
+//   DOCUMENTO   la fattura. Importo fisso.
+//   RATE        quello che si e' PROMESSO di pagare. Previsione, date future.
+//   PAGAMENTI   quello che si e' PAGATO davvero. Fatto compiuto, data reale.
+//
+// Sommare rate e pagamenti conterebbe due volte lo stesso denaro. Le rate
+// servono alle Scadenze, per sapere QUANDO; i pagamenti dicono QUANTO e' uscito.
+//
+// stato_pagamento NON si scrive piu' da qui: lo calcola il trigger sul database
+// a ogni pagamento inserito o cancellato. Il codice lo legge soltanto.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let pagamentiCache = null   // tutti i pagamenti dell'azienda
+let rateCache      = null   // tutte le rate dell'azienda
+let docPagamentoCorrente = null   // {tabella, id, importo, verso, nome} nella modale
+
+// ── Letture ─────────────────────────────────────────────────────────────────
+
+async function loadPagamenti(force) {
+  if (pagamentiCache && !force) return pagamentiCache
+  if (!currentAziendaId) { pagamentiCache = []; return pagamentiCache }
+  try {
+    const { data, error } = await sb.from('tm_conta_pagamenti')
+      .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note')
+      .eq('azienda_id', currentAziendaId)
+      .order('data')
+    if (error) throw error
+    pagamentiCache = data || []
+  } catch (e) {
+    pagamentiCache = []
+    console.warn('Pagamenti non letti:', e.message || e)
+  }
+  return pagamentiCache
+}
+
+async function loadRate(force) {
+  if (rateCache && !force) return rateCache
+  if (!currentAziendaId) { rateCache = []; return rateCache }
+  try {
+    const { data, error } = await sb.from('tm_conta_rate')
+      .select('id, tabella_origine, id_origine, numero_rata, data_prevista, importo_previsto, pagamento_id, note')
+      .eq('azienda_id', currentAziendaId)
+      .order('numero_rata')
+    if (error) throw error
+    rateCache = data || []
+  } catch (e) {
+    rateCache = []
+    console.warn('Rate non lette:', e.message || e)
+  }
+  return rateCache
+}
+
+function pagamentiDi(tabella, id) {
+  return (pagamentiCache || []).filter(function (p) {
+    return p.tabella_origine === tabella && p.id_origine === id
+  })
+}
+function rateDi(tabella, id) {
+  return (rateCache || []).filter(function (r) {
+    return r.tabella_origine === tabella && r.id_origine === id
+  }).sort(function (a, b) { return a.numero_rata - b.numero_rata })
+}
+function totalePagatoDi(tabella, id) {
+  return pagamentiDi(tabella, id).reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
+}
+
+// Svuota tutto quello che dipende dai pagamenti: dopo una modifica, ogni
+// schermata deve rileggere invece di mostrare numeri vecchi.
+function invalidaCachePagamenti() {
+  pagamentiCache = null
+  rateCache = null
+  flussiCache = null
+  exportDataset = null
+}
+
+// ══ 8B — REGISTRARE UN PAGAMENTO ═══════════════════════════════════════════
+
+// Apre la modale. L'importo proposto e' il RESIDUO: e' quasi sempre quello che
+// si sta pagando, e chi paga a rate lo corregge.
+async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
+  docPagamentoCorrente = { tabella: tabella, id: id, importo: safeNum(importoDoc) || 0,
+                           verso: verso || 'uscita', nome: nome || '' }
+  await loadPagamenti(true)
+  await loadRate(true)
+
+  var gia = totalePagatoDi(tabella, id)
+  var residuo = docPagamentoCorrente.importo - gia
+
+  html('pag-riepilogo',
+    rigaPag('Importo del documento', docPagamentoCorrente.importo) +
+    rigaPag('Già pagato', gia) +
+    rigaPag('Residuo', residuo, true))
+
+  setVal('pag-data', oggiISO())
+  setVal('pag-importo', residuo > 0 ? residuo.toFixed(2) : '')
+  setVal('pag-metodo', '')
+  setVal('pag-riferimento', '')
+  html('pag-banner', '')
+  html('pag-avviso', '')
+
+  // «Salda la rata» compare solo se ci sono rate non ancora pagate.
+  var nonPagate = rateDi(tabella, id).filter(function (r) { return !r.pagamento_id })
+  var grp = el('pag-rata-group')
+  if (grp) grp.style.display = nonPagate.length ? 'block' : 'none'
+  var sel = el('pag-rata')
+  if (sel) {
+    sel.innerHTML = '<option value="">— nessuna rata —</option>' +
+      nonPagate.map(function (r) {
+        return '<option value="' + esc(r.id) + '">Rata ' + r.numero_rata + ' del ' +
+               esc(fmtDate(r.data_prevista)) + ' — ' + esc(fmtNumIt(r.importo_previsto)) + ' CHF</option>'
+      }).join('')
+  }
+
+  var ov = el('pagamento-overlay')
+  if (ov) ov.style.display = 'flex'
+  var inp = el('pag-importo'); if (inp) inp.focus()
+}
+
+function rigaPag(etichetta, importo, forte) {
+  return '<div class="pag-riga' + (forte ? ' forte' : '') + '">' +
+    '<span>' + esc(etichetta) + '</span>' +
+    '<span>' + esc(fmtNumIt(importo)) + ' CHF</span></div>'
+}
+
+function chiudiRegistraPagamento() {
+  var ov = el('pagamento-overlay')
+  if (ov) ov.style.display = 'none'
+  docPagamentoCorrente = null
+}
+
+// Scegliendo una rata, importo e data si propongono da quella: e' il senso di
+// un piano rateale, e riscriverli a mano ogni volta sarebbe solo un modo per
+// sbagliarli.
+function onRataScelta() {
+  var id = getVal('pag-rata')
+  if (!id || !docPagamentoCorrente) return
+  var r = rateDi(docPagamentoCorrente.tabella, docPagamentoCorrente.id)
+            .filter(function (x) { return x.id === id })[0]
+  if (!r) return
+  setVal('pag-importo', (safeNum(r.importo_previsto) || 0).toFixed(2))
+  // La data resta quella di oggi: la rata dice quando ERA prevista, il
+  // pagamento dice quando e' avvenuto davvero. Sono due date diverse.
+  controllaImportoPagamento()
+}
+
+// Avviso NON bloccante se si versa piu' del residuo: capita davvero, con
+// interessi e spese bancarie. Si avvisa e si lascia salvare.
+function controllaImportoPagamento() {
+  if (!docPagamentoCorrente) return
+  var imp = safeNum(getVal('pag-importo'))
+  var gia = totalePagatoDi(docPagamentoCorrente.tabella, docPagamentoCorrente.id)
+  var residuo = docPagamentoCorrente.importo - gia
+  if (imp != null && imp > residuo + 0.005) {
+    html('pag-avviso',
+      '<div class="lettura-nota avviso"><span aria-hidden="true">⚠️</span><span>' +
+      'Stai registrando <strong>' + esc(fmtNumIt(imp)) + ' CHF</strong> su un residuo di <strong>' +
+      esc(fmtNumIt(residuo)) + ' CHF</strong>: sono <strong>' + esc(fmtNumIt(imp - residuo)) +
+      ' CHF</strong> in più. Può essere giusto (interessi, spese bancarie): puoi salvare lo stesso.' +
+      '</span></div>')
+  } else {
+    html('pag-avviso', '')
+  }
+}
+
+async function salvaPagamento() {
+  if (!docPagamentoCorrente) return
+  var d = docPagamentoCorrente
+  var btn = el('pag-salva-btn')
+  try {
+    var data = getVal('pag-data')
+    var imp = safeNum(getVal('pag-importo'))
+    if (!data) throw new Error('Serve la data del pagamento.')
+    if (!validaData(data)) throw new Error('La data del pagamento non è valida.')
+    // Zero o negativo si rifiuta: non e' un pagamento.
+    if (imp == null || imp <= 0) throw new Error('L\'importo deve essere maggiore di zero.')
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
+
+    const { data: creato, error } = await sb.from('tm_conta_pagamenti').insert({
+      azienda_id: currentAziendaId,
+      tabella_origine: d.tabella,
+      id_origine: d.id,
+      data: data,
+      importo: imp,
+      metodo: getVal('pag-metodo') || null,
+      riferimento: getVal('pag-riferimento') || null,
+      created_by: currentUser ? currentUser.id : null
+    }).select()
+    if (error) throw error
+
+    // La rata scelta si collega al pagamento appena creato.
+    var idRata = getVal('pag-rata')
+    if (idRata && creato && creato[0]) {
+      const { error: eRata } = await sb.from('tm_conta_rate')
+        .update({ pagamento_id: creato[0].id })
+        .eq('id', idRata).eq('azienda_id', currentAziendaId).select()
+      if (eRata) console.warn('Rata non collegata:', eRata.message)
+    }
+
+    invalidaCachePagamenti()
+    chiudiRegistraPagamento()
+    await ricaricaDopoPagamento(d)
+  } catch (e) {
+    var m = String(e.message || e)
+    // Il trigger di immutabilita' non deve entrarci: se compare, e' un segnale.
+    if (m.indexOf('sola lettura') !== -1 || m.indexOf('non si puo modificare') !== -1) {
+      m = 'Il database ha rifiutato la modifica come se si toccasse un campo congelato della fattura. ' +
+          'Non va aggirato: segnalalo. Messaggio: ' + m
+    }
+    html('pag-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">' + esc(m) + '</div></div>')
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Registra' }
+  }
+}
+
+// Dopo un pagamento si ridisegna la schermata da cui si e' partiti.
+async function ricaricaDopoPagamento(d) {
+  try {
+    await loadPagamenti(true)
+    await loadRate(true)
+    if (d.tabella === 'tm_conta_fatture') {
+      await loadFattureList(); await viewFattura(d.id)
+    } else if (d.tabella === 'tm_conta_fatture_acquisto') {
+      await loadAcquistiList(); await viewAcquisto(d.id)
+    }
+    if (currentPage === 'scadenze') { await loadFlussi(true); renderScadenze() }
+    if (currentPage === 'cruscotto') { await loadFlussi(true); renderCruscotto() }
+    await refreshScadenzeCount()
+  } catch (e) { console.warn('Ricarica dopo pagamento:', e.message || e) }
+}
+
+// ── Elenco dei pagamenti nella scheda del documento ─────────────────────────
+
+function elencoPagamentiHtml(tabella, id, verso) {
+  var lista = pagamentiDi(tabella, id)
+  var rate = rateDi(tabella, id)
+  if (!lista.length) {
+    return '<div class="cru-vuoto">Nessun pagamento registrato su questo documento.</div>'
+  }
+  return lista.map(function (p) {
+    // Se questo pagamento salda una rata, si dice quale.
+    var r = rate.filter(function (x) { return x.pagamento_id === p.id })[0]
+    return '<div class="pag-elenco-riga">' +
+      '<span class="pag-data">' + esc(fmtDate(p.data)) + '</span>' +
+      '<span class="pag-imp">' + esc(fmtNumIt(p.importo)) + ' CHF</span>' +
+      '<span class="pag-meta">' +
+        esc([p.metodo, p.riferimento].filter(Boolean).join(' · ') || '—') +
+        (r ? ' <span class="pag-rata-tag">salda la rata ' + r.numero_rata + '</span>' : '') +
+      '</span>' +
+      '<button type="button" class="azione-rapida" ' +
+        'onclick="eliminaPagamento(\'' + esc(p.id) + '\', \'' + esc(fmtNumIt(p.importo)) +
+        '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>' +
+    '</div>'
+  }).join('')
+}
+
+// La conferma NOMINA importo e data: «Eliminare?» da solo non dice quale dei
+// tre versamenti si sta per cancellare.
+async function eliminaPagamento(idPagamento, importoTesto, dataTesto) {
+  if (!window.confirm('Eliminare il pagamento di ' + importoTesto + ' CHF del ' + dataTesto + '?\n\n' +
+      'Lo stato del documento viene ricalcolato: se era «pagato» torna a «pagato in parte» o «non pagato». ' +
+      'Una rata collegata torna da pagare.')) return
+  try {
+    var pg = (pagamentiCache || []).filter(function (p) { return p.id === idPagamento })[0]
+    const { error } = await sb.from('tm_conta_pagamenti')
+      .delete().eq('id', idPagamento).eq('azienda_id', currentAziendaId)
+    if (error) throw error
+    invalidaCachePagamenti()
+    if (pg) await ricaricaDopoPagamento({ tabella: pg.tabella_origine, id: pg.id_origine })
+  } catch (e) {
+    window.alert('Pagamento non eliminato: ' + (e.message || e))
+  }
+}
+
+// ══ 8C — IL PIANO RATEALE ══════════════════════════════════════════════════
+
+let rateBozza = []          // righe dell'anteprima, modificabili prima di salvare
+let docRateCorrente = null
+
+async function apriPianoRateale(tabella, id, importoDoc, nome) {
+  docRateCorrente = { tabella: tabella, id: id, importo: safeNum(importoDoc) || 0, nome: nome || '' }
+  await loadRate(true)
+  html('rate-riepilogo', rigaPag('Importo da ripartire', docRateCorrente.importo, true))
+  setVal('rate-numero', '4')
+  setVal('rate-prima', oggiISO())
+  setVal('rate-ogni', 'mese')
+  html('rate-banner', '')
+  generaAnteprimaRate()
+  var ov = el('rate-overlay')
+  if (ov) ov.style.display = 'flex'
+}
+
+function chiudiPianoRateale() {
+  var ov = el('rate-overlay')
+  if (ov) ov.style.display = 'none'
+  docRateCorrente = null
+  rateBozza = []
+}
+
+// La ripartizione: importo / numero rate, a 2 decimali. La DIFFERENZA di
+// arrotondamento va sull'ULTIMA rata, cosi' la somma torna esatta.
+// 100 in 3 rate -> 33,33 + 33,33 + 33,34 = 100,00
+function generaAnteprimaRate() {
+  if (!docRateCorrente) return
+  var n = parseInt(getVal('rate-numero'), 10)
+  var prima = getVal('rate-prima')
+  var ogni = getVal('rate-ogni') || 'mese'
+  if (!n || n < 1 || n > 60) { html('rate-anteprima', '<div class="cru-vuoto">Indica un numero di rate fra 1 e 60.</div>'); rateBozza = []; return }
+  if (!prima || !validaData(prima)) { html('rate-anteprima', '<div class="cru-vuoto">Indica la data della prima scadenza.</div>'); rateBozza = []; return }
+
+  var tot = docRateCorrente.importo
+  var base = Math.round((tot / n) * 100) / 100
+  rateBozza = []
+  for (var i = 0; i < n; i++) {
+    var imp = (i === n - 1) ? Math.round((tot - base * (n - 1)) * 100) / 100 : base
+    rateBozza.push({ numero: i + 1, data: dataRata(prima, i, ogni), importo: imp })
+  }
+  renderAnteprimaRate()
+}
+
+// La data della rata i-esima. Usa addDays / mesi senza mai passare da
+// toISOString: le date locali non devono attraversare UTC (regola FASE 2).
+function dataRata(prima, indice, ogni) {
+  var p = String(prima).split('-')
+  var y = +p[0], m = +p[1] - 1, g = +p[2]
+  if (ogni === 'settimana') return addDays(prima, indice * 7)
+  var passo = (ogni === 'trimestre') ? 3 : 1
+  var d = new Date(y, m + indice * passo, 1)
+  // Se il giorno non esiste nel mese (31 in un mese di 30), si prende l'ultimo.
+  var ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
+  d.setDate(Math.min(g, ultimo))
+  return dataISO(d)
+}
+
+function renderAnteprimaRate() {
+  var somma = rateBozza.reduce(function (s, r) { return s + (safeNum(r.importo) || 0) }, 0)
+  var tot = docRateCorrente ? docRateCorrente.importo : 0
+  var torna = Math.abs(somma - tot) < 0.005
+
+  var righe = rateBozza.map(function (r, i) {
+    return '<div class="rata-riga">' +
+      '<span class="rata-n">' + r.numero + '</span>' +
+      '<input type="date" class="form-input rata-data" value="' + esc(r.data) + '" ' +
+        'onchange="modificaRata(' + i + ', \'data\', this.value)" aria-label="Data rata ' + r.numero + '" />' +
+      '<input type="number" step="0.01" min="0" class="form-input rata-imp" value="' + esc(r.importo) + '" ' +
+        'onchange="modificaRata(' + i + ', \'importo\', this.value)" aria-label="Importo rata ' + r.numero + '" />' +
+      '<span class="rata-chf">CHF</span>' +
+    '</div>'
+  }).join('')
+
+  html('rate-anteprima', righe +
+    '<div class="rata-totale' + (torna ? ' ok' : ' err') + '">' +
+      '<span>Totale delle rate</span>' +
+      '<span>' + esc(fmtNumIt(somma)) + ' CHF</span>' +
+      '<span>' + (torna
+        ? '✅ corrisponde all\'importo del documento'
+        : '❌ non corrisponde: mancano ' + esc(fmtNumIt(tot - somma)) + ' CHF') + '</span>' +
+    '</div>')
+
+  // Qui bloccare e' giusto: un piano che non somma e' un piano sbagliato, e
+  // salvarlo significherebbe portarsi dietro un errore in ogni scadenza futura.
+  var btn = el('rate-salva-btn')
+  if (btn) btn.disabled = !torna || !rateBozza.length
+}
+
+function modificaRata(i, campo, valore) {
+  if (!rateBozza[i]) return
+  if (campo === 'importo') rateBozza[i].importo = safeNum(valore) || 0
+  else rateBozza[i].data = valore
+  renderAnteprimaRate()
+}
+
+async function salvaPianoRateale() {
+  if (!docRateCorrente || !rateBozza.length) return
+  var d = docRateCorrente
+  var btn = el('rate-salva-btn')
+  try {
+    var somma = rateBozza.reduce(function (s, r) { return s + (safeNum(r.importo) || 0) }, 0)
+    if (Math.abs(somma - d.importo) > 0.005) {
+      throw new Error('Le rate sommano ' + fmtNumIt(somma) + ' CHF invece di ' + fmtNumIt(d.importo) + ' CHF.')
+    }
+    for (var i = 0; i < rateBozza.length; i++) {
+      if (!validaData(rateBozza[i].data)) throw new Error('La data della rata ' + rateBozza[i].numero + ' non è valida.')
+      if ((safeNum(rateBozza[i].importo) || 0) <= 0) throw new Error('L\'importo della rata ' + rateBozza[i].numero + ' deve essere maggiore di zero.')
+    }
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
+
+    // Si sostituisce il piano: si tolgono solo le rate NON pagate, quelle gia'
+    // saldate restano perche' sono collegate a un pagamento vero.
+    const { error: eDel } = await sb.from('tm_conta_rate')
+      .delete()
+      .eq('tabella_origine', d.tabella).eq('id_origine', d.id)
+      .eq('azienda_id', currentAziendaId)
+      .is('pagamento_id', null)
+    if (eDel) throw eDel
+
+    const { error } = await sb.from('tm_conta_rate').insert(rateBozza.map(function (r) {
+      return {
+        azienda_id: currentAziendaId,
+        tabella_origine: d.tabella, id_origine: d.id,
+        numero_rata: r.numero, data_prevista: r.data, importo_previsto: r.importo
+      }
+    })).select()
+    if (error) throw error
+
+    invalidaCachePagamenti()
+    chiudiPianoRateale()
+    await ricaricaDopoPagamento(d)
+  } catch (e) {
+    html('rate-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">' + esc(e.message || e) + '</div></div>')
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Salva il piano' }
+  }
+}
+
+// ── Elenco delle rate nella scheda ──────────────────────────────────────────
+
+function elencoRateHtml(tabella, id) {
+  var lista = rateDi(tabella, id)
+  if (!lista.length) return ''
+  var pag = pagamentiCache || []
+  return '<div class="rate-elenco">' + lista.map(function (r) {
+    var p = r.pagamento_id ? pag.filter(function (x) { return x.id === r.pagamento_id })[0] : null
+    return '<div class="rata-elenco-riga">' +
+      '<span class="rata-n">' + r.numero_rata + '</span>' +
+      '<span class="rata-data-txt">' + esc(fmtDate(r.data_prevista)) + '</span>' +
+      '<span class="rata-imp-txt">' + esc(fmtNumIt(r.importo_previsto)) + ' CHF</span>' +
+      '<span class="rata-stato">' + (p
+        ? '✅ pagata il ' + esc(fmtDate(p.data))
+        : '⏳ da pagare') + '</span>' +
+    '</div>'
+  }).join('') + '</div>'
+}
+
+// ── Il riquadro completo «Pagamenti e rate» per la scheda del documento ─────
+
+function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
+  var gia = totalePagatoDi(tabella, id)
+  var residuo = (safeNum(importoDoc) || 0) - gia
+  var rate = rateDi(tabella, id)
+  var e = etichettaPagamento(verso, gia <= 0.005 ? 'aperto' : (residuo > 0.005 ? 'parziale' : 'pagato'))
+  var argomenti = "'" + esc(tabella) + "', '" + esc(id) + "', " + (safeNum(importoDoc) || 0) +
+                  ", '" + esc(verso) + "', '" + esc(String(nome || '').replace(/'/g, '')) + "'"
+
+  return '<div class="card">' +
+    '<div class="card-title">💳 Pagamenti</div>' +
+    '<div class="pag-sommario">' +
+      rigaPag('Importo del documento', safeNum(importoDoc) || 0) +
+      rigaPag('Pagato', gia) +
+      rigaPag('Residuo', residuo, true) +
+      '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + e.testo) + '</div>' +
+    '</div>' +
+    elencoPagamentiHtml(tabella, id, verso) +
+    '<div class="form-actions" style="margin-top:12px">' +
+      '<button type="button" class="btn-primary" onclick="apriRegistraPagamento(' + argomenti + ')">' +
+        '➕ Registra pagamento</button>' +
+      '<button type="button" class="btn-secondary" onclick="apriPianoRateale(\'' + esc(tabella) + '\', \'' +
+        esc(id) + '\', ' + (safeNum(importoDoc) || 0) + ', \'' + esc(String(nome || '').replace(/'/g, '')) + '\')">' +
+        (rate.length ? '📅 Modifica il piano rateale' : '📅 Crea piano rateale') + '</button>' +
+    '</div>' +
+    (rate.length
+      ? '<div class="card-title" style="margin-top:16px">📅 Rate</div>' + elencoRateHtml(tabella, id)
+      : '') +
+  '</div>'
 }
 
 
