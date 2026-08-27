@@ -1793,3 +1793,59 @@ tbody tr.row-clickable { cursor: pointer; }
   .cant-imp, .cant-n { text-align: left; min-width: 0; }
   .cant-margine-imp { font-size: 22px; }
 }
+
+/* == FASE 7 - Pacchetto commercialista ==================================== */
+
+.pacchetto-box {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.pacchetto-titolo { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+.pacchetto-desc { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 12px; }
+
+/* Barra di avanzamento: il testo dice a che punto siamo, la barra e solo un
+   supporto. Una barra senza numeri non dice quanto manca. */
+.progresso-testo {
+  font-size: 13px;
+  color: var(--text);
+  margin: 10px 0 6px;
+  font-weight: 600;
+}
+.progresso-barra-sfondo {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--border);
+  overflow: hidden;
+}
+.progresso-barra {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--primary);
+  transition: width .25s ease;
+}
+
+/* Spia del PDF non ancora allegato nell elenco fatture: icona E parola. */
+.pdf-mancante {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+/* Il bottone del blocco periodo quando lo si propone dopo lo ZIP */
+.evidenzia {
+  animation: pulsa 1.3s ease-in-out 2;
+  box-shadow: 0 0 0 3px rgba(200,150,12,.45);
+}
+@keyframes pulsa {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(200,150,12,.45); }
+  50%      { box-shadow: 0 0 0 8px rgba(200,150,12,.15); }
+}
