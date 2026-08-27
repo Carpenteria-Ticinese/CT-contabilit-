@@ -1685,3 +1685,111 @@ tbody tr.row-clickable { cursor: pointer; }
   line-height: 1.5;
   resize: vertical;
 }
+
+/* == FASE 6 - Cantieri ==================================================== */
+
+/* I blocchi della scheda cantiere */
+.cant-blocco { margin-bottom: 14px; }
+
+.cant-riga {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  width: 100%;
+  text-align: left;
+  padding: 10px 6px;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  border-left: none; border-right: none; border-top: none;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text);
+}
+.cant-riga:last-of-type { border-bottom: none; }
+.cant-riga.cliccabile { cursor: pointer; border-radius: var(--radius); }
+.cant-riga.cliccabile:hover { background: var(--primary-lt); }
+.cant-riga.cliccabile:focus { outline: 2px solid rgba(45,106,79,.35); outline-offset: 1px; }
+
+.cant-et  { flex: 1; min-width: 150px; }
+.cant-imp { font-weight: 700; min-width: 130px; text-align: right; }
+.cant-n   { font-size: 12px; color: var(--text2); min-width: 110px; text-align: right; }
+.cant-sub { font-size: 12px; color: var(--text2); padding: 0 6px 8px; margin-top: -4px; }
+
+/* Il riquadro del risultato */
+.cant-risultato { border-left: 5px solid var(--primary); }
+.cant-margine {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 6px 4px;
+}
+.cant-margine-et {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text2);
+  width: 100%;
+}
+.cant-margine-imp { font-size: 26px; font-weight: 700; color: var(--text); }
+.cant-margine-perc { font-size: 13px; color: var(--text2); }
+.cant-formula { font-size: 11px; color: var(--text3); padding: 0 6px 6px; }
+
+/* Elenco di confronto (6C) */
+.th-ordina {
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: inherit;
+}
+.th-ordina:hover { color: var(--primary); text-decoration: underline; }
+
+.riga-totale td {
+  border-top: 2px solid var(--border);
+  background: var(--bg);
+}
+
+/* Margine basso: icona E parola, mai il solo colore */
+.margine-basso {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  white-space: nowrap;
+}
+.senza-mano {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+/* Stato del costo orario in Impostazioni */
+.costo-stato { margin-top: 8px; }
+.costo-riga {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text2);
+  padding: 3px 0;
+}
+.costo-riga strong { color: var(--text); }
+
+@media (max-width: 900px) {
+  .cant-imp, .cant-n { text-align: left; min-width: 0; }
+  .cant-margine-imp { font-size: 22px; }
+}
