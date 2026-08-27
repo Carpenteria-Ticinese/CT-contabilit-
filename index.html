@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=17" />
+  <link rel="stylesheet" href="css/style.css?v=18" />
 </head>
 <body>
 
@@ -45,6 +45,11 @@
       <span>Scadenze</span>
       <span class="nav-badge badge-scadenze" id="nav-badge-scadenze"
             style="display:none" aria-live="polite"></span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="cantieri">
+      <span aria-hidden="true">🏗</span>
+      <span>Cantieri</span>
     </button>
 
     <button class="nav-item auth-only" data-page="movimenti">
@@ -300,6 +305,72 @@
       </div>
 
       <div id="scad-blocchi"></div>
+
+    </div>
+
+    <!-- ══ PAGINA: Contabilità per cantiere (Fase 6) ════════════ -->
+    <div id="page-cantieri" class="page">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Cantieri</div>
+          <div class="page-subtitle">
+            Quanto è entrato e quanto è costato, cantiere per cantiere.
+          </div>
+        </div>
+      </div>
+
+      <div id="cantieri-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+      <!-- ── 6C: elenco di confronto ──────────────────────────────────── -->
+      <div id="cantieri-elenco-view">
+        <div class="card">
+          <div class="card-title">📊 Confronto fra cantieri</div>
+          <div class="form-hint" style="margin-bottom:12px">
+            Un cantiere per riga. Premi su una riga per vederne il dettaglio.
+            Premi sulle intestazioni per cambiare l&rsquo;ordine.
+          </div>
+          <div id="cantieri-tabella"></div>
+        </div>
+      </div>
+
+      <!-- ── 6B: scheda del singolo cantiere ──────────────────────────── -->
+      <div id="cantieri-scheda-view" style="display:none">
+
+        <div class="card">
+          <div class="form-row" style="align-items:flex-end">
+            <div class="form-group" style="flex:2; margin-bottom:0">
+              <label for="cant-scelta" class="form-label">Cantiere</label>
+              <select id="cant-scelta" class="form-input" onchange="apriCantiere(this.value)"></select>
+            </div>
+            <div class="form-group" style="flex:0 0 auto; margin-bottom:0">
+              <button type="button" class="btn-secondary" onclick="tornaElencoCantieri()">
+                &larr; Torna al confronto
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="cant-dettaglio"></div>
+
+        <!-- Avvisi obbligatori: sempre visibili, non solo quando c'è un problema -->
+        <div class="nota-cruscotto">
+          <span aria-hidden="true">ℹ️</span>
+          <span>
+            Il margine è calcolato sui documenti registrati: le fatture non ancora inserite
+            non sono contate. Non include ammortamenti, costi di struttura e ore non registrate.
+          </span>
+        </div>
+
+        <div class="card" id="cant-elenco-card" style="display:none">
+          <div class="card-title" id="cant-elenco-titolo">Elenco</div>
+          <div id="cant-elenco"></div>
+          <div class="form-actions" style="margin-top:14px">
+            <button type="button" class="btn-secondary" onclick="chiudiElencoCantiere()">Chiudi elenco</button>
+          </div>
+        </div>
+
+      </div>
 
     </div>
 
@@ -1060,6 +1131,12 @@
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="acquisti-filtro-cantiere" class="form-label">Cantiere</label>
+              <select id="acquisti-filtro-cantiere" class="form-input" onchange="renderAcquistiTable()">
+                <option value="">Tutti</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="acquisti-filtro-anno" class="form-label">Anno</label>
               <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
             </div>
@@ -1360,6 +1437,36 @@
 
       <div class="card">
       <div class="card">
+        <div class="card-title">👷 Costo orario della manodopera</div>
+        <div class="form-hint" style="margin-bottom:12px">
+          Serve a calcolare il margine dei cantieri. <strong>Non è la tariffa a cui vendi
+          un&rsquo;ora</strong>: è quello che un&rsquo;ora ti costa — salario lordo, oneri sociali e
+          assicurazioni, diviso le ore produttive dell&rsquo;anno.
+        </div>
+
+        <div class="form-group" style="max-width:260px">
+          <label for="imp-costo-orario" class="form-label">Costo orario</label>
+          <div class="form-row" style="align-items:center; gap:8px">
+            <input type="number" id="imp-costo-orario" class="form-input"
+                   min="0" max="500" step="0.01" placeholder="es. 52.00"
+                   oninput="onCostoOrarioCambiato()" style="flex:1" />
+            <span class="dim" style="white-space:nowrap">CHF/h</span>
+          </div>
+        </div>
+
+        <div id="imp-costo-stato" class="costo-stato"></div>
+
+        <label class="form-label-check" style="margin-top:10px">
+          <input type="checkbox" id="imp-costo-verificato" onchange="onCostoVerificatoCambiato()" />
+          <span>Verificato dal commercialista</span>
+        </label>
+        <div class="form-hint" id="imp-costo-verificato-hint" style="margin-top:4px">
+          Cambiando il costo orario la spunta si toglie da sola: un numero nuovo non è
+          quello che il commercialista aveva controllato.
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-title">⏰ Avvisi scadenze</div>
         <div class="form-hint" style="margin-bottom:12px">
           Riguardano la schermata «Scadenze» e il pallino rosso nel menu.
@@ -1620,7 +1727,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=17"></script>
+<script src="js/app.js?v=18"></script>
 
 </body>
 </html>
