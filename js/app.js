@@ -5614,6 +5614,7 @@ function renderCruscotto() {
   var t = calcolaTotaliCruscotto(flussiCache, p.da, p.a)
 
   renderRiquadri(t)
+  renderSaldoPeriodo(t)
   renderIvaRiga(p)
   renderGruppi(t.speso)
   chiudiElencoCruscotto()
@@ -5649,6 +5650,40 @@ function renderRiquadri(t) {
     boxCruscotto('cru-box-dapagare',    'attesa-uscita', '⏳', 'Da pagare',    t.daPagare, notaPagare) +
     boxCruscotto('cru-box-daincassare', 'attesa-entrata','🔵', 'Da incassare', t.daIncassare, notaIncassare)
   )
+}
+
+// Il saldo del periodo: quanto e' rimasto, fra quello che e' entrato e quello
+// che e' uscito. Stessa regola di cassa dei quattro riquadri: conta la data in
+// cui il denaro si e' mosso, non quella dei documenti.
+//
+// Il segno e' SEMPRE scritto, anche quando e' positivo: «4.726,75» da solo non
+// dice se sono soldi entrati o usciti, «+ 4.726,75» si'. E sotto c'e' il conto
+// per esteso, perche' un totale che non si puo' rifare a mano non si controlla.
+function renderSaldoPeriodo(t) {
+  var saldo = t.incassato.importo - t.speso.importo
+  var inPerdita = saldo < 0
+  // Lo zero non ha segno: «+ 0,00» e «- 0,00» sarebbero solo confusi.
+  var segno = (Math.abs(saldo) < 0.005) ? '' : (inPerdita ? '−' : '+')
+  var cls = (Math.abs(saldo) < 0.005) ? 'pari' : (inPerdita ? 'perdita' : 'utile')
+
+  html('cru-saldo',
+    '<div class="saldo-box ' + cls + '">' +
+      '<div class="saldo-etichetta">SALDO DEL PERIODO</div>' +
+      '<div class="saldo-importo">' +
+        (segno ? '<span class="saldo-segno">' + segno + '</span> ' : '') +
+        esc(fmtNumIt(Math.abs(saldo))) + ' <span class="saldo-valuta">CHF</span>' +
+      '</div>' +
+      '<div class="saldo-calcolo">' +
+        'incassato ' + esc(fmtNumIt(t.incassato.importo)) +
+        ' − speso ' + esc(fmtNumIt(t.speso.importo)) +
+      '</div>' +
+      // In perdita: icona E parole. Il rosso da solo non lo direbbe a chi non
+      // distingue i colori, e non lo direbbe affatto se stampato in bianco e nero.
+      (inPerdita
+        ? '<div class="saldo-avviso"><span aria-hidden="true">⚠️</span>' +
+          '<span>In perdita nel periodo: è uscito più denaro di quanto ne sia entrato.</span></div>'
+        : '') +
+    '</div>')
 }
 
 // Riga IVA: compare SOLO se esiste un periodo IVA in vigore. Mostrare importi a
