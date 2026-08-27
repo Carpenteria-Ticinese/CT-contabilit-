@@ -807,6 +807,19 @@ async function ensureContiIva() {
 async function loadCantieri() {
   if (cantieriCache !== null) return
   try {
+    // FASE 6A — servono anche luogo e stato: il luogo distingue due cantieri
+    // con lo stesso nome, lo stato decide l'ordine della tendina.
+    // SOLA LETTURA: 'cantieri' e' una tabella di App Cantieri, in produzione.
+    const { data, error } = await sb.from('cantieri')
+      .select('id, nome, luogo, stato, committente').limit(500)
+    if (error) throw error
+    cantieriCache = (data || []).map(function (c) {
+      return { id: c.id, nome: c.nome, luogo: c.luogo || null,
+               stato: c.stato || null, committente: c.committente || null }
+    })
+    return
+  } catch (e0) {
+  try {
     const { data, error } = await sb.from('cantieri').select('id, nome').limit(500)
     if (error) throw error
     cantieriCache = (data || []).map(function (c) { return { id: c.id, nome: c.nome } })
@@ -822,6 +835,38 @@ async function loadCantieri() {
       console.warn('Cantieri non disponibili:', e2.message)
     }
   }
+  }
+}
+
+// L'ordine della tendina: prima quelli su cui si sta lavorando, in fondo i
+// chiusi. Un cantiere completato NON si nasconde: e' proprio li' che si vede
+// se ci si e' guadagnato.
+function ordineStatoCantiere(stato) {
+  var s = String(stato || '').toLowerCase()
+  if (s.indexOf('attiv') !== -1) return 0
+  if (s.indexOf('paus') !== -1 || s.indexOf('sospes') !== -1) return 1
+  if (s.indexOf('complet') !== -1 || s.indexOf('chius') !== -1 || s.indexOf('finit') !== -1) return 2
+  return 3     // stato sconosciuto: in fondo, ma comunque mostrato
+}
+
+// I cantieri ordinati per stato e poi per nome. Usata dalla tendina della
+// classificazione e dalle schermate della FASE 6.
+function cantieriOrdinati() {
+  return (cantieriCache || []).slice().sort(function (a, b) {
+    var d = ordineStatoCantiere(a.stato) - ordineStatoCantiere(b.stato)
+    if (d !== 0) return d
+    return String(a.nome || '').localeCompare(String(b.nome || ''), 'it')
+  })
+}
+
+// Nome del cantiere come si legge nelle tendine e negli elenchi:
+// «Skinner — Cadenazzo», con lo stato solo se non e' attivo.
+function nomeCantiere(c, conStato) {
+  if (!c) return ''
+  var n = c.nome || String(c.id).slice(0, 8)
+  if (c.luogo) n += ' — ' + c.luogo
+  if (conStato && c.stato && ordineStatoCantiere(c.stato) !== 0) n += ' (' + c.stato + ')'
+  return n
 }
 
 // Costruisce le <option> del conto (filtrate), con conti propri etichettati "mio".
@@ -861,14 +906,16 @@ function buildIvaOptions(selectedId) {
 }
 
 function buildCantiereOptions(selectedId, includeGenerale) {
-  var out = includeGenerale ? '<option value="">Ditta (generale)</option>' : ''
-  var list = cantieriCache || []
+  // FASE 6A — «nessun cantiere» e' una risposta valida, non un campo lasciato
+  // vuoto per distrazione: il testo lo dice.
+  var out = includeGenerale ? '<option value="">— nessun cantiere (spesa aziendale) —</option>' : ''
+  var list = cantieriOrdinati()
   var found = false
   for (var i = 0; i < list.length; i++) {
     var c = list[i]
     var sel = (selectedId && c.id === selectedId) ? ' selected' : ''
     if (sel) found = true
-    out += '<option value="' + esc(c.id) + '"' + sel + '>' + esc(c.nome || c.id) + '</option>'
+    out += '<option value="' + esc(c.id) + '"' + sel + '>' + esc(nomeCantiere(c, true)) + '</option>'
   }
   if (selectedId && !found) {
     out += '<option value="' + esc(selectedId) + '" selected>Cantiere ' + esc(String(selectedId).slice(0, 8)) + '…</option>'
@@ -1457,9 +1504,9 @@ function ivaLabel(id) {
   return c.codice + ' (' + (alq == null ? '?' : (alq === 0 ? '0' : fmtNum2(alq))) + '%)'
 }
 function cantiereLabel(id) {
-  if (!id) return 'Ditta (generale)'
+  if (!id) return 'aziendale'
   var c = (cantieriCache || []).filter(function (x) { return x.id === id })[0]
-  return c ? (c.nome || c.id) : String(id)
+  return c ? nomeCantiere(c, false) : String(id)
 }
 function statoBadge(stato) {
   var map = { bozza: 'info', confermato: 'ok', esportato: 'gold', bloccato: 'warn' }
@@ -3392,6 +3439,10 @@ async function loadAcquistiList() {
       .order('data', { ascending: false })
     if (error) throw error
     acquistiList = data || []
+    // FASE 6A — il cantiere di ogni fattura sta nelle classificazioni: servono
+    // la mappa e i nomi dei cantieri prima di disegnare la tabella.
+    try { await loadCantieri(); await loadMappaCantieri(true) } catch (_) { /* la tabella si mostra lo stesso */ }
+    riempiFiltroCantieriAcquisti()
     renderAcquistiTable()
   } catch (e) {
     html('acquisti-table', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
@@ -3419,6 +3470,42 @@ function clearAcquistiSearch() {
   renderAcquistiTable(); if (inp) inp.focus()
 }
 
+// FASE 6A — a quale cantiere e' assegnata questa fattura d'acquisto.
+// Il dato sta nella classificazione, non sulla fattura: si legge dalla mappa
+// caricata da loadMappaCantieri(). Se la mappa non c'e' ancora, si risponde
+// «non so» invece di «nessuno»: sono due cose diverse.
+function cantiereDiAcquisto(idAcquisto) {
+  if (!classCantiereMap) return null
+  return classCantiereMap['acquisto:' + idAcquisto] || null
+}
+
+// Una riga senza cantiere non resta vuota: «aziendale» in grigio dice che e'
+// una spesa della ditta, non un dato mancante.
+function etichettaCantiereRiga(cantiereId) {
+  if (!cantiereId) return '<span class="dim">aziendale</span>'
+  return esc(cantiereLabel(cantiereId))
+}
+
+// Riempie il filtro con i cantieri che compaiono davvero fra gli acquisti,
+// piu' la voce per le spese aziendali.
+function riempiFiltroCantieriAcquisti() {
+  var sel = el('acquisti-filtro-cantiere')
+  if (!sel) return
+  var usati = {}, senza = false
+  ;(acquistiList || []).forEach(function (a) {
+    var c = cantiereDiAcquisto(a.id)
+    if (c) usati[c] = true; else senza = true
+  })
+  var prec = sel.value
+  var opts = '<option value="">Tutti</option>'
+  cantieriOrdinati().forEach(function (c) {
+    if (usati[c.id]) opts += '<option value="' + esc(c.id) + '">' + esc(nomeCantiere(c, true)) + '</option>'
+  })
+  if (senza) opts += '<option value="__nessuno__">— aziendale (nessun cantiere) —</option>'
+  sel.innerHTML = opts
+  if (prec) sel.value = prec
+}
+
 function renderAcquistiTable() {
   var stato = el('acquisti-filtro-stato') ? el('acquisti-filtro-stato').value : ''
   var anno  = el('acquisti-filtro-anno') ? el('acquisti-filtro-anno').value : ''
@@ -3426,10 +3513,18 @@ function renderAcquistiTable() {
   var clearBtn = el('acquisti-search-clear'); if (clearBtn) clearBtn.style.display = qv ? 'flex' : 'none'
 
   var metodo = el('acquisti-filtro-metodo') ? el('acquisti-filtro-metodo').value : ''
+  // FASE 6A — filtro per cantiere. '__nessuno__' = le spese aziendali, che sono
+  // una risposta valida e devono potersi cercare come le altre.
+  var cantF = el('acquisti-filtro-cantiere') ? el('acquisti-filtro-cantiere').value : ''
   var list = acquistiList.filter(function (a) {
     if (stato && a.stato_pagamento !== stato) return false
     if (metodo && a.metodo_pagamento !== metodo) return false
     if (anno && (!a.data || String(a.data).slice(0, 4) !== String(anno))) return false
+    if (cantF) {
+      var ca = cantiereDiAcquisto(a.id)
+      if (cantF === '__nessuno__') { if (ca) return false }
+      else if (ca !== cantF) return false
+    }
     return true
   })
   if (qv) {
@@ -3469,12 +3564,14 @@ function renderAcquistiTable() {
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
       '<td>' + statoAcquistoBadge(a.stato_pagamento) + paySub + '</td>' +
+      '<td>' + etichettaCantiereRiga(cantiereDiAcquisto(a.id)) + '</td>' +
       '<td class="row-actions">' + acquistiRowActions(a) + '</td>' +
     '</tr>'
   }).join('')
   html('acquisti-table', '<div class="table-wrap"><table><thead><tr>' +
     '<th>Fornitore</th><th style="width:130px">Numero</th><th style="width:100px">Data</th>' +
-    '<th style="width:130px;text-align:right">Importo</th><th style="width:120px">Stato</th><th style="width:170px">Azioni</th>' +
+    '<th style="width:130px;text-align:right">Importo</th><th style="width:120px">Stato</th>' +
+    '<th style="width:150px">Cantiere</th><th style="width:170px">Azioni</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>')
 }
 
@@ -3888,6 +3985,11 @@ async function initImpostazioniPage() {
     await loadImpostazioniConta(true)
     if (el('imp-giorni-preavviso')) el('imp-giorni-preavviso').value = giorniPreavviso()
     if (el('imp-finestra-scadenze')) el('imp-finestra-scadenze').checked = finestraScadenzeAttiva()
+    // FASE 6 — costo orario: valore, data e spunta di verifica
+    var co = costoOrario()
+    if (el('imp-costo-orario')) el('imp-costo-orario').value = (co == null ? '' : co)
+    if (el('imp-costo-verificato')) el('imp-costo-verificato').checked = costoOrarioVerificato()
+    renderStatoCostoOrario(false)
   } catch (_) { /* i dati della ditta si caricano lo stesso */ }
   html('impostazioni-banner', loadingRow('Caricamento dati azienda…'))
   try {
@@ -3956,6 +4058,48 @@ async function salvaAvvisiScadenze() {
   await refreshScadenzeCount()
 }
 
+// FASE 6 — costo orario: tre chiavi che viaggiano insieme.
+// La data si aggiorna DA SOLA a ogni salvataggio del valore: e' il senso della
+// riga «ultimo aggiornamento», che deve dire quando quel numero e' stato deciso,
+// non quando qualcuno ha aperto la pagina.
+async function salvaCostoOrario() {
+  var grezzo = el('imp-costo-orario') ? el('imp-costo-orario').value : ''
+  var verif = el('imp-costo-verificato') ? el('imp-costo-verificato').checked : false
+
+  if (String(grezzo).trim() === '') {
+    // Campo svuotato: si azzera l'impostazione. Meglio nessun costo orario che
+    // uno vecchio dimenticato li'.
+    await salvaImpostazioneConta('costo_orario_medio', '',
+      'Costo di un ora di manodopera (CHF/h): salario lordo + oneri + assicurazioni, diviso le ore produttive. NON e la tariffa di vendita.')
+    await salvaImpostazioneConta('costo_orario_verificato', 'no', 'si = controllato dal commercialista.')
+    return
+  }
+
+  var n = safeNum(grezzo)
+  if (n == null || n <= 0 || n > 500) {
+    throw new Error('Il costo orario deve essere un numero fra 0 e 500 CHF/h.')
+  }
+
+  var precedente = safeNum(impostazione('costo_orario_medio', null))
+  var cambiato = (precedente == null) || Math.abs(precedente - n) > 0.004
+
+  await salvaImpostazioneConta('costo_orario_medio', n,
+    'Costo di un ora di manodopera (CHF/h): salario lordo + oneri + assicurazioni, diviso le ore produttive. NON e la tariffa di vendita.')
+
+  // La data cambia solo se cambia il numero: riaprire e risalvare la pagina
+  // senza toccare niente non deve far sembrare il valore piu' fresco di quanto sia.
+  if (cambiato) {
+    await salvaImpostazioneConta('costo_orario_aggiornato_il', oggiISO(),
+      'Data in cui il costo orario e stato cambiato l ultima volta.')
+    // Numero nuovo = da rifar controllare, qualunque cosa dica la spunta.
+    verif = false
+    if (el('imp-costo-verificato')) el('imp-costo-verificato').checked = false
+  }
+
+  await salvaImpostazioneConta('costo_orario_verificato', verif ? 'si' : 'no',
+    'si = il commercialista ha controllato questo costo orario. Si azzera da sola quando il numero cambia.')
+}
+
 async function saveImpostazioni() {
   if (!currentAziendaId) {
     showFattureBanner('impostazioni-banner', 'err', 'Azienda non trovata: rieffettua il login.')
@@ -4002,11 +4146,11 @@ async function saveImpostazioni() {
     // FASE 4 — le due voci degli avvisi vanno in tm_conta_impostazioni.
     // Se falliscono, i dati della ditta restano salvati: si avvisa e basta.
     var avvisiOk = true
-    try { await salvaAvvisiScadenze() }
+    try { await salvaAvvisiScadenze(); await salvaCostoOrario(); renderStatoCostoOrario(false) }
     catch (eAvv) {
       avvisiOk = false
       showFattureBanner('impostazioni-banner', 'warn',
-        'Dati della ditta salvati. Gli avvisi scadenze NO: ' + (eAvv.message || eAvv))
+        'Dati della ditta salvati. Avvisi scadenze o costo orario NO: ' + (eAvv.message || eAvv))
     }
 
     var missing = impostazioniMancanti(aziendaInfo)
@@ -6543,6 +6687,562 @@ function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto) {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 6 — CONTABILITÀ PER CANTIERE
+//
+// SOLA LETTURA sulle tabelle di App Cantieri (cantieri, spese, regia, giornate):
+// stanno nello stesso database ma appartengono a un'altra applicazione, in
+// produzione. Qui si leggono e basta. Nessuna ALTER, nessun UPDATE, nessun
+// trigger, nessuna cancellazione.
+//
+// DUE ERRORI CHE QUESTA SCHERMATA NON DEVE FARE
+//
+//   1. Il margine con la tariffa di VENDITA e' falso. 78 CHF/h e' il prezzo a
+//      cui un'ora si vende, non quello che costa. Sottrarre il ricavo dal
+//      ricavo da un numero che non vuol dire niente. Se il costo orario non e'
+//      impostato, il margine si chiama «SENZA MANODOPERA» e non si inventa
+//      nessun valore di ripiego.
+//
+//   2. La stessa spesa puo' esistere due volte: lo scontrino fotografato in
+//      App Cantieri e la fattura dello stesso fornitore arrivata per posta.
+//      I due blocchi restano separati e non si sommano mai in silenzio.
+//      Il confronto automatico su descrizione e importo NON si fa: darebbe
+//      falsi positivi, e un avviso che sbaglia spesso smette di essere letto.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let speseCantiereCache = null   // tabella spese di App Cantieri (sola lettura)
+let regiaCantiereCache = null   // tabella regia  di App Cantieri (sola lettura)
+let giornateCache      = null   // tabella giornate di App Cantieri (sola lettura)
+let classCantiereMap   = null   // "origine_tipo:origine_id" -> cantiere_id
+let cantiereApertoId   = null   // cantiere mostrato nella scheda
+
+// ── Costo orario ─────────────────────────────────────────────────────────────
+
+function costoOrario() {
+  var n = safeNum(impostazione('costo_orario_medio', null))
+  return (n != null && n > 0) ? n : null       // zero o negativo = non impostato
+}
+function costoOrarioVerificato() { return impostazione('costo_orario_verificato', 'no') === 'si' }
+function costoOrarioAggiornatoIl() { return impostazione('costo_orario_aggiornato_il', null) }
+
+// ── Letture (tutte in sola lettura) ─────────────────────────────────────────
+
+async function loadSpeseCantiere(force) {
+  if (speseCantiereCache && !force) return speseCantiereCache
+  try {
+    const { data, error } = await sb.from('spese')
+      .select('id, cantiere_id, data, descrizione, importo, valuta, note')
+      .limit(2000)
+    if (error) throw error
+    speseCantiereCache = data || []
+  } catch (e) {
+    speseCantiereCache = []
+    console.warn('Spese di cantiere non lette:', e.message || e)
+  }
+  return speseCantiereCache
+}
+
+async function loadRegiaCantiere(force) {
+  if (regiaCantiereCache && !force) return regiaCantiereCache
+  try {
+    const { data, error } = await sb.from('regia')
+      .select('id, cantiere_id, data, descrizione, quantita, um, prezzo_unitario, fatturato')
+      .limit(2000)
+    if (error) throw error
+    regiaCantiereCache = data || []
+  } catch (e) {
+    regiaCantiereCache = []
+    console.warn('Regia non letta:', e.message || e)
+  }
+  return regiaCantiereCache
+}
+
+async function loadGiornate(force) {
+  if (giornateCache && !force) return giornateCache
+  try {
+    const { data, error } = await sb.from('giornate')
+      .select('id, cantiere_id, data, ore_totali, note')
+      .limit(5000)
+    if (error) throw error
+    giornateCache = data || []
+  } catch (e) {
+    giornateCache = []
+    console.warn('Giornate non lette:', e.message || e)
+  }
+  return giornateCache
+}
+
+// Il collegamento documento → cantiere sta nelle classificazioni, non nella
+// vista: v_conta_flussi non espone cantiere_id e modificarla e' fuori perimetro.
+// Si carica la mappa e si incrocia qui.
+async function loadMappaCantieri(force) {
+  if (classCantiereMap && !force) return classCantiereMap
+  classCantiereMap = {}
+  if (!currentAziendaId) return classCantiereMap
+  try {
+    const { data, error } = await sb.from('tm_conta_classificazioni')
+      .select('origine_tipo, origine_id, cantiere_id')
+      .eq('azienda_id', currentAziendaId)
+    if (error) throw error
+    ;(data || []).forEach(function (c) {
+      classCantiereMap[c.origine_tipo + ':' + c.origine_id] = c.cantiere_id || null
+    })
+  } catch (e) {
+    console.warn('Collegamento cantieri non letto:', e.message || e)
+  }
+  return classCantiereMap
+}
+
+function cantiereDelFlusso(r) {
+  if (!classCantiereMap) return null
+  return classCantiereMap[r.origine_tipo + ':' + r.id_origine] || null
+}
+
+// ── Il calcolo, per un cantiere ──────────────────────────────────────────────
+// Un cantiere non ha «periodo»: si guarda tutto, dall'inizio alla fine.
+
+function contiCantiere(cantiereId) {
+  var c = {
+    fatturato:   { importo: 0, righe: [] },
+    incassato:   { importo: 0, righe: [] },
+    daIncassare: { importo: 0, righe: [] },
+    fornitori:   { importo: 0, righe: [] },
+    fornitoriDaPagare: 0,
+    spese:       { importo: 0, righe: [] },
+    regiaAperta: { importo: 0, righe: [] },
+    ore: 0,
+    giornate:    []
+  }
+
+  // ── Entrate e fatture fornitori: dalla vista, incrociata con le classificazioni
+  ;(flussiCache || []).forEach(function (r) {
+    if (!confermata(r)) return                       // le da_confermare non contano, come ovunque
+    if (cantiereDelFlusso(r) !== cantiereId) return
+    var imp = safeNum(r.importo_totale) || 0
+
+    if (r.verso === 'entrata') {
+      // Il FATTURATO conta il documento emesso, a prescindere dall'incasso.
+      c.fatturato.importo += imp; c.fatturato.righe.push(r)
+      if (r.stato_pagamento === 'pagato') { c.incassato.importo += imp; c.incassato.righe.push(r) }
+      else { c.daIncassare.importo += imp; c.daIncassare.righe.push(r) }
+    } else {
+      c.fornitori.importo += imp; c.fornitori.righe.push(r)
+      if (r.stato_pagamento !== 'pagato') c.fornitoriDaPagare += imp
+    }
+  })
+
+  // ── Spese di App Cantieri: blocco separato, MAI sommato alle fatture
+  ;(speseCantiereCache || []).forEach(function (s) {
+    if (s.cantiere_id !== cantiereId) return
+    c.spese.importo += safeNum(s.importo) || 0
+    c.spese.righe.push(s)
+  })
+
+  // ── Regia non ancora fatturata: valore = quantita x prezzo_unitario
+  ;(regiaCantiereCache || []).forEach(function (r) {
+    if (r.cantiere_id !== cantiereId) return
+    if (r.fatturato) return                          // gia' fatturata: e' fra le entrate
+    var q = safeNum(r.quantita) || 0
+    var pu = safeNum(r.prezzo_unitario) || 0
+    c.regiaAperta.importo += q * pu
+    c.regiaAperta.righe.push(r)
+  })
+
+  // ── Ore dalle giornate
+  ;(giornateCache || []).forEach(function (g) {
+    if (g.cantiere_id !== cantiereId) return
+    c.ore += safeNum(g.ore_totali) || 0
+    c.giornate.push(g)
+  })
+
+  // ── Manodopera e margine
+  var co = costoOrario()
+  c.costoOrario = co
+  c.costoManodopera = (co != null) ? c.ore * co : null
+
+  // Senza costo orario la manodopera non entra nel conto, e il margine cambia
+  // NOME: «senza manodopera». Un margine falso e' peggio di uno mancante.
+  c.margine = c.fatturato.importo - c.fornitori.importo - c.spese.importo
+            - (c.costoManodopera != null ? c.costoManodopera : 0)
+  c.margineCompleto = (c.costoManodopera != null)
+
+  // La percentuale e' sul FATTURATO. Con fatturato zero non si divide: si
+  // scrive che non e' calcolabile, non esce NaN ne' Infinity.
+  c.marginePerc = (c.fatturato.importo > 0) ? (c.margine / c.fatturato.importo * 100) : null
+
+  c.vuoto = !c.fatturato.righe.length && !c.fornitori.righe.length &&
+            !c.spese.righe.length && !c.regiaAperta.righe.length && !c.ore
+  return c
+}
+
+// ── La pagina ────────────────────────────────────────────────────────────────
+
+async function initCantieriPage() {
+  if (!currentAziendaId) {
+    showCantieriBanner('err', 'Azienda non trovata: rieffettua il login.')
+    return
+  }
+  html('cantieri-tabella', loadingRow('Caricamento cantieri…'))
+  try {
+    await loadImpostazioniConta(true)
+    await loadCantieri()
+    await loadFlussi(true)
+    await loadMappaCantieri(true)
+    await loadSpeseCantiere(true)
+    await loadRegiaCantiere(true)
+    await loadGiornate(true)
+    riempiTendinaCantieri()
+    if (cantiereApertoId) apriCantiere(cantiereApertoId)
+    else tornaElencoCantieri()
+  } catch (e) {
+    html('cantieri-tabella', '')
+    showCantieriBanner('err', 'Cantieri non caricati: ' + (e.message || e))
+  }
+}
+
+function showCantieriBanner(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html('cantieri-banner',
+    '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + esc(msg) + '</div>' +
+    '</div>')
+}
+
+function riempiTendinaCantieri() {
+  var sel = el('cant-scelta')
+  if (!sel) return
+  sel.innerHTML = cantieriOrdinati().map(function (c) {
+    return '<option value="' + esc(c.id) + '">' + esc(nomeCantiere(c, true)) + '</option>'
+  }).join('')
+}
+
+// ── 6C — il confronto fra cantieri ───────────────────────────────────────────
+
+let cantieriOrdinePer = 'perc'      // 'perc' | 'nome' | 'fatturato' | 'margine'
+
+function ordinaCantieriPer(campo) {
+  cantieriOrdinePer = campo
+  renderElencoCantieri()
+}
+
+function tornaElencoCantieri() {
+  cantiereApertoId = null
+  var e = el('cantieri-elenco-view'); if (e) e.style.display = 'block'
+  var s = el('cantieri-scheda-view'); if (s) s.style.display = 'none'
+  renderElencoCantieri()
+}
+
+function renderElencoCantieri() {
+  var lista = cantieriOrdinati()
+  if (!lista.length) {
+    html('cantieri-tabella',
+      '<div class="cru-vuoto"><strong>Nessun cantiere trovato.</strong><br>' +
+      'I cantieri arrivano da App Cantieri: se qui non compare nulla, non ce ne sono ancora, ' +
+      'oppure questo utente non ha il permesso di leggerli.</div>')
+    return
+  }
+
+  var righe = lista.map(function (c) {
+    var k = contiCantiere(c.id)
+    return { cantiere: c, k: k }
+  })
+
+  righe.sort(function (a, b) {
+    if (cantieriOrdinePer === 'nome') return String(a.cantiere.nome || '').localeCompare(String(b.cantiere.nome || ''), 'it')
+    if (cantieriOrdinePer === 'fatturato') return b.k.fatturato.importo - a.k.fatturato.importo
+    if (cantieriOrdinePer === 'margine')   return b.k.margine - a.k.margine
+    // per percentuale: quelli senza fatturato in fondo, non in cima con «—»
+    var pa = (a.k.marginePerc == null) ? -Infinity : a.k.marginePerc
+    var pb = (b.k.marginePerc == null) ? -Infinity : b.k.marginePerc
+    return pb - pa
+  })
+
+  var tot = { fatturato: 0, costi: 0, margine: 0 }
+  var body = righe.map(function (x) {
+    var k = x.k
+    var costi = k.fornitori.importo + k.spese.importo + (k.costoManodopera || 0)
+    tot.fatturato += k.fatturato.importo
+    tot.costi     += costi
+    tot.margine   += k.margine
+
+    // Sotto il 15% e' un margine basso: lo dice l'icona E la parola, mai il
+    // solo colore. Senza fatturato non si giudica: non c'e' niente da valutare.
+    var basso = (k.marginePerc != null && k.marginePerc < 15)
+    var percTxt = (k.marginePerc == null)
+      ? '<span class="dim">non calcolabile</span>'
+      : esc(fmtNumIt(k.marginePerc)) + ' %'
+    var segnale = basso
+      ? ' <span class="margine-basso">⚠️ margine basso</span>'
+      : ''
+    var senzaMano = k.margineCompleto ? '' :
+      ' <span class="senza-mano">senza manodopera</span>'
+
+    return '<tr class="row-clickable" onclick="apriCantiere(\'' + esc(x.cantiere.id) + '\')">' +
+      '<td>' + esc(nomeCantiere(x.cantiere, true)) + '</td>' +
+      '<td class="num">' + esc(fmtNumIt(k.fatturato.importo)) + ' CHF</td>' +
+      '<td class="num">' + esc(fmtNumIt(costi)) + ' CHF</td>' +
+      '<td class="num">' + esc(fmtNumIt(k.margine)) + ' CHF' + senzaMano + '</td>' +
+      '<td class="num">' + percTxt + segnale + '</td>' +
+    '</tr>'
+  }).join('')
+
+  var percTot = (tot.fatturato > 0) ? (tot.margine / tot.fatturato * 100) : null
+
+  function th(campo, testo, extra) {
+    var attivo = (cantieriOrdinePer === campo) ? ' ↓' : ''
+    return '<th' + (extra || '') + '><button type="button" class="th-ordina" onclick="ordinaCantieriPer(\'' + campo + '\')">' +
+           esc(testo) + attivo + '</button></th>'
+  }
+
+  html('cantieri-tabella',
+    '<div class="table-wrap"><table><thead><tr>' +
+      th('nome', 'Cantiere') +
+      th('fatturato', 'Fatturato', ' style="text-align:right"') +
+      '<th style="text-align:right">Costi</th>' +
+      th('margine', 'Margine', ' style="text-align:right"') +
+      th('perc', 'Margine %', ' style="text-align:right"') +
+    '</tr></thead><tbody>' + body +
+    '<tr class="riga-totale">' +
+      '<td><strong>Totale generale</strong></td>' +
+      '<td class="num"><strong>' + esc(fmtNumIt(tot.fatturato)) + ' CHF</strong></td>' +
+      '<td class="num"><strong>' + esc(fmtNumIt(tot.costi)) + ' CHF</strong></td>' +
+      '<td class="num"><strong>' + esc(fmtNumIt(tot.margine)) + ' CHF</strong></td>' +
+      '<td class="num"><strong>' + (percTot == null ? '—' : esc(fmtNumIt(percTot)) + ' %') + '</strong></td>' +
+    '</tr>' +
+    '</tbody></table></div>' +
+    (costoOrario() == null
+      ? '<div class="nota-cruscotto avviso" style="margin-top:12px">' +
+        '<span aria-hidden="true">⚠️</span>' +
+        '<span><strong>Margini senza manodopera.</strong> Manca il costo orario, quindi le ore ' +
+        'non sono contate in nessuna riga. ' +
+        '<button type="button" class="link-btn" onclick="vaiAlCostoOrario()">Imposta il costo orario</button></span></div>'
+      : ''))
+}
+
+// ── 6B — la scheda del singolo cantiere ──────────────────────────────────────
+
+function apriCantiere(id) {
+  if (!id) return
+  cantiereApertoId = id
+  var e = el('cantieri-elenco-view'); if (e) e.style.display = 'none'
+  var s = el('cantieri-scheda-view'); if (s) s.style.display = 'block'
+  var sel = el('cant-scelta'); if (sel) sel.value = id
+  chiudiElencoCantiere()
+  renderSchedaCantiere()
+}
+
+function renderSchedaCantiere() {
+  var id = cantiereApertoId
+  var cant = (cantieriCache || []).filter(function (x) { return x.id === id })[0]
+  var k = contiCantiere(id)
+
+  if (k.vuoto) {
+    html('cant-dettaglio',
+      '<div class="card"><div class="cru-vuoto">' +
+      '<strong>Nessun movimento registrato per questo cantiere.</strong><br>' +
+      'Non ci sono fatture, spese né ore collegate a ' + esc(nomeCantiere(cant, false)) + '. ' +
+      'Una fattura entra qui quando le assegni questo cantiere in «Da classificare».' +
+      '</div></div>')
+    return
+  }
+
+  function riga(etichetta, importo, n, extra) {
+    return '<div class="cant-riga">' +
+        '<span class="cant-et">' + esc(etichetta) + '</span>' +
+        '<span class="cant-imp">' + esc(fmtNumIt(importo)) + ' CHF</span>' +
+        '<span class="cant-n">' + (n == null ? '' : esc(n + (n === 1 ? ' documento' : ' documenti'))) + '</span>' +
+      '</div>' + (extra || '')
+  }
+  function rigaClic(chiave, etichetta, importo, n) {
+    return '<button type="button" class="cant-riga cliccabile" onclick="apriElencoCantiere(\'' + chiave + '\')">' +
+        '<span class="cant-et">' + esc(etichetta) + '</span>' +
+        '<span class="cant-imp">' + esc(fmtNumIt(importo)) + ' CHF</span>' +
+        '<span class="cant-n">' + esc(n + (n === 1 ? ' documento' : ' documenti')) + '</span>' +
+      '</button>'
+  }
+
+  // ── ENTRATE
+  var entrate = '<div class="card cant-blocco"><div class="card-title">💰 Entrate</div>' +
+    rigaClic('fatturato',   'Fatturato',    k.fatturato.importo,   k.fatturato.righe.length) +
+    rigaClic('incassato',   'Incassato',    k.incassato.importo,   k.incassato.righe.length) +
+    rigaClic('daIncassare', 'Da incassare', k.daIncassare.importo, k.daIncassare.righe.length) +
+    // La regia non fatturata NON entra nel margine, ma va detta: senza, un
+    // cantiere lavorato in regia sembra in perdita quando non lo e'.
+    (k.regiaAperta.righe.length
+      ? '<div class="nota-cruscotto" style="margin:10px 0 0">' +
+        '<span aria-hidden="true">🧾</span>' +
+        '<span>Regia non ancora fatturata: <strong>' + esc(fmtNumIt(k.regiaAperta.importo)) +
+        ' CHF</strong> — non contata nel margine. ' +
+        '<button type="button" class="link-btn" onclick="apriElencoCantiere(\'regia\')">Vedi le righe</button></span></div>'
+      : '') +
+    '</div>'
+
+  // ── USCITE: due blocchi separati, mai sommati
+  var uscite = '<div class="card cant-blocco"><div class="card-title">💸 Uscite</div>' +
+    rigaClic('fornitori', 'Fatture fornitori', k.fornitori.importo, k.fornitori.righe.length) +
+    '<div class="cant-sub">di cui ancora da pagare: <strong>' + esc(fmtNumIt(k.fornitoriDaPagare)) + ' CHF</strong></div>' +
+    rigaClic('spese', 'Spese di cantiere', k.spese.importo, k.spese.righe.length) +
+    '<div class="cant-sub">registrate in App Cantieri dagli operai</div>' +
+    '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
+      '<span aria-hidden="true">⚠️</span>' +
+      '<span>Controlla che le spese di cantiere non siano già registrate anche come fattura ' +
+      'd\'acquisto: in quel caso il costo risulta doppio. I due blocchi restano separati apposta ' +
+      'e non vengono sommati.</span>' +
+    '</div>' +
+    '</div>'
+
+  // ── MANODOPERA
+  var manodopera = '<div class="card cant-blocco"><div class="card-title">👷 Manodopera</div>' +
+    rigaClic('ore', 'Ore registrate', k.ore, k.giornate.length).replace(' CHF', ' ore') +
+    (k.costoOrario != null
+      ? riga('Costo orario', k.costoOrario, null) .replace('</span><span class="cant-n">', ' /h</span><span class="cant-n">') +
+        riga('Costo manodopera', k.costoManodopera, null)
+      : '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
+        '<span aria-hidden="true">⚠️</span>' +
+        '<span><strong>Costo manodopera non calcolabile: manca il costo orario.</strong> ' +
+        'Le ore ci sono, ma senza sapere quanto costa un\'ora non si può dire quanto è costata la manodopera. ' +
+        '<button type="button" class="link-btn" onclick="vaiAlCostoOrario()">Impostalo</button></span></div>') +
+    (k.regiaAperta.righe.length
+      ? '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
+        '<span aria-hidden="true">⚠️</span>' +
+        '<span>Le ore qui sopra vengono dalle giornate di cantiere. Se le stesse ore sono state ' +
+        'registrate anche in regia per essere rifatturate, il costo risulta doppio: controlla a occhio.</span></div>'
+      : '') +
+    '</div>'
+
+  // ── RISULTATO
+  var etichettaMargine = k.margineCompleto ? 'MARGINE' : 'MARGINE SENZA MANODOPERA'
+  var risultato = '<div class="card cant-blocco cant-risultato">' +
+    '<div class="card-title">📈 Risultato</div>' +
+    '<div class="cant-margine">' +
+      '<span class="cant-margine-et">' + esc(etichettaMargine) + '</span>' +
+      '<span class="cant-margine-imp">' + esc(fmtNumIt(k.margine)) + ' CHF</span>' +
+      '<span class="cant-margine-perc">' +
+        (k.marginePerc == null
+          ? '<span class="dim">percentuale non calcolabile: nessun fatturato</span>'
+          : esc(fmtNumIt(k.marginePerc)) + ' % del fatturato') +
+      '</span>' +
+    '</div>' +
+    '<div class="cant-formula">Fatturato − fatture fornitori − spese di cantiere' +
+      (k.margineCompleto ? ' − costo manodopera' : '') + '</div>' +
+    (!k.margineCompleto
+      ? '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
+        '<span aria-hidden="true">⚠️</span>' +
+        '<span><strong>MARGINE SENZA MANODOPERA</strong> — imposta il costo orario per avere il margine vero. ' +
+        '<button type="button" class="link-btn" onclick="vaiAlCostoOrario()">Impostalo</button></span></div>'
+      : (!costoOrarioVerificato()
+          ? '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
+            '<span aria-hidden="true">⚠️</span>' +
+            '<span>Costo orario non ancora verificato dal commercialista — il margine è indicativo.</span></div>'
+          : '')) +
+    '</div>'
+
+  html('cant-dettaglio', entrate + uscite + manodopera + risultato)
+}
+
+// ── Elenco dei documenti dietro a un riquadro ────────────────────────────────
+
+function apriElencoCantiere(chiave) {
+  var k = contiCantiere(cantiereApertoId)
+  var righe = [], titolo = '', tipo = 'flusso'
+
+  if (chiave === 'fatturato')   { righe = k.fatturato.righe;   titolo = '💰 Fatturato' }
+  else if (chiave === 'incassato')   { righe = k.incassato.righe;   titolo = '💰 Incassato' }
+  else if (chiave === 'daIncassare') { righe = k.daIncassare.righe; titolo = '🔵 Da incassare' }
+  else if (chiave === 'fornitori')   { righe = k.fornitori.righe;   titolo = '💸 Fatture fornitori' }
+  else if (chiave === 'spese')       { righe = k.spese.righe;       titolo = '🧾 Spese di cantiere'; tipo = 'spesa' }
+  else if (chiave === 'regia')       { righe = k.regiaAperta.righe; titolo = '🧾 Regia non fatturata'; tipo = 'regia' }
+  else if (chiave === 'ore')         { righe = k.giornate;          titolo = '👷 Giornate registrate'; tipo = 'giornata' }
+
+  if (el('cant-elenco-titolo')) el('cant-elenco-titolo').textContent = titolo
+  if (!righe.length) {
+    html('cant-elenco', '<div class="cru-vuoto">Nessun documento in questo elenco.</div>')
+  } else {
+    html('cant-elenco', righe.map(function (r) {
+      if (tipo === 'spesa') {
+        return rigaElencoCant(fmtDate(r.data), r.descrizione || '—', fmtNumIt(safeNum(r.importo) || 0) + ' CHF')
+      }
+      if (tipo === 'regia') {
+        var q = safeNum(r.quantita) || 0, pu = safeNum(r.prezzo_unitario) || 0
+        return rigaElencoCant(fmtDate(r.data),
+          (r.descrizione || '—') + ' · ' + fmtNumIt(q) + ' ' + (r.um || '') + ' × ' + fmtNumIt(pu) + ' CHF',
+          fmtNumIt(q * pu) + ' CHF')
+      }
+      if (tipo === 'giornata') {
+        return rigaElencoCant(fmtDate(r.data), r.note || 'Giornata di cantiere',
+          fmtNumIt(safeNum(r.ore_totali) || 0) + ' ore')
+      }
+      return rigaElencoCant(fmtDate(r.data_documento), r.controparte_nome || '—',
+        fmtNumIt(safeNum(r.importo_totale) || 0) + ' CHF')
+    }).join(''))
+  }
+  var card = el('cant-elenco-card')
+  if (card) { card.style.display = 'block'; card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }
+}
+
+function rigaElencoCant(data, testo, importo) {
+  return '<div class="cru-elenco-riga">' +
+    '<span class="cru-elenco-nome">' + esc(testo) + '</span>' +
+    '<span class="cru-elenco-meta">' + esc(data) + '</span>' +
+    '<span class="cru-elenco-imp">' + esc(importo) + '</span>' +
+  '</div>'
+}
+
+function chiudiElencoCantiere() {
+  var card = el('cant-elenco-card')
+  if (card) card.style.display = 'none'
+}
+
+function vaiAlCostoOrario() {
+  showPage('impostazioni')
+  initImpostazioniPage().then(function () {
+    var e = el('imp-costo-orario')
+    if (e) { e.scrollIntoView({ behavior: 'smooth', block: 'center' }); e.focus() }
+  }).catch(function () { /* la pagina si apre lo stesso */ })
+}
+
+// ── Il costo orario in Impostazioni ──────────────────────────────────────────
+
+// Cambiare il numero toglie la spunta: un valore nuovo non e' quello che il
+// commercialista aveva controllato. Senza questo, fra sei mesi la spunta
+// resterebbe accesa su una cifra che non ha mai visto.
+function onCostoOrarioCambiato() {
+  var chk = el('imp-costo-verificato')
+  if (chk && chk.checked) {
+    chk.checked = false
+    var hint = el('imp-costo-verificato-hint')
+    if (hint) hint.innerHTML = '<strong>La spunta è stata tolta:</strong> hai cambiato il costo orario, ' +
+      'quindi va rifatto controllare al commercialista.'
+  }
+  renderStatoCostoOrario(true)
+}
+
+function onCostoVerificatoCambiato() { renderStatoCostoOrario(true) }
+
+// La riga sotto il campo: da quando vale questo numero e se qualcuno l'ha
+// controllato. Serve a non dimenticarsi, fra sei mesi, che e' una stima.
+function renderStatoCostoOrario(inModifica) {
+  var box = el('imp-costo-stato')
+  if (!box) return
+  var dataAgg = costoOrarioAggiornatoIl()
+  var verif = el('imp-costo-verificato') ? el('imp-costo-verificato').checked : false
+
+  var quando = inModifica
+    ? 'non ancora salvato'
+    : (dataAgg ? fmtDate(dataAgg) : 'mai impostato')
+
+  box.innerHTML =
+    '<div class="costo-riga"><span aria-hidden="true">📅</span> Ultimo aggiornamento: <strong>' +
+      esc(quando) + '</strong></div>' +
+    '<div class="costo-riga">' +
+      '<span aria-hidden="true">' + (verif ? '✅' : '⚠️') + '</span> Verificato dal commercialista: <strong>' +
+      (verif ? 'sì' : 'no') + '</strong>' +
+      (verif ? '' : ' <span class="dim">— il margine dei cantieri resta indicativo</span>') +
+    '</div>'
+}
+
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -6560,6 +7260,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'rubrica')     { initRubricaPage() }
       if (pageId === 'cruscotto')   { initCruscottoPage() }
       if (pageId === 'scadenze')    { initScadenzePage() }
+      if (pageId === 'cantieri')    { initCantieriPage() }
       if (pageId === 'impostazioni'){ initImpostazioniPage() }
       if (pageId === 'setup')       { /* già caricata */ }
     })
