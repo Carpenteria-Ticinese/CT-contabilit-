@@ -1849,3 +1849,61 @@ tbody tr.row-clickable { cursor: pointer; }
   0%, 100% { box-shadow: 0 0 0 3px rgba(200,150,12,.45); }
   50%      { box-shadow: 0 0 0 8px rgba(200,150,12,.15); }
 }
+
+/* == Saldo del periodo (Situazione) ======================================= */
+/* Il riquadro piu importante della schermata: si legge per primo. */
+.saldo-box {
+  padding: 18px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-left: 6px solid var(--text3);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.saldo-box.utile   { border-left-color: var(--ok); }
+.saldo-box.perdita { border-left-color: var(--err); }
+.saldo-box.pari    { border-left-color: var(--text3); }
+
+.saldo-etichetta {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+.saldo-importo {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text);
+}
+.saldo-box.utile   .saldo-segno { color: var(--ok); }
+.saldo-box.perdita .saldo-segno { color: var(--err); }
+.saldo-valuta { font-size: 16px; font-weight: 600; color: var(--text2); }
+
+/* Il calcolo in chiaro: serve a poter rifare il conto a mano. */
+.saldo-calcolo {
+  font-size: 13px;
+  color: var(--text2);
+  margin-top: 6px;
+}
+
+.saldo-avviso {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: var(--radius);
+  background: var(--err-bg);
+  border: 1px solid var(--err);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+@media (max-width: 900px) {
+  .saldo-importo { font-size: 25px; }
+}
