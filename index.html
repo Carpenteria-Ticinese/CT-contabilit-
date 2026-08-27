@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=18" />
+  <link rel="stylesheet" href="css/style.css?v=19" />
 </head>
 <body>
 
@@ -878,6 +878,46 @@
           <button type="button" class="btn-primary" id="exp-xlsx-btn" onclick="exportExcel()">📊 Genera Excel (.xlsx)</button>
           <button type="button" class="btn-secondary" id="exp-csv-btn" onclick="exportCsv()">📄 Genera CSV (uno per sezione)</button>
         </div>
+
+        <div class="pacchetto-box">
+          <div class="pacchetto-titolo">📦 Pacchetto completo per il commercialista</div>
+          <p class="pacchetto-desc">
+            Un solo file ZIP con l&rsquo;Excel e <strong>tutti i giustificativi</strong>: ogni riga dell&rsquo;Excel
+            dice quale file le corrisponde. Il periodo è quello impostato qui sopra.
+          </p>
+
+          <!-- Avviso obbligatorio: qui si conta per data del DOCUMENTO -->
+          <div class="nota-cruscotto" style="margin-bottom:12px">
+            <span aria-hidden="true">📅</span>
+            <span>
+              Il pacchetto conta i documenti per <strong>data del documento</strong> (competenza),
+              come li registra il commercialista.
+              È l&rsquo;opposto del Cruscotto, che conta per data di pagamento: gli importi
+              possono quindi non coincidere, e non è un errore.
+            </span>
+          </div>
+
+          <div id="exp-zip-anteprima"></div>
+
+          <div class="form-actions" style="margin-top:12px">
+            <button type="button" class="btn-primary" id="exp-zip-btn" onclick="generaPacchetto()">
+              📦 Genera pacchetto completo (ZIP)
+            </button>
+            <button type="button" class="btn-secondary" id="exp-zip-annulla-btn"
+                    onclick="annullaPacchetto()" style="display:none">
+              Annulla
+            </button>
+          </div>
+
+          <div id="exp-zip-progresso" style="display:none">
+            <div class="progresso-testo" id="exp-zip-progresso-testo"></div>
+            <div class="progresso-barra-sfondo">
+              <div class="progresso-barra" id="exp-zip-progresso-barra" style="width:0%"></div>
+            </div>
+          </div>
+
+          <div id="exp-zip-banner" role="status" aria-live="polite"></div>
+        </div>
         <div class="sql-tip" style="margin-top:14px">
           L'Excel contiene un <strong>foglio per sezione</strong> (solo quelle spuntate e non vuote) più il
           <strong>Riepilogo</strong>. «Spese e movimenti» include solo i movimenti <strong>classificati</strong>
@@ -1078,6 +1118,9 @@
         <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
 
         <div class="card no-print" id="fatture-detail-actions"></div>
+        <input type="file" id="fat-pdf-input" accept="application/pdf,.pdf"
+               style="display:none" onchange="allegaPdfFattura(this)" />
+        <div class="no-print" id="fatture-allegato-banner" role="status" aria-live="polite"></div>
 
         <div class="card">
           <div id="fatture-print"></div>
@@ -1727,7 +1770,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=18"></script>
+<script src="js/app.js?v=19"></script>
 
 </body>
 </html>
