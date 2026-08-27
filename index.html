@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=20" />
+  <link rel="stylesheet" href="css/style.css?v=21" />
 </head>
 <body>
 
@@ -515,11 +515,12 @@
               </div>
               <div class="form-group" style="flex:1">
                 <label for="f-stato-pagamento" class="form-label">Stato pagamento</label>
-                <select id="f-stato-pagamento" class="form-input" onchange="onMovStatoChange()">
-                  <option value="pagato">✅ Pagato — il denaro è già uscito</option>
-                  <option value="aperto">⏳ Da pagare — ancora da saldare</option>
-                </select>
+                <label class="form-label-check" style="margin-top:6px">
+                  <input type="checkbox" id="f-gia-pagata" onchange="onMovStatoChange()" />
+                  <span>Già pagata <span class="dim">(registra subito il pagamento)</span></span>
+                </label>
                 <div class="form-hint" id="f-stato-hint"></div>
+                <div class="form-hint">Lo stato si calcola dai pagamenti registrati.</div>
               </div>
             </div>
 
@@ -990,7 +991,8 @@
               <label for="fatture-filtro-incasso" class="form-label">Stato incasso</label>
               <select id="fatture-filtro-incasso" class="form-input" onchange="renderFattureTable()">
                 <option value="">Tutti</option>
-                <option value="aperto">🔵 Da incassare</option>
+                <option value="aperto">🔵 Non incassato</option>
+                <option value="parziale">🟠 Incassato in parte</option>
                 <option value="pagato">✅ Incassato</option>
               </select>
             </div>
@@ -1124,6 +1126,8 @@
         <input type="file" id="fat-pdf-input" accept="application/pdf,.pdf"
                style="display:none" onchange="allegaPdfFattura(this)" />
         <div class="no-print" id="fatture-allegato-banner" role="status" aria-live="polite"></div>
+        <!-- FASE 8: pagamenti e rate della fattura -->
+        <div class="no-print" id="fatture-pagamenti"></div>
 
         <div class="card">
           <div id="fatture-print"></div>
@@ -1160,7 +1164,8 @@
               <label for="acquisti-filtro-stato" class="form-label">Stato pagamento</label>
               <select id="acquisti-filtro-stato" class="form-input" onchange="renderAcquistiTable()">
                 <option value="">Tutti</option>
-                <option value="aperto">⏳ Da pagare</option>
+                <option value="aperto">⏳ Non pagato</option>
+                <option value="parziale">🟠 Pagato in parte</option>
                 <option value="pagato">✅ Pagato</option>
               </select>
             </div>
@@ -1204,6 +1209,10 @@
         <div class="card no-print" id="acquisti-detail-actions"></div>
         <div class="card">
           <div id="acquisti-detail-body"></div>
+        </div>
+        <!-- FASE 8: pagamenti e rate della fattura d'acquisto -->
+        <div id="acquisti-pagamenti"></div>
+        <div style="display:none">
         </div>
       </div>
 
@@ -1333,10 +1342,18 @@
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-stato" class="form-label">Stato pagamento</label>
-              <select id="a-stato" class="form-input" onchange="onAcquistoStatoChange()">
-                <option value="aperto" selected>⏳ Da pagare</option>
+              <select id="a-stato" class="form-input" disabled aria-readonly="true">
+                <option value="aperto" selected>⏳ Non pagato</option>
+                <option value="parziale">🟠 Pagato in parte</option>
                 <option value="pagato">✅ Pagato</option>
               </select>
+              <div class="form-hint">Lo stato si calcola dai pagamenti registrati.</div>
+              <label class="form-label-check" id="a-gia-pagata-group" style="margin-top:8px">
+                <input type="checkbox" id="a-gia-pagata" />
+                <span>Già pagata per intero
+                  <span class="dim">(registra subito un pagamento con la data del documento)</span>
+                </span>
+              </label>
             </div>
           </div>
 
@@ -1608,6 +1625,122 @@
     </div>
   </div>
 
+  <!-- ══ MODALE: Registra pagamento (Fase 8B) ═══════════════════════════ -->
+  <div id="pagamento-overlay" class="modal-overlay" style="display:none"
+       role="dialog" aria-modal="true" aria-labelledby="pag-title"
+       onclick="if(event.target===this) chiudiRegistraPagamento()">
+    <div class="modal-card" style="max-width:480px">
+      <div class="modal-header">
+        <div class="modal-title" id="pag-title">💳 Registra pagamento</div>
+        <button class="modal-close" onclick="chiudiRegistraPagamento()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="pag-riepilogo" class="pag-sommario"></div>
+        <div id="pag-banner"></div>
+
+        <div class="form-row" style="margin-top:12px">
+          <div class="form-group" style="flex:1">
+            <label for="pag-data" class="form-label">Data del pagamento</label>
+            <input type="date" id="pag-data" class="form-input" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="pag-importo" class="form-label">Importo <span class="dim">(CHF)</span></label>
+            <input type="number" id="pag-importo" class="form-input" step="0.01" min="0.01"
+                   oninput="controllaImportoPagamento()" />
+            <div class="form-hint">Proposto: il residuo. Correggilo se stai pagando meno.</div>
+          </div>
+        </div>
+
+        <div id="pag-avviso"></div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="pag-metodo" class="form-label">Metodo</label>
+            <select id="pag-metodo" class="form-input">
+              <option value="">— non indicato —</option>
+              <option value="Bonifico">Bonifico</option>
+              <option value="Contanti">Contanti</option>
+              <option value="TWINT">TWINT</option>
+              <option value="Carta / Bancomat">Carta / Bancomat</option>
+              <option value="Addebito diretto (LSV)">Addebito diretto (LSV)</option>
+              <option value="Altro">Altro</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="pag-riferimento" class="form-label">Riferimento <span class="dim">(facoltativo)</span></label>
+            <input type="text" id="pag-riferimento" class="form-input" maxlength="120"
+                   placeholder="ricevuta, riga dell&rsquo;estratto conto…" />
+          </div>
+        </div>
+
+        <div class="form-group" id="pag-rata-group" style="display:none">
+          <label for="pag-rata" class="form-label">Salda la rata</label>
+          <select id="pag-rata" class="form-input" onchange="onRataScelta()"></select>
+          <div class="form-hint">
+            Scegliendo una rata, l&rsquo;importo si propone da quella. La data resta quella del
+            versamento vero: la rata dice quando era prevista, il pagamento quando è avvenuto.
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-note">Lo stato del documento si aggiorna da solo.</div>
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiRegistraPagamento()">Annulla</button>
+          <button type="button" class="btn-primary" id="pag-salva-btn" onclick="salvaPagamento()">💾 Registra</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ MODALE: Piano rateale (Fase 8C) ════════════════════════════════ -->
+  <div id="rate-overlay" class="modal-overlay" style="display:none"
+       role="dialog" aria-modal="true" aria-labelledby="rate-title"
+       onclick="if(event.target===this) chiudiPianoRateale()">
+    <div class="modal-card" style="max-width:560px">
+      <div class="modal-header">
+        <div class="modal-title" id="rate-title">📅 Piano rateale</div>
+        <button class="modal-close" onclick="chiudiPianoRateale()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="rate-riepilogo" class="pag-sommario"></div>
+        <div id="rate-banner"></div>
+
+        <div class="form-row" style="margin-top:12px">
+          <div class="form-group" style="flex:1">
+            <label for="rate-numero" class="form-label">Numero di rate</label>
+            <input type="number" id="rate-numero" class="form-input" min="1" max="60" step="1"
+                   value="4" oninput="generaAnteprimaRate()" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="rate-prima" class="form-label">Prima scadenza</label>
+            <input type="date" id="rate-prima" class="form-input" onchange="generaAnteprimaRate()" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="rate-ogni" class="form-label">Ogni</label>
+            <select id="rate-ogni" class="form-input" onchange="generaAnteprimaRate()">
+              <option value="mese">mese</option>
+              <option value="settimana">settimana</option>
+              <option value="trimestre">trimestre</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-hint" style="margin-bottom:8px">
+          Ogni riga è modificabile a mano prima di salvare. La somma deve dare
+          esattamente l&rsquo;importo del documento.
+        </div>
+        <div id="rate-anteprima"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-note">Le rate sono previsioni: non cambiano lo stato del documento.</div>
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiPianoRateale()">Annulla</button>
+          <button type="button" class="btn-primary" id="rate-salva-btn" onclick="salvaPianoRateale()">💾 Salva il piano</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="storia-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="storia-title">
     <div class="modal-card">
       <div class="modal-header">
@@ -1773,7 +1906,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=20"></script>
+<script src="js/app.js?v=21"></script>
 
 </body>
 </html>
