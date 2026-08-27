@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=19" />
+  <link rel="stylesheet" href="css/style.css?v=20" />
 </head>
 <body>
 
@@ -37,7 +37,7 @@
 
     <button class="nav-item auth-only" data-page="cruscotto">
       <span aria-hidden="true">📊</span>
-      <span>Cruscotto</span>
+      <span>Situazione</span>
     </button>
 
     <button class="nav-item auth-only" data-page="scadenze">
@@ -181,7 +181,7 @@
 
       <div class="page-header">
         <div>
-          <div class="page-title">Cruscotto</div>
+          <div class="page-title">Situazione</div>
           <div class="page-subtitle">
             Quanto è uscito e quanto è entrato, e che cosa resta da pagare e da incassare.
           </div>
@@ -246,6 +246,9 @@
 
       <!-- ── RIGA 1: i quattro riquadri ──────────────────────────────────── -->
       <div id="cru-riquadri" class="cru-riquadri"></div>
+
+      <!-- Saldo del periodo: quanto e rimasto in cassa fra entrate e uscite -->
+      <div id="cru-saldo"></div>
 
       <!-- SCRITTA OBBLIGATORIA 2: che cosa NON è compreso -->
       <div class="nota-cruscotto avviso" id="cru-nota-perimetro">
@@ -1770,7 +1773,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=19"></script>
+<script src="js/app.js?v=20"></script>
 
 </body>
 </html>
