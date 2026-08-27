@@ -460,7 +460,7 @@ async function loadCanalB() {
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, doc_path, created_at')
+      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, doc_path, created_at, stato_conferma')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -1738,14 +1738,28 @@ async function loadExportDataset(force) {
     for (var i = 0; i < fatture.length; i++) numeroById[fatture[i].id] = fatture[i].numero
   } catch (e) { console.warn('Export / fatture:', e.message) }
 
+  var CAMPI_ACQ = 'id, fornitore, numero_fornitore, data, importo, valuta, imponibile, iva_importo, stato_pagamento, data_pagamento, metodo_pagamento'
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, imponibile, iva_importo, stato_pagamento, data_pagamento, metodo_pagamento')
+      .select(CAMPI_ACQ + ', stato_conferma')
       .eq('azienda_id', currentAziendaId)
     if (error) throw error
     acquisti = data || []
-  } catch (e) { console.warn('Export / acquisti:', e.message) }
+  } catch (e) {
+    // Colonna non ancora presente (SQL_FASE5.sql non applicato): si rilegge
+    // senza. Meglio un export completo senza il filtro che un export a cui
+    // mancano tutti gli acquisti.
+    try {
+      const { data, error: e2 } = await sb
+        .from('tm_conta_fatture_acquisto')
+        .select(CAMPI_ACQ)
+        .eq('azienda_id', currentAziendaId)
+      if (e2) throw e2
+      acquisti = data || []
+      console.warn('Export / acquisti: stato_conferma non disponibile, filtro non applicato.')
+    } catch (e3) { console.warn('Export / acquisti:', e3.message) }
+  }
 
   try {
     var canalA = await loadCanalA()
@@ -1781,17 +1795,28 @@ function sezioniSelezionate() {
 // Documenti del periodo, divisi per sezione
 function docsPeriodo(ds, da, a) {
   var vendite = [], note = [], acquisti = [], spese = [], classificatiTutti = []
+  // FASE 5C — quello che una persona non ha ancora guardato non va al
+  // commercialista. Vale per l'export come per il Cruscotto e le Scadenze.
+  // Se la colonna non c'e' (SQL_FASE5.sql non ancora applicato) il valore e'
+  // undefined e la riga passa: nessuna regressione rispetto a prima.
+  var scartatiDaConfermare = 0
+  function confermato(r) {
+    if (r && r.stato_conferma === 'da_confermare') { scartatiDaConfermare++; return false }
+    return true
+  }
   for (var i = 0; i < ds.fatture.length; i++) {
     var f = ds.fatture[i]
     if (!inPeriodo(f.data_emissione, da, a)) continue
     if (f.tipo === 'nota_credito') note.push(f); else vendite.push(f)
   }
   for (var j = 0; j < ds.acquisti.length; j++) {
+    if (!confermato(ds.acquisti[j])) continue
     if (inPeriodo(ds.acquisti[j].data, da, a)) acquisti.push(ds.acquisti[j])
   }
   for (var m = 0; m < ds.movimentiAll.length; m++) {
     var mov = ds.movimentiAll[m]
     var c = ds.classMap[mov.origine_tipo + ':' + mov.origine_id]
+    if (!confermato(mov)) continue
     if (!c || !inPeriodo(mov.data, da, a) || c.imponibile == null) continue
     classificatiTutti.push({ mov: mov, cls: c })
     // il foglio "Spese e movimenti" esclude fatture e acquisti (hanno fogli propri)
@@ -1799,7 +1824,10 @@ function docsPeriodo(ds, da, a) {
   }
   function byData(x, y) { return String(x.data || x.data_emissione || (x.mov && x.mov.data) || '').localeCompare(String(y.data || y.data_emissione || (y.mov && y.mov.data) || '')) }
   vendite.sort(byData); note.sort(byData); acquisti.sort(byData); spese.sort(byData)
-  return { vendite: vendite, note: note, acquisti: acquisti, spese: spese, classificatiTutti: classificatiTutti }
+  // Il numero torna a chi chiama: l'anteprima dell'export lo dice in chiaro,
+  // altrimenti dei documenti sparirebbero dal file senza che nessuno lo sappia.
+  return { vendite: vendite, note: note, acquisti: acquisti, spese: spese,
+           classificatiTutti: classificatiTutti, scartatiDaConfermare: scartatiDaConfermare }
 }
 
 // ── Fogli ────────────────────────────────────────────────────────────────────
@@ -2033,7 +2061,17 @@ async function updateExportPreview() {
       riga(sez.spese,    '🧾 Spese e movimenti',  d.spese.length,    t.spese) +
       '<div class="exp-riga" style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px">' +
         '<span><strong>Saldo del periodo</strong></span><span class="exp-amount">' + fmtNum2(t.saldo) + ' CHF</span></div>' +
-      (nBlocc ? '<div class="exp-riga exp-vuoto"><span>' + nBlocc + ' movimenti già consegnati 🔒</span><span></span></div>' : '')
+      (nBlocc ? '<div class="exp-riga exp-vuoto"><span>' + nBlocc + ' movimenti già consegnati 🔒</span><span></span></div>' : '') +
+      // FASE 5C — i documenti da confermare NON entrano nel file, ma il loro
+      // numero si vede: un documento che sparisce senza dirlo e' peggio di un
+      // documento che manca e lo dichiara.
+      (d.scartatiDaConfermare
+        ? '<div class="exp-riga exp-vuoto"><span>⏳ ' + d.scartatiDaConfermare +
+          (d.scartatiDaConfermare === 1
+            ? ' documento da confermare: escluso dal file'
+            : ' documenti da confermare: esclusi dal file') +
+          '</span><span></span></div>'
+        : '')
   } catch (e) {
     exportPeriodRows = []
     prev.innerHTML = '<span style="color:var(--err)">Errore anteprima: ' + esc(e.message || e) + '</span>'
