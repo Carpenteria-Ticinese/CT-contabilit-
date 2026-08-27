@@ -1777,7 +1777,7 @@ async function loadExportDataset(force) {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture')
-      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id')
+      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id, doc_path')
       .eq('azienda_id', currentAziendaId)
       .eq('stato', 'emessa')
     if (error) throw error
@@ -1878,9 +1878,12 @@ function docsPeriodo(ds, da, a) {
 }
 
 // ── Fogli ────────────────────────────────────────────────────────────────────
-function buildSheetVendite(list, ds, negativo) {
+function buildSheetVendite(list, ds, negativo, mappaAllegati) {
   var head = ['Numero', 'Data', 'Cliente', 'Cantiere', 'Imponibile', 'IVA', 'Totale', 'Valuta', 'Stato pagamento', 'IBAN']
   if (negativo) head.push('Rif. fattura stornata')
+  // FASE 7 — la colonna compare SOLO nel pacchetto. Senza mappa questo foglio
+  // resta identico a quello dell'export Excel di sempre.
+  if (mappaAllegati) head.push('ALLEGATO')
   var aoa = [head]
   var segno = negativo ? -1 : 1
   for (var i = 0; i < list.length; i++) {
@@ -1899,14 +1902,17 @@ function buildSheetVendite(list, ds, negativo) {
       (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
     ]
     if (negativo) riga.push(ds.numeroById[f.rif_fattura_id] || '—')
+    if (mappaAllegati) riga.push(mappaAllegati['vendite:' + f.id] || '')
     aoa.push(riga)
   }
   return aoa
 }
 
-function buildSheetAcquisti(list, ds) {
-  var aoa = [['Fornitore', 'Numero fornitore', 'Data', 'Imponibile', 'IVA', 'Totale', 'Valuta',
-              'Stato pagamento', 'Data pagamento', 'Metodo pagamento', 'Conto', 'Codice IVA']]
+function buildSheetAcquisti(list, ds, mappaAllegati) {
+  var head = ['Fornitore', 'Numero fornitore', 'Data', 'Imponibile', 'IVA', 'Totale', 'Valuta',
+              'Stato pagamento', 'Data pagamento', 'Metodo pagamento', 'Conto', 'Codice IVA']
+  if (mappaAllegati) head.push('ALLEGATO')
+  var aoa = [head]
   for (var i = 0; i < list.length; i++) {
     var x = list[i]
     var c = ds.classMap['acquisto:' + x.id]
@@ -1924,13 +1930,16 @@ function buildSheetAcquisti(list, ds) {
       c ? contoLabel(c.conto_id) : '',
       c ? ivaLabel(c.codice_iva_id) : ''
     ])
+    if (mappaAllegati) aoa[aoa.length - 1].push(mappaAllegati['acquisti:' + x.id] || '')
   }
   return aoa
 }
 
-function buildSheetSpese(pairs) {
-  var aoa = [['Data', 'Origine', 'Descrizione', 'Ente/Fornitore', 'Conto', 'Codice IVA',
-              'IVA', 'Imponibile', 'IVA importo', 'Totale', 'Valuta', 'Cantiere', 'Note']]
+function buildSheetSpese(pairs, mappaAllegati) {
+  var head = ['Data', 'Origine', 'Descrizione', 'Ente/Fornitore', 'Conto', 'Codice IVA',
+              'IVA', 'Imponibile', 'IVA importo', 'Totale', 'Valuta', 'Cantiere', 'Note']
+  if (mappaAllegati) head.push('ALLEGATO')
+  var aoa = [head]
   for (var i = 0; i < pairs.length; i++) {
     var m = pairs[i].mov, c = pairs[i].cls
     var imp = safeNum(c.imponibile) || 0
@@ -1942,6 +1951,12 @@ function buildSheetSpese(pairs) {
       imp, ivaImp, round2(imp + ivaImp),
       m.valuta || 'CHF', cantiereLabel(c.cantiere_id), c.note || ''
     ])
+    // Gli allegati esistono solo per i movimenti propri: spesa e regia di
+    // App Cantieri non hanno un file collegato a questa riga.
+    if (mappaAllegati) {
+      aoa[aoa.length - 1].push(
+        (m.origine_tipo === 'proprio') ? (mappaAllegati['movimenti:' + m.origine_id] || '') : '')
+    }
   }
   return aoa
 }
@@ -2043,10 +2058,17 @@ function applicaPeriodoRapido() {
     a  = anno + '-12-31'
   }
   setVal('exp-da', da); setVal('exp-a', a)
-  updateExportPreview()
+  aggiornaTutteLeAnteprime()
 }
 
 function onPeriodoManuale() { setPeriodoModo('custom') }
+
+// FASE 7 — quando cambia il periodo cambia anche il pacchetto: l'anteprima si
+// rifa' da sola, cosi' il peso stimato non resta quello di prima.
+function aggiornaTutteLeAnteprime() {
+  updateExportPreview()
+  if (typeof aggiornaAnteprimaPacchetto === 'function') aggiornaAnteprimaPacchetto()
+}
 
 function popolaAnniDisponibili(ds) {
   var sel = el('exp-anno')
@@ -2317,7 +2339,7 @@ async function loadFattureList() {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture')
-      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at')
+      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, doc_path')
       .eq('azienda_id', currentAziendaId)
       .order('created_at', { ascending: false })
     if (error) throw error
@@ -2396,7 +2418,12 @@ function renderFattureTable() {
       '<td>' + statoFatturaBadge(f.stato) +
         // L'incasso si mostra solo sulle fatture emesse: su una bozza non
         // significa niente, su una annullata sarebbe fuorviante.
-        (f.stato === 'emessa' ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '') + '</td>' +
+        (f.stato === 'emessa' ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '') +
+        // FASE 7 — si vede a colpo d'occhio a quali fatture manca il PDF: senza
+        // questa spia il pacchetto esce incompleto e ci si accorge solo dopo.
+        (f.stato === 'emessa' && !f.doc_path
+          ? ' <span class="pdf-mancante">📎 PDF mancante</span>'
+          : '') + '</td>' +
       '<td class="row-actions">' + fattureRowActions(f) + '</td>' +
     '</tr>'
   }).join('')
@@ -3287,6 +3314,13 @@ function renderDetailActions(f) {
   a += '<button class="btn-primary" onclick="printFattura()">🖨 Stampa</button>'
   // Stesso CSS di stampa, stesso risultato: cambia solo il nome del file proposto.
   a += '<button class="btn-secondary" onclick="scaricaFatturaPDF()">📄 Scarica PDF</button>'
+  // FASE 7 — il PDF si allega dopo averlo generato: da li' entra nel pacchetto
+  // per il commercialista. Il testo cambia se ce n'e' gia' uno.
+  if (f.stato !== 'bozza') {
+    a += f.doc_path
+      ? '<button class="btn-secondary" onclick="apriSceltaPdfFattura()">📎 PDF allegato — sostituisci</button>'
+      : '<button class="btn-secondary" onclick="apriSceltaPdfFattura()">📎 Allega PDF alla fattura</button>'
+  }
   if (f.stato === 'bozza') {
     a += '<button class="btn-secondary" onclick="editFattura(\'' + f.id + '\')">✏️ Modifica bozza</button>'
     a += '<button class="btn-primary" onclick="emettiFatturaById(\'' + f.id + '\')">📨 Emetti</button>'
@@ -7240,6 +7274,586 @@ function renderStatoCostoOrario(inModifica) {
       (verif ? 'sì' : 'no') + '</strong>' +
       (verif ? '' : ' <span class="dim">— il margine dei cantieri resta indicativo</span>') +
     '</div>'
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 7 — PACCHETTO PER IL COMMERCIALISTA
+//
+// Un solo ZIP con l'Excel e tutti i giustificativi.
+//
+// LA REGOLA CHE TIENE IN PIEDI TUTTO: ogni riga dell'Excel porta il NOME ESATTO
+// del file che le corrisponde, percorso compreso. Un pacchetto con quaranta PDF
+// e un Excel che non dice quale riga sia quale file costringe il commercialista
+// ad aprirli uno per uno: tanto vale non farlo. Per questo il nome si calcola
+// UNA volta sola (nomeFilePacchetto) e la stessa stringa finisce sia nella
+// cella sia nel percorso dentro lo ZIP.
+//
+// IL PERIODO QUI E' PER COMPETENZA: conta la data del DOCUMENTO, non quella del
+// pagamento. E' l'opposto del Cruscotto, che e' di cassa. Detto sulla schermata
+// e ripetuto nel LEGGIMI, altrimenti la differenza sembra un errore.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let pacchettoInCorso  = false
+let pacchettoAnnullato = false
+let jsZipCaricato     = false
+
+// ── JSZip: si scarica solo quando serve ─────────────────────────────────────
+// Non e' un <script> in fondo alla pagina come SheetJS: caricarla all'avvio
+// significherebbe farla scaricare a chiunque apra l'app, anche a chi non
+// generera' mai un pacchetto. Cosi' invece un CDN muto disturba solo chi sta
+// premendo il bottone, e l'export Excel continua a funzionare comunque.
+function caricaJSZip() {
+  return new Promise(function (risolvi, rifiuta) {
+    if (jsZipCaricato && window.JSZip) { risolvi(window.JSZip); return }
+    if (window.JSZip) { jsZipCaricato = true; risolvi(window.JSZip); return }
+    var s = document.createElement('script')
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
+    s.onload = function () {
+      if (window.JSZip) { jsZipCaricato = true; risolvi(window.JSZip) }
+      else rifiuta(new Error('JSZip caricata ma non disponibile.'))
+    }
+    s.onerror = function () {
+      rifiuta(new Error('Impossibile creare lo ZIP. Puoi comunque scaricare l\'Excel da solo.'))
+    }
+    document.head.appendChild(s)
+  })
+}
+
+// ── I nomi dei file ─────────────────────────────────────────────────────────
+
+// «2026-08-24_Reguscireco_96.50.pdf»
+// La data per prima e in formato AAAA-MM-GG: cosi' l'ordine alfabetico della
+// cartella e' anche l'ordine cronologico, senza che nessuno debba ordinare.
+// Accenti e spazi via, come gia' si fa per il nome del PDF fattura (FASE 2).
+function ripulisciPerNomeFile(testo) {
+  var t = String(testo || '')
+  // Scompone le lettere accentate e butta via i segni: Città -> Citta, Müller -> Muller
+  if (t.normalize) t = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  return t.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'documento'
+}
+
+function estensioneDa(percorso, seManca) {
+  var m = String(percorso || '').match(/\.([A-Za-z0-9]{1,5})(?:\?|$)/)
+  return m ? m[1].toLowerCase() : (seManca || 'pdf')
+}
+
+function nomeFilePacchetto(data, chi, importo, estensione) {
+  var d = data ? String(data).slice(0, 10) : 'senza-data'
+  var imp = (safeNum(importo) != null) ? safeNum(importo).toFixed(2) : '0.00'
+  return d + '_' + ripulisciPerNomeFile(chi) + '_' + imp + '.' + estensione
+}
+
+// Due fatture dello stesso fornitore, stesso giorno, stesso importo esistono.
+// Il secondo file prende _2, il terzo _3: nessuno viene sovrascritto in silenzio.
+function nomeUnico(usati, cartella, nome) {
+  var completo = cartella + '/' + nome
+  if (!usati[completo]) { usati[completo] = true; return completo }
+  var punto = nome.lastIndexOf('.')
+  var base = (punto > 0) ? nome.slice(0, punto) : nome
+  var est  = (punto > 0) ? nome.slice(punto) : ''
+  var n = 2
+  while (usati[cartella + '/' + base + '_' + n + est]) n++
+  completo = cartella + '/' + base + '_' + n + est
+  usati[completo] = true
+  return completo
+}
+
+// ── Che cosa entra nel pacchetto ────────────────────────────────────────────
+// I filtri sono quelli del §7C: niente bozze, niente annullate, niente
+// «da confermare». La regia non fatturata resta fuori: non e' un documento
+// fiscale, e' lavoro ancora da fatturare.
+async function raccogliDocumentiPacchetto(da, a) {
+  var ds = await loadExportDataset()
+  var d  = docsPeriodo(ds, da, a)      // applica gia' il filtro «da confermare»
+  var usati = {}
+  var voci = []
+
+  // ── Fatture di vendita e note di credito → vendite/
+  d.vendite.concat(d.note).forEach(function (f) {
+    voci.push({
+      sezione: 'vendite',
+      etichetta: (f.tipo === 'nota_credito' ? 'Nota di credito ' : 'Fattura ') + (f.numero || ''),
+      data: f.data_emissione,
+      chi: f.cliente_nome,
+      importo: f.totale,
+      path: f.doc_path || null,
+      id: f.id,
+      // Una fattura senza PDF non e' un errore dello Storage: e' un PDF che
+      // nessuno ha ancora allegato. Il motivo va scritto per esteso.
+      motivoSeManca: 'PDF non ancora allegato'
+    })
+  })
+
+  // ── Fatture d'acquisto → acquisti/
+  d.acquisti.forEach(function (x) {
+    voci.push({
+      sezione: 'acquisti',
+      etichetta: 'Fattura ' + (x.numero_fornitore || '') + ' ' + (x.fornitore || ''),
+      data: x.data, chi: x.fornitore, importo: x.importo,
+      path: x.doc_path || null, id: x.id,
+      motivoSeManca: 'nessun file caricato'
+    })
+  })
+
+  // ── Movimenti propri → movimenti/ (cartella separata, come l'Excel)
+  d.spese.forEach(function (par) {
+    var m = par.mov
+    if (m.origine_tipo !== 'proprio') return     // spesa/regia di App Cantieri: altra sezione
+    voci.push({
+      sezione: 'movimenti',
+      etichetta: m.descrizione || 'Movimento',
+      data: m.data, chi: m.ente || m.ente_fornitore || m.descrizione, importo: m.importo,
+      path: m.doc_path || null, id: m.origine_id,
+      motivoSeManca: 'nessun file caricato'
+    })
+  })
+
+  // ── Spese di cantiere → spese_cantiere/
+  // La tabella e' vuota oggi (App Cantieri non e' mai stato usato per le spese):
+  // se non ci sono righe la cartella NON viene creata. Uno ZIP con una cartella
+  // vuota fa pensare che qualcosa sia andato perso.
+  var speseCant = await speseCantierePeriodo(da, a)
+  speseCant.forEach(function (sp) {
+    voci.push({
+      sezione: 'spese_cantiere',
+      etichetta: sp.descrizione || 'Spesa di cantiere',
+      data: sp.data, chi: cantiereLabel(sp.cantiere_id), importo: sp.importo,
+      path: sp.foto_path || null, id: sp.id,
+      bucket: 'cantiere-spese',
+      motivoSeManca: 'foto mai scattata'
+    })
+  })
+
+  // Il nome del file si assegna QUI, una volta sola: la stessa stringa andra'
+  // nella cella ALLEGATO dell'Excel e nel percorso dentro lo ZIP.
+  voci.forEach(function (v) {
+    if (!v.path) { v.nomeNelloZip = null; return }
+    var est = estensioneDa(v.path, v.sezione === 'spese_cantiere' ? 'jpg' : 'pdf')
+    v.nomeNelloZip = nomeUnico(usati, v.sezione, nomeFilePacchetto(v.data, v.chi, v.importo, est))
+  })
+
+  return { voci: voci, d: d, ds: ds }
+}
+
+// Spese di cantiere del periodo. Sola lettura, tabella di App Cantieri.
+async function speseCantierePeriodo(da, a) {
+  try {
+    await loadSpeseCantiere()
+    await loadCantieri()
+    return (speseCantiereCache || []).filter(function (s) { return inPeriodo(s.data, da, a) })
+  } catch (e) {
+    console.warn('Spese di cantiere non lette per il pacchetto:', e.message || e)
+    return []
+  }
+}
+
+// ── L'anteprima, prima di generare ──────────────────────────────────────────
+
+async function aggiornaAnteprimaPacchetto() {
+  var box = el('exp-zip-anteprima')
+  if (!box) return
+  var da = getVal('exp-da'), a = getVal('exp-a')
+  if (!da || !a) { box.innerHTML = '<span class="dim">Imposta il periodo per vedere l\'anteprima del pacchetto.</span>'; return }
+
+  box.innerHTML = loadingRow('Calcolo del pacchetto…')
+  try {
+    var r = await raccogliDocumentiPacchetto(da, a)
+    var conAllegato = r.voci.filter(function (v) { return !!v.path })
+    var senza = r.voci.length - conAllegato.length
+
+    if (!r.voci.length) {
+      box.innerHTML = '<div class="cru-vuoto"><strong>Nessun documento in questo periodo.</strong><br>' +
+        'Non c\'è niente da mettere nel pacchetto: cambia il periodo qui sopra.</div>'
+      var b0 = el('exp-zip-btn'); if (b0) b0.disabled = true
+      return
+    }
+    var b1 = el('exp-zip-btn'); if (b1) b1.disabled = false
+
+    // Stima: le foto pesano molto piu' dei PDF. Sono cifre grossolane e la
+    // scritta lo dice: servono solo a evitare la sorpresa dei 200 MB.
+    var stimaMB = 0
+    conAllegato.forEach(function (v) { stimaMB += (v.sezione === 'spese_cantiere') ? 3 : 0.35 })
+    stimaMB = Math.max(0.1, stimaMB)
+
+    var avviso = ''
+    if (stimaMB > 200) {
+      avviso = '<div class="nota-cruscotto avviso"><span aria-hidden="true">⚠️</span><span>' +
+        '<strong>Pacchetto molto grande (circa ' + esc(fmtNumIt(stimaMB)) + ' MB).</strong> ' +
+        'Conviene generare un mese alla volta. Il bottone resta attivo: decidi tu.</span></div>'
+    } else if (stimaMB > 20) {
+      avviso = '<div class="nota-cruscotto avviso"><span aria-hidden="true">⚠️</span><span>' +
+        'Il pacchetto pesa circa <strong>' + esc(fmtNumIt(stimaMB)) + ' MB</strong>: troppo per un\'email. ' +
+        'Caricalo su Google Drive oppure dividilo in periodi più corti.</span></div>'
+    }
+
+    box.innerHTML =
+      '<div class="exp-riga"><span>Documenti nel periodo</span><span><strong>' + r.voci.length + '</strong></span></div>' +
+      '<div class="exp-riga"><span>Giustificativi da allegare</span><span><strong>' + conAllegato.length + '</strong></span></div>' +
+      '<div class="exp-riga' + (senza ? ' exp-vuoto' : '') + '"><span>' +
+        (senza ? '⏳ Documenti senza giustificativo' : '✅ Nessun documento senza giustificativo') +
+        '</span><span><strong>' + senza + '</strong></span></div>' +
+      '<div class="exp-riga"><span>Dimensione stimata</span><span><strong>circa ' +
+        esc(fmtNumIt(stimaMB)) + ' MB</strong></span></div>' +
+      (senza ? '<div class="form-hint" style="margin-top:6px">I documenti senza giustificativo restano ' +
+        'nell\'Excel con la cella vuota, ed è elencato il perché in DOCUMENTI_MANCANTI.txt.</div>' : '') +
+      avviso
+  } catch (e) {
+    box.innerHTML = '<span class="dim">Anteprima non disponibile: ' + esc(e.message || e) + '</span>'
+  }
+}
+
+// ── La generazione ──────────────────────────────────────────────────────────
+
+function annullaPacchetto() {
+  pacchettoAnnullato = true
+  mostraProgressoPacchetto('Annullamento in corso…', 100)
+}
+
+function mostraProgressoPacchetto(testo, percento) {
+  var box = el('exp-zip-progresso')
+  if (box) box.style.display = testo ? 'block' : 'none'
+  var t = el('exp-zip-progresso-testo'); if (t) t.textContent = testo || ''
+  var b = el('exp-zip-progresso-barra'); if (b) b.style.width = Math.max(0, Math.min(100, percento || 0)) + '%'
+}
+
+function bannerPacchetto(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  html('exp-zip-banner',
+    '<div class="fase-banner ' + tipo + '" style="margin-top:12px" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + msg + '</div>' +
+    '</div>')
+}
+
+async function generaPacchetto() {
+  if (pacchettoInCorso) return
+  var da = getVal('exp-da'), a = getVal('exp-a')
+  if (!validPeriodo(da, a)) return
+
+  pacchettoInCorso = true
+  pacchettoAnnullato = false
+  html('exp-zip-banner', '')
+  var btn = el('exp-zip-btn'), btnAnn = el('exp-zip-annulla-btn')
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Preparazione…' }
+  if (btnAnn) btnAnn.style.display = 'inline-flex'
+
+  var mancanti = []      // {data, chi, importo, motivo}
+  try {
+    mostraProgressoPacchetto('Caricamento della libreria per lo ZIP…', 2)
+    var JSZipLib = await caricaJSZip()
+
+    mostraProgressoPacchetto('Raccolta dei documenti…', 5)
+    var r = await raccogliDocumentiPacchetto(da, a)
+    if (!r.voci.length) {
+      bannerPacchetto('warn', 'Nessun documento in questo periodo: non è stato creato nessun file.')
+      return
+    }
+
+    var zip = new JSZipLib()
+    var conAllegato = r.voci.filter(function (v) { return !!v.path })
+    var scaricati = 0
+
+    // ── Gli allegati, uno per uno ──────────────────────────────────────────
+    // try/catch INTORNO A OGNI FILE: un allegato che non si scarica finisce
+    // fra i mancanti e il pacchetto si genera lo stesso. Se bastasse un file
+    // rotto a far fallire tutto, il pacchetto non si potrebbe mai consegnare.
+    for (var i = 0; i < conAllegato.length; i++) {
+      if (pacchettoAnnullato) { bannerPacchetto('warn', 'Generazione annullata: nessun file è stato scaricato.'); return }
+      var v = conAllegato[i]
+      mostraProgressoPacchetto('Scarico allegato ' + (i + 1) + ' di ' + conAllegato.length + '…',
+                               5 + Math.round((i / conAllegato.length) * 80))
+      try {
+        var bucket = v.bucket || STORAGE_BUCKET
+        const { data: blob, error } = await sb.storage.from(bucket).download(v.path)
+        if (error) throw error
+        if (!blob) throw new Error('file vuoto')
+        zip.file(v.nomeNelloZip, blob)
+        scaricati++
+      } catch (eFile) {
+        // Il file resta nell'Excel con la cella vuota, e il motivo va scritto.
+        v.nomeNelloZip = null
+        mancanti.push({ data: v.data, chi: v.chi, importo: v.importo,
+                        motivo: 'file non scaricabile (' + (eFile.message || eFile) + ')' })
+      }
+    }
+
+    // I documenti che non avevano proprio un file
+    r.voci.filter(function (v) { return !v.path }).forEach(function (v) {
+      mancanti.push({ data: v.data, chi: v.chi, importo: v.importo, motivo: v.motivoSeManca })
+    })
+
+    if (pacchettoAnnullato) { bannerPacchetto('warn', 'Generazione annullata: nessun file è stato scaricato.'); return }
+
+    // ── L'Excel, con la colonna ALLEGATO ───────────────────────────────────
+    mostraProgressoPacchetto('Creazione dell\'Excel…', 88)
+    var mappa = {}
+    r.voci.forEach(function (v) { if (v.nomeNelloZip) mappa[v.sezione + ':' + v.id] = v.nomeNelloZip })
+    var wb = costruisciWorkbookPacchetto(r, mappa, da, a)
+    var xlsxBin = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+    zip.file('01_Riepilogo.xlsx', xlsxBin)
+
+    // ── I due file di testo ────────────────────────────────────────────────
+    mostraProgressoPacchetto('Scrittura del riepilogo…', 92)
+    zip.file('00_LEGGIMI.txt', await testoLeggimi(r, da, a, scaricati, mancanti.length))
+    if (mancanti.length) zip.file('DOCUMENTI_MANCANTI.txt', testoDocumentiMancanti(mancanti))
+
+    // ── Lo ZIP ─────────────────────────────────────────────────────────────
+    mostraProgressoPacchetto('Compressione…', 95)
+    var blobZip = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' },
+      function (meta) { mostraProgressoPacchetto('Compressione… ' + Math.round(meta.percent) + '%', 95 + meta.percent * 0.05) })
+
+    if (pacchettoAnnullato) { bannerPacchetto('warn', 'Generazione annullata: nessun file è stato scaricato.'); return }
+
+    scaricaBlob(blobZip, 'CT_' + da + '_' + a + '.zip')
+    mostraProgressoPacchetto('', 0)
+
+    var msg = '<strong>Pacchetto creato.</strong> ' + r.voci.length +
+      (r.voci.length === 1 ? ' documento' : ' documenti') + ', ' + scaricati +
+      (scaricati === 1 ? ' giustificativo allegato' : ' giustificativi allegati') +
+      (mancanti.length ? ', ' + mancanti.length + ' senza file (elencati in DOCUMENTI_MANCANTI.txt)' : '') + '.' +
+      '<br><button type="button" class="link-btn" onclick="proponiConsegna()">Hai consegnato il pacchetto? Segna il periodo come consegnato</button>'
+    bannerPacchetto(mancanti.length ? 'warn' : 'ok', msg)
+
+  } catch (e) {
+    mostraProgressoPacchetto('', 0)
+    bannerPacchetto('err', esc(e.message || String(e)))
+  } finally {
+    pacchettoInCorso = false
+    if (btn) { btn.disabled = false; btn.textContent = '📦 Genera pacchetto completo (ZIP)' }
+    if (btnAnn) btnAnn.style.display = 'none'
+    if (pacchettoAnnullato) mostraProgressoPacchetto('', 0)
+  }
+}
+
+// Scarica un blob senza passare da una libreria.
+function scaricaBlob(blob, nomeFile) {
+  var url = URL.createObjectURL(blob)
+  var a = document.createElement('a')
+  a.href = url
+  a.download = nomeFile
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(function () { URL.revokeObjectURL(url) }, 2000)
+}
+
+// ── L'Excel del pacchetto ───────────────────────────────────────────────────
+// Usa gli stessi fogli dell'export normale, con in piu' la colonna ALLEGATO.
+// I buildSheet* accettano la mappa come parametro FACOLTATIVO: senza mappa si
+// comportano esattamente come prima, cosi' l'export Excel esistente non cambia
+// di una virgola.
+function costruisciWorkbookPacchetto(r, mappa, da, a) {
+  var d = r.d, ds = r.ds
+  var sez = sezioniSelezionate()
+  var wb = XLSX.utils.book_new()
+
+  if (d.vendite.length)  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetVendite(d.vendite, ds, false, mappa)), 'Vendite')
+  if (d.note.length)     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetVendite(d.note, ds, true, mappa)), 'Note di credito')
+  if (d.acquisti.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetAcquisti(d.acquisti, ds, mappa)), 'Acquisti')
+  if (d.spese.length)    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetSpese(d.spese, mappa)), 'Spese e movimenti')
+
+  // Le spese di cantiere stanno in un foglio SEPARATO e non si sommano mai agli
+  // acquisti: lo stesso scontrino puo' essere gia' fra le fatture ricevute.
+  var speseCant = r.voci.filter(function (v) { return v.sezione === 'spese_cantiere' })
+  if (speseCant.length) {
+    var aoa = [['Data', 'Cantiere', 'Descrizione', 'Importo', 'ALLEGATO']]
+    speseCant.forEach(function (v) {
+      aoa.push([v.data || '', v.chi || '', v.etichetta || '', safeNum(v.importo) || 0, v.nomeNelloZip || ''])
+    })
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Spese cantiere')
+  }
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetRiepilogo(d, sez, da, a)), 'Riepilogo')
+  return wb
+}
+
+// ── 00_LEGGIMI.txt ──────────────────────────────────────────────────────────
+
+async function testoLeggimi(r, da, a, allegatiInclusi, allegatiMancanti) {
+  var t = totaliSezioni(r.d)
+  var az = aziendaInfo || {}
+  var nome = (az.nome || 'CARPENTERIA TICINESE SAGL').toUpperCase()
+
+  function riga(etichetta, n, importo) {
+    var e = '  ' + etichetta
+    while (e.length < 28) e += ' '
+    var c = String(n) + (n === 1 ? ' doc' : ' doc')
+    while (c.length < 9) c = ' ' + c
+    // Lo zero non ha segno: «-0,00» viene dal totale delle note di credito, che
+    // e' negativo per costruzione. Su zero documenti e' solo brutto da leggere.
+    var n0 = safeNum(importo) || 0
+    if (Math.abs(n0) < 0.005) n0 = 0
+    var i = fmtNumIt(n0) + ' CHF'
+    while (i.length < 16) i = ' ' + i
+    return e + c + i
+  }
+
+  var speseCant = r.voci.filter(function (v) { return v.sezione === 'spese_cantiere' })
+  var totSpeseCant = speseCant.reduce(function (s, v) { return s + (safeNum(v.importo) || 0) }, 0)
+
+  var righe = [
+    nome,
+    'Periodo: ' + fmtDate(da) + ' - ' + fmtDate(a),
+    'Generato il: ' + fmtDate(oggiISO()),
+    '',
+    'CONTENUTO',
+    riga('Fatture di vendita', r.d.vendite.length, t.vendite),
+    riga('Note di credito', r.d.note.length, t.note),
+    riga('Fatture d\'acquisto', r.d.acquisti.length, t.acquisti),
+    riga('Movimenti propri', r.d.spese.length, t.spese),
+    riga('Spese di cantiere', speseCant.length, totSpeseCant),
+    '',
+    '  Allegati inclusi:   ' + allegatiInclusi + ' file',
+    '  Allegati mancanti:  ' + allegatiMancanti + ' file'
+  ]
+  if (allegatiMancanti) righe.push('    -> vedi DOCUMENTI_MANCANTI.txt')
+
+  righe.push('', 'NOTE')
+  // Il periodo: e' la nota che evita la telefonata del commercialista.
+  righe.push('  I documenti sono contati per DATA DEL DOCUMENTO')
+  righe.push('  (competenza), non per data di pagamento.')
+
+  // IVA: il testo cambia se esiste un periodo attivo.
+  try { await loadIvaPeriodi() } catch (_) { }
+  var ivaAttivi = (ivaPeriodiCache || []).filter(function (x) {
+    if (x.valido_da && a && x.valido_da > a) return false
+    if (x.valido_a && da && x.valido_a < da) return false
+    return true
+  })
+  if (!ivaAttivi.length) {
+    righe.push('  IVA: azienda non assoggettata in questo')
+    righe.push('       periodo.')
+  } else {
+    var p = ivaAttivi[0]
+    righe.push('  IVA: metodo ' + (p.metodo || '-') +
+      (p.metodo === 'saldo' ? ', aliquota saldo ' + fmtNumIt(safeNum(p.aliquota_saldo) || 0) + '%' : '') + ',')
+    righe.push('       criterio ' + (p.criterio || '-') +
+      ', in vigore dal ' + fmtDate(p.valido_da) + '.')
+  }
+
+  righe.push('  I documenti da confermare NON sono inclusi.')
+  if (speseCant.length) {
+    righe.push('  Le spese di cantiere possono coincidere con')
+    righe.push('  fatture d\'acquisto gia\' elencate: verificare.')
+  }
+
+  // §7D — se il periodo e' gia' stato consegnato, va detto qui.
+  var consegna = await dataConsegnaPeriodo(da, a)
+  if (consegna) righe.push('  Periodo gia\' consegnato il ' + fmtDate(consegna) + '.')
+
+  righe.push('')
+  righe.push('Contatto: ' + (az.email || 'info@carpenteriaticinese.ch'))
+  righe.push('')
+  return righe.join('\r\n')      // CRLF: si apre bene anche col Blocco note
+}
+
+// ── DOCUMENTI_MANCANTI.txt ──────────────────────────────────────────────────
+// Due sezioni distinte, perche' sono due problemi diversi e si risolvono in
+// modi diversi: un file mai caricato lo si carica, un file non scaricabile e'
+// un guasto da guardare.
+function testoDocumentiMancanti(mancanti) {
+  function blocco(titolo, lista, coda) {
+    if (!lista.length) return []
+    var out = [titolo, '']
+    lista.forEach(function (m) {
+      var d = m.data ? fmtDate(m.data) : '(senza data)'
+      var chi = String(m.chi || '-')
+      var imp = fmtNumIt(safeNum(m.importo) || 0) + ' CHF'
+      var r1 = d + '  ' + chi
+      while (r1.length < 40) r1 += ' '
+      out.push(r1 + imp)
+      out.push('            ' + m.motivo)
+      out.push('')
+    })
+    out.push(coda, '')
+    return out
+  }
+
+  var guasti = mancanti.filter(function (m) { return m.motivo.indexOf('non scaricabile') !== -1 })
+  var maiCaricati = mancanti.filter(function (m) { return m.motivo.indexOf('non scaricabile') === -1 })
+
+  var righe = ['DOCUMENTI SENZA ALLEGATO', '',
+    'Questi documenti sono nell\'Excel ma il', 'giustificativo non e\' nel pacchetto.', '', '']
+
+  righe = righe.concat(blocco('--- GIUSTIFICATIVO MAI CARICATO ---', maiCaricati,
+    'Si risolve caricando il file nel programma.'))
+  righe = righe.concat(blocco('--- FILE NON SCARICABILE (GUASTO) ---', guasti,
+    'Il file risulta caricato ma non si scarica: va controllato.'))
+
+  return righe.join('\r\n')
+}
+
+// ── §7D — collegamento al blocco periodo ────────────────────────────────────
+
+// Quando e' stato consegnato questo periodo, se lo e' stato.
+async function dataConsegnaPeriodo(da, a) {
+  try {
+    const { data, error } = await sb.from('tm_conta_export_log')
+      .select('created_at, periodo_da, periodo_a')
+      .eq('azienda_id', currentAziendaId)
+      .eq('periodo_da', da).eq('periodo_a', a)
+      .order('created_at', { ascending: false }).limit(1)
+    if (error) throw error
+    return (data && data[0]) ? String(data[0].created_at).slice(0, 10) : null
+  } catch (e) { return null }
+}
+
+// Il blocco NON e' automatico: lo ZIP si genera mille volte per prova, e
+// bloccare a ogni generazione renderebbe impossibile provare. Blocca Umberto,
+// con un clic esplicito, usando la funzione che esiste gia'.
+function proponiConsegna() {
+  var card = document.querySelector('#page-export .card:last-of-type')
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  var b = el('exp-lock-btn')
+  if (b) { b.focus(); b.classList.add('evidenzia'); setTimeout(function () { b.classList.remove('evidenzia') }, 2600) }
+}
+
+// ── Il PDF allegato alla fattura di vendita ─────────────────────────────────
+
+function apriSceltaPdfFattura() {
+  var inp = el('fat-pdf-input')
+  if (inp) { inp.value = ''; inp.click() }
+}
+
+async function allegaPdfFattura(input) {
+  if (!input || !input.files || !input.files.length) return
+  var file = input.files[0]
+  var f = currentDetailFattura
+  if (!f) return
+
+  html('fatture-allegato-banner', loadingRow('Caricamento del PDF…'))
+  try {
+    if (file.type && file.type.indexOf('pdf') === -1) {
+      throw new Error('Serve un file PDF. Genera prima il documento con «Scarica PDF».')
+    }
+    var path = await uploadAllegato(file)      // stesso bucket e stesso formato degli acquisti
+    const { error } = await sb.from('tm_conta_fatture')
+      .update({ doc_path: path })
+      .eq('id', f.id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+
+    currentDetailFattura.doc_path = path
+    exportDataset = null                        // il pacchetto deve rileggere
+    html('fatture-allegato-banner',
+      '<div class="fase-banner ok"><span class="icon" aria-hidden="true">✅</span>' +
+      '<div class="msg">PDF allegato alla fattura. Da adesso entra nel pacchetto per il commercialista.</div></div>')
+    await loadFattureList()
+    await viewFattura(f.id)
+  } catch (e) {
+    var m = String(e.message || e)
+    // Se il trigger di immutabilita' rifiuta, NON si aggira: si segnala.
+    if (m.indexOf('non si puo modificare') !== -1 || m.indexOf('sola lettura') !== -1) {
+      m = 'Il database ha rifiutato la modifica come se doc_path fosse un campo congelato. ' +
+          'Non va aggirato: segnalalo, perché vuol dire che SQL_FASE7.sql non è stato applicato ' +
+          'oppure che il trigger è diverso da quello previsto. Messaggio: ' + m
+    }
+    html('fatture-allegato-banner',
+      '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">' + esc(m) + '</div></div>')
+  } finally {
+    if (input) input.value = ''
+  }
 }
 
 
