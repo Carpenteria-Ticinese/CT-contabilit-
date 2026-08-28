@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=21" />
+  <link rel="stylesheet" href="css/style.css?v=22" />
 </head>
 <body>
 
@@ -1605,12 +1605,11 @@
   <!-- ══ MODALE: Storia modifiche (audit) — Fase 4 ════════════════════════ -->
   <!-- ══ FINESTRELLA: riepilogo scadenze all'apertura (Fase 4C) ═══════════ -->
   <div id="scadenze-overlay" class="modal-overlay" style="display:none"
-       role="dialog" aria-modal="true" aria-labelledby="scad-modal-title"
-       onclick="if(event.target===this) chiudiFinestraScadenze()">
+       role="dialog" aria-modal="true" aria-labelledby="scad-modal-title">
     <div class="modal-card" style="max-width:480px">
       <div class="modal-header">
         <div class="modal-title" id="scad-modal-title">⏰ Scadenze da controllare</div>
-        <button class="modal-close" onclick="chiudiFinestraScadenze()" aria-label="Chiudi">✕</button>
+        <button class="modal-close" onclick="chiudiModaleConConferma('scadenze-overlay')" aria-label="Chiudi">✕</button>
       </div>
       <div class="modal-body">
         <div id="scad-modal-body"></div>
@@ -1626,13 +1625,14 @@
   </div>
 
   <!-- ══ MODALE: Registra pagamento (Fase 8B) ═══════════════════════════ -->
+  <!-- Nessun onclick sullo sfondo: qui si scrivono dati, un clic fuori non
+       deve farli sparire. Si chiude con la X, con Annulla o con Esc. -->
   <div id="pagamento-overlay" class="modal-overlay" style="display:none"
-       role="dialog" aria-modal="true" aria-labelledby="pag-title"
-       onclick="if(event.target===this) chiudiRegistraPagamento()">
+       role="dialog" aria-modal="true" aria-labelledby="pag-title">
     <div class="modal-card" style="max-width:480px">
       <div class="modal-header">
         <div class="modal-title" id="pag-title">💳 Registra pagamento</div>
-        <button class="modal-close" onclick="chiudiRegistraPagamento()" aria-label="Chiudi">✕</button>
+        <button class="modal-close" onclick="chiudiModaleConConferma('pagamento-overlay')" aria-label="Chiudi">✕</button>
       </div>
       <div class="modal-body">
         <div id="pag-riepilogo" class="pag-sommario"></div>
@@ -1685,7 +1685,7 @@
       <div class="modal-footer">
         <div class="modal-footer-note">Lo stato del documento si aggiorna da solo.</div>
         <div class="modal-footer-actions">
-          <button type="button" class="btn-secondary" onclick="chiudiRegistraPagamento()">Annulla</button>
+          <button type="button" class="btn-secondary" onclick="chiudiModaleConConferma('pagamento-overlay')">Annulla</button>
           <button type="button" class="btn-primary" id="pag-salva-btn" onclick="salvaPagamento()">💾 Registra</button>
         </div>
       </div>
@@ -1693,13 +1693,13 @@
   </div>
 
   <!-- ══ MODALE: Piano rateale (Fase 8C) ════════════════════════════════ -->
+  <!-- Nessun onclick sullo sfondo: e' la finestra dove si perdeva il lavoro. -->
   <div id="rate-overlay" class="modal-overlay" style="display:none"
-       role="dialog" aria-modal="true" aria-labelledby="rate-title"
-       onclick="if(event.target===this) chiudiPianoRateale()">
+       role="dialog" aria-modal="true" aria-labelledby="rate-title">
     <div class="modal-card" style="max-width:560px">
       <div class="modal-header">
         <div class="modal-title" id="rate-title">📅 Piano rateale</div>
-        <button class="modal-close" onclick="chiudiPianoRateale()" aria-label="Chiudi">✕</button>
+        <button class="modal-close" onclick="chiudiModaleConConferma('rate-overlay')" aria-label="Chiudi">✕</button>
       </div>
       <div class="modal-body">
         <div id="rate-riepilogo" class="pag-sommario"></div>
@@ -1718,9 +1718,12 @@
           <div class="form-group" style="flex:1">
             <label for="rate-ogni" class="form-label">Ogni</label>
             <select id="rate-ogni" class="form-input" onchange="generaAnteprimaRate()">
-              <option value="mese">mese</option>
               <option value="settimana">settimana</option>
-              <option value="trimestre">trimestre</option>
+              <option value="mese" selected>mese</option>
+              <option value="bimestre">bimestre (2 mesi)</option>
+              <option value="trimestre">trimestre (3 mesi)</option>
+              <option value="semestre">semestre (6 mesi)</option>
+              <option value="anno">anno</option>
             </select>
           </div>
         </div>
@@ -1734,7 +1737,7 @@
       <div class="modal-footer">
         <div class="modal-footer-note">Le rate sono previsioni: non cambiano lo stato del documento.</div>
         <div class="modal-footer-actions">
-          <button type="button" class="btn-secondary" onclick="chiudiPianoRateale()">Annulla</button>
+          <button type="button" class="btn-secondary" onclick="chiudiModaleConConferma('rate-overlay')">Annulla</button>
           <button type="button" class="btn-primary" id="rate-salva-btn" onclick="salvaPianoRateale()">💾 Salva il piano</button>
         </div>
       </div>
@@ -1878,7 +1881,7 @@
   </div>
 
   <!-- ══ MODALE: Conferma emissione fattura (Fase 10) ═════════════════════ -->
-  <div id="emit-confirm-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="emit-confirm-title" onclick="if(event.target===this) closeEmitConfirm()">
+  <div id="emit-confirm-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="emit-confirm-title" >
     <div class="modal-card" style="max-width:440px">
       <div class="modal-header">
         <div class="modal-title" id="emit-confirm-title">📨 Confermi l'emissione?</div>
@@ -1906,7 +1909,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=21"></script>
+<script src="js/app.js?v=22"></script>
 
 </body>
 </html>
