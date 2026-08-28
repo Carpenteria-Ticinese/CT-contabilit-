@@ -167,7 +167,7 @@ function fmtImporto(importo, valuta) {
   if (importo == null) return '<span class="dim">n/d</span>'
   const n = parseFloat(importo)
   if (isNaN(n)) return '<span class="dim">n/d</span>'
-  return esc(n.toLocaleString('it-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (valuta || 'CHF'))
+  return esc(fmtNumIt(n) + ' ' + (valuta || 'CHF'))
 }
 
 // Numero in formato italiano: 15.000,00 — punto migliaia, virgola decimali.
@@ -197,10 +197,11 @@ function safeNum(v) {
   return isNaN(n) ? null : n
 }
 
-// Formatta un numero a 2 decimali per la UI; '—' se non disponibile
+// Formatta un numero a 2 decimali per la UI; '—' se non disponibile.
+// Passa da fmtNumIt: il formato italiano si decide in un posto solo.
 function fmtNum2(n) {
   if (n == null || isNaN(n)) return '—'
-  return n.toLocaleString('it-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return fmtNumIt(n)
 }
 
 // ─── Navigazione pagine ───────────────────────────────────────────────────────
@@ -1309,6 +1310,9 @@ async function saveClassificazione() {
         await aggiornaBoxClassificazione('tm_conta_fatture_acquisto', t0.origine_id, 'acquisti-classificazione')
       if (t0.origine_tipo === 'proprio' && currentPage === 'inserimento')
         await loadRecentiInseriti()
+      if (t0.origine_tipo === 'acquisto' && editingAcquistoId === t0.origine_id)
+        await aggiornaRigaClassificazioneForm('tm_conta_fatture_acquisto', t0.origine_id,
+                                              'a-classificazione-riga')
     }
   } catch (e) {
     showClsBanner('err', 'Salvataggio: ' + e.message)
@@ -3183,7 +3187,7 @@ async function viewFattura(id) {
     // Il riquadro della classificazione: c'e' solo sui documenti veri, non
     // sulle bozze, che non sono ancora niente da classificare.
     if (f.stato === 'bozza') html('fatture-classificazione', '')
-    else await aggiornaBoxClassificazione('tm_conta_fatture', f.id, 'fatture-classificazione')
+    else await aggiornaBoxClassificazione('tm_conta_fatture', f.id, 'fatture-classificazione', f)
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
@@ -3493,8 +3497,10 @@ function renderAcquistoDetail(a) {
   loadPagamenti().then(function () { return loadRate() }).then(function () {
     html('acquisti-pagamenti',
       boxPagamentiHtml('tm_conta_fatture_acquisto', a.id, a.importo, 'uscita', a.fornitore))
-    return aggiornaBoxClassificazione('tm_conta_fatture_acquisto', a.id, 'acquisti-classificazione')
-  }).catch(function () { html('acquisti-pagamenti', ''); html('acquisti-classificazione', '') })
+  }).catch(function () { html('acquisti-pagamenti', '') })
+  // Separata dai pagamenti: se la lettura dei pagamenti fallisce, la
+  // classificazione non c'entra e non deve sparire con loro.
+  aggiornaBoxClassificazione('tm_conta_fatture_acquisto', a.id, 'acquisti-classificazione', a)
 
   // Azioni: Modifica sempre consentita sugli acquisti
   html('acquisti-detail-actions',
@@ -3729,21 +3735,13 @@ function updateAcquistoIvaSummary() {
     nota
 }
 
-// ── Stato/dati di pagamento ──────────────────────────────────────────────────
+// ── Stato del pagamento ──────────────────────────────────────────────────────
+// I campi «data, metodo, riferimento» non stanno piu' nel form: dalla FASE 8
+// ogni pagamento e' una riga di tm_conta_pagamenti, con la sua data e il suo
+// metodo. Qui resta solo lo stato, che e' in sola lettura perche' lo calcola
+// il trigger dai pagamenti registrati.
 function onAcquistoStatoChange() {
-  var pagato = getVal('a-stato') === 'pagato'
-  var grp = el('a-pagamento-group')
-  if (grp) { if (pagato) grp.classList.remove('pay-dim'); else grp.classList.add('pay-dim') }
-  var ids = ['a-data-pagamento', 'a-metodo', 'a-riferimento']
-  for (var i = 0; i < ids.length; i++) { var e = el(ids[i]); if (e) e.disabled = !pagato }
-  // proposta (non obbligatoria): se segno "pagato" e la data è vuota → oggi
-  if (pagato && !getVal('a-data-pagamento')) setVal('a-data-pagamento', oggiISO())
-  var hint = el('a-pagamento-hint')
-  if (hint) {
-    hint.textContent = pagato
-      ? 'Data proposta modificabile, non obbligatoria.'
-      : 'Si attivano quando lo stato è «Pagato». I dati già inseriti restano salvati.'
-  }
+  /* niente da abilitare: il riquadro dei dati di pagamento non c'e' piu' */
 }
 
 function fillAcquistoForm(v) {
@@ -3778,10 +3776,8 @@ function fillAcquistoForm(v) {
   setVal('a-iva',        v.iva_importo == null ? '' : v.iva_importo)
   // valori già presenti = inseriti/confermati in precedenza: non sovrascriverli
   acquistoIvaManuale = (v.imponibile != null || v.iva_importo != null)
-  // pagamento
-  setVal('a-data-pagamento',  v.data_pagamento || '')
-  setVal('a-metodo',          v.metodo_pagamento || '')
-  setVal('a-riferimento',     v.riferimento_pagamento || '')
+  // I dati del pagamento non si compilano piu' da qui: vedi il rimando
+   // «a-pagamento-rimando» nel form e la scheda del documento.
   // NB: l'input file NON si azzera qui. fillAcquistoForm può girare DOPO await di
   // rete, quando il form è già visibile: azzerarlo cancellerebbe il file scelto
   // dall'utente e l'upload verrebbe saltato in silenzio. Si azzera esplicitamente
@@ -3853,6 +3849,7 @@ async function newAcquisto() {
   await ensureContiIva()      // per il menu Codice IVA
   await loadAziendaInfo()     // per la nota "non soggetto IVA"
   fillAcquistoForm({ data: oggiISO(), valuta: 'CHF', stato_pagamento: 'aperto' })
+  html('a-classificazione-riga', '')   // documento nuovo: niente da classificare
   // FASE 2: nessun contatto collegato su un documento nuovo
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
   html('a-contatto-legato', '')
@@ -3878,8 +3875,7 @@ async function editAcquisto(id) {
       stato_pagamento: data.stato_pagamento || 'aperto', note: data.note || '',
       codice_iva_id: data.codice_iva_id || null,
       imponibile: data.imponibile, iva_importo: data.iva_importo,
-      data_pagamento: data.data_pagamento || '', metodo_pagamento: data.metodo_pagamento || '',
-      riferimento_pagamento: data.riferimento_pagamento || ''
+      gruppo_codice: data.gruppo_codice || null, contatto_id: data.contatto_id || null
     }
     acquistoOriginal = vals
     clearAcquistoFileInput()   // PRIMA di mostrare il form: mai dopo
@@ -3888,6 +3884,8 @@ async function editAcquisto(id) {
     await ensureContiIva()
     await loadAziendaInfo()
     fillAcquistoForm(vals)
+    await aggiornaRigaClassificazioneForm('tm_conta_fatture_acquisto', id,
+                                          'a-classificazione-riga', data)
   } catch (e) {
     showFattureBanner('acquisti-list-banner', 'err', 'Apertura: ' + (e.message || e))
   }
@@ -3916,7 +3914,6 @@ function collectAcquisto() {
     // FASE 2: raggruppamento e collegamento alla rubrica
     gruppo_codice:    getVal('a-gruppo') || null,
     contatto_id:      getVal('a-contatto-id') || null,
-    note:             getVal('a-note') || null,
     // IVA (restano NULL se non si sceglie un codice: si salva solo il totale)
     codice_iva_id:    getVal('a-codice-iva') || null,
     imponibile:       impo,
@@ -3925,7 +3922,7 @@ function collectAcquisto() {
     // tm_conta_pagamenti: un documento pagato in tre volte ha tre metodi, e
     // queste colonne non potrebbero dirlo. Restano nel database come storico
     // (vedi i COMMENT in SQL_FASE8.sql) ma non si scrivono piu'.
-    note:                  getVal('a-note') || null
+    note:             getVal('a-note') || null
   }
 }
 
@@ -9026,7 +9023,7 @@ function boxClassificazioneHtml(tabella, doc) {
 // sempre: non c'e' una seconda strada di salvataggio da tenere allineata.
 async function riclassificaDocumento(tabella, idDoc) {
   try {
-    var doc = trovaDocumento(tabella, idDoc)
+    var doc = await trovaDocumento(tabella, idDoc)
     if (!doc) throw new Error('Documento non trovato: ricarica la pagina.')
     var m = movimentoPerClassificare(tabella, doc)
 
@@ -9041,8 +9038,12 @@ async function riclassificaDocumento(tabella, idDoc) {
   }
 }
 
-// Il documento, preso dagli elenchi gia' in memoria.
-function trovaDocumento(tabella, idDoc) {
+// Il documento: prima dagli elenchi in memoria, che e' immediato; se li' non
+// c'e' — un filtro attivo, una ricerca, l'arrivo da un'altra schermata — lo si
+// legge dal database. Prima ci si fermava al primo passo, e il bottone
+// «Riclassifica» spariva o dava «documento non trovato» proprio sui documenti
+// che non stavano nell'elenco aperto in quel momento.
+function docInMemoria(tabella, idDoc) {
   if (tabella === 'tm_conta_fatture') {
     if (currentDetailFattura && currentDetailFattura.id === idDoc) return currentDetailFattura
     return (fattureList || []).filter(function (x) { return x.id === idDoc })[0]
@@ -9051,6 +9052,16 @@ function trovaDocumento(tabella, idDoc) {
     return (acquistiList || []).filter(function (x) { return x.id === idDoc })[0]
   }
   return (recentiList || []).filter(function (x) { return x.id === idDoc })[0]
+}
+
+async function trovaDocumento(tabella, idDoc) {
+  var d = docInMemoria(tabella, idDoc)
+  if (d) return d
+  if (!idDoc || !currentAziendaId) return null
+  const { data, error } = await sb.from(tabella).select('*')
+    .eq('id', idDoc).eq('azienda_id', currentAziendaId).single()
+  if (error) throw error
+  return data
 }
 
 // Le classificazioni servono anche fuori dalla schermata «Da classificare»:
@@ -9072,15 +9083,61 @@ async function assicuraClassificazioni(force) {
 }
 
 // Ridisegna il riquadro dopo un salvataggio, senza ricaricare la schermata.
-async function aggiornaBoxClassificazione(tabella, idDoc, idContenitore) {
+async function aggiornaBoxClassificazione(tabella, idDoc, idContenitore, doc) {
   try {
     await assicuraClassificazioni(true)
     await ensureContiIva()
     await loadCantieri()
     await loadGruppi()
-    var doc = trovaDocumento(tabella, idDoc)
-    if (doc) html(idContenitore, boxClassificazioneHtml(tabella, doc))
-  } catch (e) { html(idContenitore, '') }
+    // Il documento arriva da chi apre la scheda, che ce l'ha gia' letto dal
+    // database. Si ricade sugli elenchi in memoria solo se non e' stato
+    // passato: cercarlo li' e' quello che faceva sparire il riquadro sui
+    // documenti fuori dall'elenco corrente.
+    var d = doc || await trovaDocumento(tabella, idDoc)
+    if (d) { html(idContenitore, boxClassificazioneHtml(tabella, d)); return }
+    throw new Error('documento non trovato in memoria')
+  } catch (e) {
+    // Un riquadro vuoto e senza spiegazione e' come se la funzione non ci
+    // fosse: si dice cosa e' successo e si lascia la strada per riprovare.
+    console.warn('Riquadro classificazione:', e.message || e)
+    html(idContenitore,
+      '<div class="card"><div class="card-title">🏷 Classificazione</div>' +
+      '<div class="cru-vuoto">Non sono riuscito a leggere la classificazione di questo ' +
+      'documento. Ricarica la pagina: se il problema resta, il conto si cambia dalla ' +
+      'schermata <strong>Da classificare</strong>.</div></div>')
+  }
+}
+
+// La riga di classificazione in cima al form di modifica. Chi entra con la
+// matita non passa dalla scheda: senza questa riga il bottone non lo vedeva.
+function rigaClassificazioneFormHtml(tabella, doc) {
+  var m = movimentoPerClassificare(tabella, doc)
+  var c = classificazioneDi(m.origine_tipo, m.origine_id)
+  var testo = c && c.conto_id
+    ? '<strong>' + esc(contoLabel(c.conto_id)) + '</strong>'
+    : '<span class="dim">non ancora classificato</span>'
+  var azione = isBloccato(m.origine_tipo, m.origine_id)
+    ? '<button type="button" class="btn-secondary" disabled ' +
+        'title="Il periodo e stato consegnato al commercialista">🔒 Periodo consegnato</button>'
+    : '<button type="button" class="btn-secondary" ' +
+        'onclick="riclassificaDocumento(\'' + esc(tabella) + '\', \'' + esc(doc.id) + '\')">' +
+        (c && c.conto_id ? '🏷 Riclassifica' : '🏷 Classifica') + '</button>'
+  return '<div class="class-riga-form">' +
+    '<span>Classificazione: ' + testo + '</span>' + azione + '</div>'
+}
+
+async function aggiornaRigaClassificazioneForm(tabella, idDoc, idContenitore, doc) {
+  try {
+    if (!idDoc) { html(idContenitore, ''); return }   // documento nuovo: non esiste ancora
+    await assicuraClassificazioni(true)
+    await ensureContiIva()
+    var d = doc || await trovaDocumento(tabella, idDoc)
+    if (d) html(idContenitore, rigaClassificazioneFormHtml(tabella, d))
+    else html(idContenitore, '')
+  } catch (e) {
+    console.warn('Riga classificazione nel form:', e.message || e)
+    html(idContenitore, '')
+  }
 }
 
 
