@@ -1545,7 +1545,12 @@ function auditFieldLabel(field) {
   var map = {
     conto_id: 'Conto', codice_iva_id: 'Codice IVA', categoria: 'Categoria',
     note: 'Note', imponibile: 'Imponibile', iva_importo: 'IVA',
-    iva_inclusa: 'IVA inclusa', cantiere_id: 'Cantiere', stato: 'Stato'
+    iva_inclusa: 'IVA inclusa', cantiere_id: 'Cantiere', stato: 'Stato',
+    // Campi dei pagamenti (SQL_FASE13)
+    data: 'Data del pagamento', importo: 'Importo', metodo: 'Metodo',
+    riferimento: 'Riferimento',
+    pagamento_creato: 'Pagamento registrato',
+    pagamento_eliminato: 'Pagamento eliminato'
   }
   return map[field] || field
 }
@@ -1555,6 +1560,12 @@ function prettyAuditValue(field, val) {
   if (field === 'codice_iva_id') return ivaLabel(val)
   if (field === 'cantiere_id')   return cantiereLabel(val)
   if (field === 'iva_inclusa')   return (val === 'true' || val === true) ? 'IVA inclusa' : 'IVA esclusa'
+  if (field === 'importo' && !isNaN(parseFloat(val))) return fmtNumIt(parseFloat(val)) + ' CHF'
+  if (field === 'data' && /^\d{4}-\d{2}-\d{2}$/.test(String(val))) return fmtDate(val)
+  // «400.00 del 2026-08-10»: il trigger lo scrive composto, qui si rimette
+  // nel formato del resto del programma.
+  var comp = /^([0-9]+(?:\.[0-9]+)?) del (\d{4}-\d{2}-\d{2})$/.exec(String(val))
+  if (comp) return fmtNumIt(parseFloat(comp[1])) + ' CHF del ' + fmtDate(comp[2])
   return String(val)
 }
 function fmtDateTime(ts) {
@@ -8188,7 +8199,67 @@ function invalidaCachePagamenti() {
 
 // Apre la modale. L'importo proposto e' il RESIDUO: e' quasi sempre quello che
 // si sta pagando, e chi paga a rate lo corregge.
+// Quale pagamento si sta correggendo. null = se ne sta creando uno nuovo.
+// Da questo dipendono il titolo, il testo del bottone e — soprattutto — se al
+// salvataggio si fa INSERT o UPDATE.
+var pagamentoInModifica = null
+
+// Rimette la finestra come la trova chi registra un pagamento nuovo.
+function vestiFinestraPagamento(inModifica) {
+  var t = el('pag-title')
+  if (t) t.textContent = inModifica ? '✏️ Modifica pagamento' : '💳 Registra pagamento'
+  var b = el('pag-salva-btn')
+  if (b) b.textContent = inModifica ? '💾 Salva le correzioni' : '💾 Registra'
+}
+
+// Apre la finestra sui valori di un pagamento gia' registrato.
+async function apriModificaPagamento(idPagamento) {
+  try {
+    await loadPagamenti(true)
+    await loadRate(true)
+    var pg = (pagamentiCache || []).filter(function (x) { return x.id === idPagamento })[0]
+    if (!pg) throw new Error('Pagamento non trovato: ricarica la pagina.')
+
+    // Il documento a cui appartiene: serve l'importo per il riepilogo.
+    var doc = await trovaDocumento(pg.tabella_origine, pg.id_origine)
+    var importoDoc = doc ? safeNum(doc.importo != null ? doc.importo : doc.totale) : null
+    var verso = pg.tabella_origine === 'tm_conta_fatture' ? 'entrata' : 'uscita'
+    var nome = doc ? (doc.fornitore || doc.cliente_nome || doc.descrizione || '') : ''
+
+    await apriRegistraPagamento(pg.tabella_origine, pg.id_origine, importoDoc || 0, verso, nome)
+
+    // I valori attuali prendono il posto delle proposte.
+    pagamentoInModifica = pg.id
+    setVal('pag-data', pg.data || '')
+    setVal('pag-importo', pg.importo == null ? '' : pg.importo)
+    setVal('pag-metodo', pg.metodo || '')
+    setVal('pag-riferimento', pg.riferimento || '')
+    vestiFinestraPagamento(true)
+
+    // La rata: se questo pagamento ne salda una, il collegamento resta com'e'.
+    // Non si cambia da qui — spostare un pagamento da una rata all'altra e'
+    // un'altra operazione, e mescolarla a questa confonderebbe le due.
+    var rata = rateDi(pg.tabella_origine, pg.id_origine)
+                 .filter(function (r) { return r.pagamento_id === pg.id })[0]
+    var grp = el('pag-rata-group')
+    if (grp) grp.style.display = 'none'
+    html('pag-avviso', rata
+      ? '<div class="pag-nota">📅 Questo pagamento salda la <strong>rata ' +
+        rata.numero_rata + '</strong>: il collegamento resta anche dopo la correzione.</div>'
+      : '')
+
+    // L'impronta si rifa' ORA, sui valori appena messi: altrimenti la finestra
+    // risulterebbe «gia' modificata» appena aperta e chiederebbe conferma
+    // anche a chi non ha toccato niente.
+    registraAperturaModale('pagamento-overlay')
+  } catch (e) {
+    window.alert('Impossibile aprire il pagamento: ' + (e.message || e))
+  }
+}
+
 async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
+  pagamentoInModifica = null
+  vestiFinestraPagamento(false)
   docPagamentoCorrente = { tabella: tabella, id: id, importo: safeNum(importoDoc) || 0,
                            verso: verso || 'uscita', nome: nome || '' }
   await loadPagamenti(true)
@@ -8199,7 +8270,7 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
 
   html('pag-riepilogo',
     rigaPag('Importo del documento', docPagamentoCorrente.importo) +
-    rigaPag('Già pagato', gia) +
+    rigaPag('Già ' + etichettaPagamento(docPagamentoCorrente.verso, 'pagato').testo.toLowerCase(), gia) +
     rigaPag('Residuo', residuo, true))
 
   setVal('pag-data', oggiISO())
@@ -8241,6 +8312,7 @@ function chiudiRegistraPagamento() {
   var ov = el('pagamento-overlay')
   if (ov) ov.style.display = 'none'
   docPagamentoCorrente = null
+  pagamentoInModifica = null
 }
 
 // Scegliendo una rata, importo e data si propongono da quella: e' il senso di
@@ -8291,20 +8363,37 @@ async function salvaPagamento() {
 
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
 
-    const { data: creato, error } = await sb.from('tm_conta_pagamenti').insert({
-      azienda_id: currentAziendaId,
-      tabella_origine: d.tabella,
-      id_origine: d.id,
-      data: data,
-      importo: imp,
-      metodo: getVal('pag-metodo') || null,
-      riferimento: getVal('pag-riferimento') || null,
-      created_by: currentUser ? currentUser.id : null
-    }).select()
-    if (error) throw error
+    var creato = null
+    if (pagamentoInModifica) {
+      // Correzione di un pagamento esistente. Non si toccano ne' il documento
+      // ne' la rata collegata: cambiano solo i quattro valori del versamento.
+      // Il trigger trg_pagamenti_ricalcola rifa' da solo stato e data del
+      // documento, anche in UPDATE: se l'importo cala, «Pagato» torna
+      // «Pagato in parte» senza che nessuno lo scriva a mano.
+      const { error: eUp } = await sb.from('tm_conta_pagamenti').update({
+        data: data,
+        importo: imp,
+        metodo: getVal('pag-metodo') || null,
+        riferimento: getVal('pag-riferimento') || null
+      }).eq('id', pagamentoInModifica).eq('azienda_id', currentAziendaId).select()
+      if (eUp) throw eUp
+    } else {
+      const { data: nuovo, error } = await sb.from('tm_conta_pagamenti').insert({
+        azienda_id: currentAziendaId,
+        tabella_origine: d.tabella,
+        id_origine: d.id,
+        data: data,
+        importo: imp,
+        metodo: getVal('pag-metodo') || null,
+        riferimento: getVal('pag-riferimento') || null,
+        created_by: currentUser ? currentUser.id : null
+      }).select()
+      if (error) throw error
+      creato = nuovo
+    }
 
     // La rata scelta si collega al pagamento appena creato.
-    var idRata = getVal('pag-rata')
+    var idRata = pagamentoInModifica ? '' : getVal('pag-rata')
     if (idRata && creato && creato[0]) {
       const { error: eRata } = await sb.from('tm_conta_rate')
         .update({ pagamento_id: creato[0].id })
@@ -8325,7 +8414,10 @@ async function salvaPagamento() {
     html('pag-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
       '<div class="msg">' + esc(m) + '</div></div>')
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '💾 Registra' }
+    if (btn) {
+      btn.disabled = false
+      btn.textContent = pagamentoInModifica ? '💾 Salva le correzioni' : '💾 Registra'
+    }
   }
 }
 
@@ -8364,10 +8456,65 @@ function elencoPagamentiHtml(tabella, id, verso) {
         (r ? ' <span class="pag-rata-tag">salda la rata ' + r.numero_rata + '</span>' : '') +
       '</span>' +
       '<button type="button" class="azione-rapida" ' +
+        'onclick="apriModificaPagamento(\'' + esc(p.id) + '\')">✏️ Modifica</button>' +
+      '<button type="button" class="azione-rapida" ' +
         'onclick="eliminaPagamento(\'' + esc(p.id) + '\', \'' + esc(fmtNumIt(p.importo)) +
         '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>' +
     '</div>'
   }).join('')
+}
+
+// ── La storia dei pagamenti di un documento ────────────────────────────────
+// L'audit registra creazione, correzione ed eliminazione di ogni versamento
+// (SQL_FASE13). Senza questa finestra sarebbero righe che nessuno puo' leggere.
+//
+// Si cerca per DOCUMENTO, non per pagamento: un versamento eliminato non esiste
+// piu', e la sua storia — che e' proprio quella che interessa — resterebbe
+// irraggiungibile partendo dall'elenco dei pagamenti vivi.
+async function apriStoriaPagamenti(tabella, idDoc, nome) {
+  html('storia-summary', '')
+  html('storia-body', loadingRow('Caricamento storia…'))
+  var t = el('storia-title')
+  if (t) t.textContent = '🕐 Storia dei pagamenti'
+  var ov = el('storia-overlay')
+  if (ov) ov.style.display = 'flex'
+  registraAperturaModale('storia-overlay')
+
+  html('storia-summary',
+    '<div class="cls-sum-title">' + esc(nome || 'Documento') + '</div>' +
+    '<div class="cls-sum-meta"><span>💳 Versamenti registrati, corretti o eliminati</span></div>')
+
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_audit')
+      .select('campo, valore_prima, valore_dopo, utente, timestamp')
+      .eq('tabella_origine', 'tm_conta_pagamenti')
+      .eq('doc_tabella', tabella)
+      .eq('doc_id', idDoc)
+      .order('timestamp', { ascending: false })
+    if (error) throw error
+
+    var rows = data || []
+    var ids = []
+    for (var i = 0; i < rows.length; i++) { if (rows[i].utente) ids.push(rows[i].utente) }
+    await loadUtentiEmails(ids)
+    if (!rows.length) {
+      html('storia-body',
+        '<div class="cru-vuoto">Nessuna modifica registrata sui pagamenti di questo documento.' +
+        '<br><span class="dim">La storia parte da quando è stato attivato l\'audit sui pagamenti ' +
+        '(SQL_FASE13): i versamenti registrati prima non compaiono.</span></div>')
+      return
+    }
+    renderStoria(rows)
+  } catch (e) {
+    // Se la colonna non c'e' ancora, lo si dice invece di mostrare l'errore
+    // grezzo del database, che qui non aiuterebbe nessuno.
+    var m = String(e.message || e)
+    html('storia-body', (m.indexOf('doc_tabella') !== -1 || m.indexOf('doc_id') !== -1)
+      ? '<div class="cru-vuoto">L\'audit sui pagamenti non è ancora attivo su questo database.' +
+        '<br><span class="dim">Va applicato <strong>SQL_FASE13.sql</strong> su Supabase.</span></div>'
+      : '<p style="color:var(--err);padding:8px">Errore: ' + esc(m) + '</p>')
+  }
 }
 
 // La conferma NOMINA importo e data: «Eliminare?» da solo non dice quale dei
@@ -8571,7 +8718,7 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
     '<div class="card-title">💳 Pagamenti</div>' +
     '<div class="pag-sommario">' +
       rigaPag('Importo del documento', safeNum(importoDoc) || 0) +
-      rigaPag('Pagato', gia) +
+      rigaPag(etichettaPagamento(verso, 'pagato').testo, gia) +
       rigaPag('Residuo', residuo, true) +
       '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + e.testo) + '</div>' +
     '</div>' +
@@ -8582,6 +8729,9 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
       '<button type="button" class="btn-secondary" onclick="apriPianoRateale(\'' + esc(tabella) + '\', \'' +
         esc(id) + '\', ' + (safeNum(importoDoc) || 0) + ', \'' + esc(String(nome || '').replace(/'/g, '')) + '\')">' +
         (rate.length ? '📅 Modifica il piano rateale' : '📅 Crea piano rateale') + '</button>' +
+      '<button type="button" class="btn-secondary" onclick="apriStoriaPagamenti(\'' +
+        esc(tabella) + '\', \'' + esc(id) + '\', \'' +
+        esc(String(nome || '').replace(/'/g, '')) + '\')">🕐 Storia</button>' +
     '</div>' +
     (rate.length
       ? '<div class="card-title" style="margin-top:16px">📅 Rate</div>' + elencoRateHtml(tabella, id)
