@@ -2017,3 +2017,23 @@ tbody tr.row-clickable { cursor: pointer; }
   .rata-imp { width: 90px; }
   .pag-imp, .pag-data { min-width: 0; }
 }
+
+/* == Riquadro «Classificazione» nelle schede di dettaglio ================= */
+.class-riga {
+  display: flex;
+  gap: 12px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.class-riga:last-of-type { border-bottom: none; }
+.class-et  { min-width: 92px; color: var(--text2); }
+.class-val { flex: 1; color: var(--text); font-weight: 500; }
+.class-stato { padding: 9px 2px 0; }
+
+/* Classificazione nella riga dell'elenco «Ultimi inseriti» */
+.class-riga-compatta {
+  font-size: 12px;
+  color: var(--text2);
+  padding: 4px 0 0;
+}
