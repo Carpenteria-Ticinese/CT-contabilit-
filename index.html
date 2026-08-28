@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=29" />
+  <link rel="stylesheet" href="css/style.css?v=30" />
 </head>
 <body>
 
@@ -1123,12 +1123,11 @@
         <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
 
         <div class="card no-print" id="fatture-detail-actions"></div>
-        <input type="file" id="fat-pdf-input" accept="application/pdf,.pdf"
-               style="display:none" onchange="allegaPdfFattura(this)" />
         <div class="no-print" id="fatture-allegato-banner" role="status" aria-live="polite"></div>
         <!-- FASE 8: pagamenti e rate della fattura -->
         <div class="no-print" id="fatture-pagamenti"></div>
         <div class="no-print" id="fatture-classificazione"></div>
+        <div class="no-print" id="fatture-allegati"></div>
 
         <div class="card">
           <div id="fatture-print"></div>
@@ -1214,6 +1213,7 @@
         <!-- FASE 8: pagamenti e rate della fattura d'acquisto -->
         <div id="acquisti-pagamenti"></div>
         <div id="acquisti-classificazione"></div>
+        <div id="acquisti-allegati"></div>
         <div style="display:none">
         </div>
       </div>
@@ -1704,6 +1704,44 @@
     </div>
   </div>
 
+  <!-- ══ MODALE: Aggiungi allegato (Fase 9A) ═════════════════ -->
+  <div id="allegato-overlay" class="modal-overlay" style="display:none"
+       role="dialog" aria-modal="true" aria-labelledby="alleg-title">
+    <div class="modal-card" style="max-width:480px">
+      <div class="modal-header">
+        <div class="modal-title" id="alleg-title">📎 Aggiungi allegato</div>
+        <button class="modal-close" onclick="chiudiModaleConConferma('allegato-overlay')" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="alleg-riepilogo" class="cls-summary"></div>
+        <div id="alleg-banner"></div>
+
+        <div class="form-group" style="margin-top:12px">
+          <label for="alleg-tipo" class="form-label">Tipo di documento</label>
+          <select id="alleg-tipo" class="form-input">
+            <option value="fattura">📄 Fattura</option>
+            <option value="bolla">📋 Bolla</option>
+            <option value="ricevuta">🧾 Ricevuta</option>
+            <option value="altro">📎 Altro</option>
+          </select>
+          <div class="form-hint">Si pu&ograve; cambiare anche dopo, dall'elenco degli allegati.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="alleg-file" class="form-label">File</label>
+          <input type="file" id="alleg-file" class="form-input-file"
+                 accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
+          <div class="form-hint">Massimo 10 MB. Caricato nel bucket <code>conta-allegati</code>.</div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiModaleConConferma('allegato-overlay')">Annulla</button>
+          <button type="button" class="btn-primary" id="alleg-salva-btn" onclick="salvaAllegato()">💾 Allega</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ══ MODALE: Piano rateale (Fase 8C) ════════════════════════════════ -->
   <!-- Nessun onclick sullo sfondo: e' la finestra dove si perdeva il lavoro. -->
   <div id="rate-overlay" class="modal-overlay" style="display:none"
@@ -1921,7 +1959,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=29"></script>
+<script src="js/app.js?v=30"></script>
 
 </body>
 </html>
