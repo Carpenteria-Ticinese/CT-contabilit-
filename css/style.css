@@ -2065,3 +2065,14 @@ tbody tr.row-clickable { cursor: pointer; }
   margin-bottom: 16px;
   font-size: 13px;
 }
+
+/* Nota nella finestra del pagamento: rata collegata, avvisi */
+.pag-nota {
+  background: var(--bg2);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
