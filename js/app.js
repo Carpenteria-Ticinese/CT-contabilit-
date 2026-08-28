@@ -3523,6 +3523,9 @@ async function loadAcquistiList() {
   // Gli allegati servono a disegnare «📎 3» su ogni riga: si leggono prima,
   // una volta sola, non una query per riga.
   try { await loadAllegati() } catch (_) {}
+  // Le chiavi dei doppioni: una query sua, tre colonne, cosi' la spia non
+  // dipende da quali righe l'elenco ha caricato.
+  try { await caricaChiaviDoppioni(true) } catch (_) {}
   if (!currentAziendaId) { html('acquisti-table', '<div class="dim">Accedi per vedere le fatture d\'acquisto.</div>'); return }
   html('acquisti-table', loadingRow('Caricamento…'))
   try {
@@ -3552,6 +3555,7 @@ function statoAcquistoBadge(stato) {
 function acquistiRowActions(a) {
   var pagato = a.stato_pagamento === 'pagato'
   return badgeAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-list-banner') +
+    spiaDoppione(a) +
     '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
     (pagato
       // FASE 8 — l'icona apre la modale del pagamento invece di segnare
@@ -3859,6 +3863,7 @@ function renderAcquistoAllegatoCorrente() {
 // un allegato che non si apre. Si elimina dalla scheda, con eliminaAllegato().
 
 async function newAcquisto() {
+  doppioneAccettato = false
   editingAcquistoId = null
   acquistoOriginal = null
   acquistoDocPath = null
@@ -3884,6 +3889,7 @@ async function newAcquisto() {
 
 async function editAcquisto(id) {
   if (!currentAziendaId) return
+  doppioneAccettato = false
   html('acquisti-edit-banner', '')
   try {
     const { data, error } = await sb.from('tm_conta_fatture_acquisto').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
@@ -3962,6 +3968,26 @@ async function saveAcquisto() {
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
     var payload = collectAcquisto()
+
+    // FASE 9B — il doppione. Si controlla PRIMA di scrivere, e non blocca:
+    // avvisa, dice quale fattura, e lascia decidere. Chi ha gia' deciso
+    // («Salva lo stesso») passa oltre.
+    if (!doppioneAccettato) {
+      var altra = null
+      try {
+        altra = await cercaDoppione(payload.fornitore, payload.numero_fornitore, editingAcquistoId)
+      } catch (eDop) {
+        // Se il controllo non si puo' fare, il salvataggio non si ferma: un
+        // avviso mancato e' meglio di una fattura che non si riesce a salvare.
+        console.warn('Controllo doppione non riuscito:', eDop.message || eDop)
+      }
+      if (altra) {
+        html('acquisti-edit-banner', avvisoDoppioneHtml(altra))
+        if (btn) { btn.disabled = false; btn.textContent = '💾 Salva' }
+        return
+      }
+    }
+
     // FASE 9 — doc_path non si scrive piu'. Il file diventa una riga in
     // tm_conta_allegati, creata DOPO il salvataggio: prima il documento non ha
     // un id a cui attaccarla.
@@ -4016,6 +4042,8 @@ async function saveAcquisto() {
       }
     }
 
+    doppioneAccettato = false      // vale una volta sola
+    invalidaChiaviDoppioni()
     await loadAcquistiList()
     try { await refreshDaClassificareCount() } catch (_) {}
     acquistiBackToList()
@@ -9418,10 +9446,13 @@ function contaAllegati(tabella, id) { return allegatiDi(tabella, id).length }
 // ne sono tre senza aprire la scheda e' il punto di tutta la fase.
 function badgeAllegati(tabella, id, bannerId) {
   var n = contaAllegati(tabella, id)
-  if (!n) return ''
+  // Il caso «nessuno» e' quello che conta: e' il giustificativo mancante, e
+  // deve vedersi. In grigio, perche' non e' un errore — e' una cosa da fare.
+  if (!n) return '<span class="alleg-nessuno">⚠️ Nessun allegato</span>'
   var primo = allegatiDi(tabella, id)[0]
   return '<button class="icon-btn" title="' + (n === 1 ? 'Apri l allegato' : 'Apri il primo dei ' + n + ' allegati') +
-    '" onclick="event.stopPropagation(); openAllegato(\'' + esc(primo.path) + '\', \'' + esc(bannerId || '') + '\')">📎 ' + n + '</button>'
+    '" onclick="event.stopPropagation(); openAllegato(\'' + esc(primo.path) + '\', \'' + esc(bannerId || '') + '\')">📎 ' +
+    n + (n === 1 ? ' allegato' : ' allegati') + '</button>'
 }
 
 // ── Il riquadro nella scheda ────────────────────────────────────────────────
@@ -9615,6 +9646,188 @@ async function ricaricaDopoAllegato(d) {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 9B — L'AVVISO SUL DOPPIONE
+//
+// L'errore vero non e' registrare due volte la stessa fattura: e' PAGARLA due
+// volte. Per questo il controllo dev'essere CERTO, mai probabilistico.
+//
+// Si confrontano due cose sole: fornitore (senza maiuscole e spazi doppi) e
+// numero della fattura del fornitore. Nient'altro. Niente importi vicini,
+// niente descrizioni simili, niente date vicine: con sei fatture di storico
+// darebbero falsi allarmi, e un avviso che sbaglia spesso si impara a
+// scacciare senza leggerlo — a quel punto non protegge piu' da niente.
+//
+// Se il numero manca, NESSUN controllo: senza numero non si puo' dire niente
+// di certo, e un dubbio non e' un avviso.
+//
+// E non blocca MAI il salvataggio: due documenti con lo stesso numero
+// esistono davvero (nota di credito, rifatturazione).
+// ══════════════════════════════════════════════════════════════════════════════
+
+function normalizzaFornitore(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+function normalizzaNumeroFattura(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, '').trim()
+}
+
+// La chiave del confronto. null = non confrontabile (numero vuoto).
+function chiaveDoppione(fornitore, numero) {
+  var n = normalizzaNumeroFattura(numero)
+  var f = normalizzaFornitore(fornitore)
+  if (!n || !f) return null
+  return f + '|' + n
+}
+
+// ── La spia nell'elenco ─────────────────────────────────────────────────────
+// Si costruisce da una query sua, non dalle righe che l'elenco ha in memoria:
+// un controllo che cambia risposta a seconda della pagina che stai guardando
+// non e' un controllo. Sono tre colonne su una tabella piccola.
+var chiaviDoppioni = {}      // chiave -> [ {id, numero_fornitore, fornitore, data, importo} ]
+var chiaviCaricate = false
+
+async function caricaChiaviDoppioni(force) {
+  if (chiaviCaricate && !force) return chiaviDoppioni
+  chiaviDoppioni = {}
+  if (!currentAziendaId) return chiaviDoppioni
+  const { data, error } = await sb.from('tm_conta_fatture_acquisto')
+    .select('id, fornitore, numero_fornitore, data, importo, valuta')
+    .eq('azienda_id', currentAziendaId)
+    .not('numero_fornitore', 'is', null)
+  if (error) throw error
+  ;(data || []).forEach(function (r) {
+    var k = chiaveDoppione(r.fornitore, r.numero_fornitore)
+    if (!k) return
+    if (!chiaviDoppioni[k]) chiaviDoppioni[k] = []
+    chiaviDoppioni[k].push(r)
+  })
+  chiaviCaricate = true
+  return chiaviDoppioni
+}
+
+function invalidaChiaviDoppioni() { chiaviCaricate = false }
+
+// Gli altri documenti che condividono fornitore + numero con questo.
+function doppioniDi(fornitore, numero, escludiId) {
+  var k = chiaveDoppione(fornitore, numero)
+  if (!k) return []
+  return (chiaviDoppioni[k] || []).filter(function (r) { return r.id !== escludiId })
+}
+
+// La spia: icona E parola, come tutte le altre.
+function spiaDoppione(a) {
+  var altri = doppioniDi(a.fornitore, a.numero_fornitore, a.id)
+  if (!altri.length) return ''
+  return ' <button type="button" class="spia-doppione" title="Un altro documento ha lo stesso fornitore e lo stesso numero" ' +
+    'onclick="event.stopPropagation(); viewAcquisto(\'' + esc(altri[0].id) + '\')">⚠️ Doppione?</button>'
+}
+
+// ── Il controllo al salvataggio ─────────────────────────────────────────────
+// Query mirata: si filtra sul numero, che e' la parte selettiva, e si confronta
+// il fornitore normalizzato sulle pochissime righe che tornano. Filtrare il
+// fornitore nel database vorrebbe dire normalizzarlo li', e «Softution SAGL» e
+// «softution  sagl» non si equivalgono per un confronto SQL.
+async function cercaDoppione(fornitore, numero, escludiId) {
+  var n = String(numero || '').trim()
+  if (!n) return null                       // senza numero non si controlla niente
+  var f = normalizzaFornitore(fornitore)
+  if (!f) return null
+
+  const { data, error } = await sb.from('tm_conta_fatture_acquisto')
+    .select('id, fornitore, numero_fornitore, data, importo, valuta')
+    .eq('azienda_id', currentAziendaId)
+    .eq('numero_fornitore', n)
+  if (error) throw error
+
+  var trovati = (data || []).filter(function (r) {
+    return r.id !== escludiId && normalizzaFornitore(r.fornitore) === f
+  })
+  return trovati.length ? trovati[0] : null
+}
+
+// L'avviso: dice QUALE fattura, con data e importo, e lascia decidere.
+function avvisoDoppioneHtml(altra) {
+  return '<div class="fase-banner warn">' +
+    '<span class="icon" aria-hidden="true">⚠️</span>' +
+    '<div class="msg">' +
+      '<strong>Attenzione: hai già registrato la fattura n. ' + esc(altra.numero_fornitore || '') +
+        ' di ' + esc(altra.fornitore || '') + ' del ' + esc(fmtDate(altra.data)) +
+        ' per ' + esc(fmtNumIt(altra.importo)) + ' ' + esc(altra.valuta || 'CHF') + '.</strong>' +
+      '<div class="form-actions" style="margin-top:10px">' +
+        '<button type="button" class="btn-secondary" onclick="viewAcquisto(\'' + esc(altra.id) + '\')">' +
+          '👁 Vedi quella fattura</button>' +
+        '<button type="button" class="btn-primary" onclick="salvaAcquistoComunque()">' +
+          '💾 Salva lo stesso</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>'
+}
+
+// Chi preme «Salva lo stesso» ha visto l'avviso e ha deciso: si salta il
+// controllo una volta sola, non per sempre.
+var doppioneAccettato = false
+
+function salvaAcquistoComunque() {
+  doppioneAccettato = true
+  saveAcquisto()
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 9C — LA PAGINA VECCHIA
+//
+// GitHub Pages tiene index.html in cache dieci minuti, e index.html e' l'unico
+// file che non puo' auto-versionarsi: app.js?v=30 si aggiorna da solo, la
+// pagina che lo richiama no. Risultato: si guarda l'HTML vecchio col JS nuovo,
+// non si trova quello che si cerca e si crede che il codice sia rotto.
+// E' successo tre volte in un giorno.
+//
+// Il numero e' UNO SOLO: lo stesso del cache-busting. Due numeri separati
+// divergono sempre, e un controllo di versione sbagliato e' peggio di nessun
+// controllo.
+//
+// Non ricarica da sola: un ricaricamento a sorpresa mentre si compila un
+// modulo perde il lavoro. Lo dice, e lascia premere.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var VERSIONE = '31'
+
+function controllaVersionePagina() {
+  try {
+    var dichiarata = document.body ? document.body.getAttribute('data-versione') : null
+    // Se l'attributo manca non si dice niente: sarebbe un allarme su una pagina
+    // che potrebbe essere semplicemente servita da un altro posto.
+    if (!dichiarata || dichiarata === VERSIONE) return
+
+    var b = el('versione-banner')
+    if (!b) return
+    b.innerHTML = '<div class="fase-banner warn">' +
+      '<span class="icon" aria-hidden="true">⚠️</span>' +
+      '<div class="msg"><strong>Questa pagina è una versione vecchia.</strong> ' +
+        'Il programma è stato aggiornato (versione ' + esc(VERSIONE) + ', qui c\'è la ' +
+        esc(dichiarata) + '): finché non la ricarichi potresti non vedere le novità.' +
+        '<div class="form-actions" style="margin-top:10px">' +
+          '<button type="button" class="btn-primary" onclick="ricaricaPagina()">🔄 Ricarica</button>' +
+        '</div>' +
+      '</div></div>'
+  } catch (e) { console.warn('Controllo versione:', e.message || e) }
+}
+
+function ricaricaPagina() {
+  // location.reload(true) e' deprecato e su molti browser viene ignorato:
+  // si aggiunge un parametro che cambia, che la cache non puo' servire.
+  try {
+    var u = new URL(window.location.href)
+    u.searchParams.set('ricarica', String(Date.now()))
+    window.location.replace(u.toString())
+  } catch (_) {
+    window.location.reload()
+  }
+}
+
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -9652,6 +9865,8 @@ document.addEventListener('DOMContentLoaded', function () {
   // le finestre: vedi installaGestioneFinestre().
   installaGestioneFinestre()
   installaCronologia()
+  // FASE 9C — se l'HTML e' una versione vecchia rimasta in cache, lo si dice.
+  controllaVersionePagina()
 
   // Mostra istruzioni SQL (visibili prima dell'auth)
   renderSqlInstructions()
