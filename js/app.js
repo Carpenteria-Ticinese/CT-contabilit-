@@ -1050,6 +1050,7 @@ async function openSingleClassify(m, prefill) {
     '</div>'
 
   el('classify-overlay').style.display = 'flex'
+  registraAperturaModale('classify-overlay')
 
   await ensureContiIva()
   await loadCantieri()
@@ -1107,6 +1108,7 @@ async function openBulkPanel() {
     '<div class="cls-sum-list">' + listHtml + '</div>'
 
   el('classify-overlay').style.display = 'flex'
+  registraAperturaModale('classify-overlay')
 
   await ensureContiIva()
   await loadCantieri()
@@ -3382,6 +3384,7 @@ function openEmitConfirm(summaryHtml, fn) {
   pendingEmitFn = fn
   var s = el('emit-confirm-summary'); if (s) s.innerHTML = summaryHtml
   var o = el('emit-confirm-overlay'); if (o) o.style.display = 'flex'
+  registraAperturaModale('emit-confirm-overlay')
 }
 function closeEmitConfirm() {
   pendingEmitFn = null
@@ -8220,6 +8223,10 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
 
   var ov = el('pagamento-overlay')
   if (ov) ov.style.display = 'flex'
+  // L'impronta si prende ADESSO, con i valori gia' proposti dentro: cosi' la
+  // domanda «chiudere senza salvare?» arriva solo se l'utente ha cambiato
+  // qualcosa, non per i valori che ha trovato scritti.
+  registraAperturaModale('pagamento-overlay')
   var inp = el('pag-importo'); if (inp) inp.focus()
 }
 
@@ -8396,6 +8403,7 @@ async function apriPianoRateale(tabella, id, importoDoc, nome) {
   generaAnteprimaRate()
   var ov = el('rate-overlay')
   if (ov) ov.style.display = 'flex'
+  registraAperturaModale('rate-overlay')
 }
 
 function chiudiPianoRateale() {
@@ -8432,9 +8440,16 @@ function dataRata(prima, indice, ogni) {
   var p = String(prima).split('-')
   var y = +p[0], m = +p[1] - 1, g = +p[2]
   if (ogni === 'settimana') return addDays(prima, indice * 7)
-  var passo = (ogni === 'trimestre') ? 3 : 1
+
+  // Tutte le altre periodicita' sono multipli di un mese: cosi' la regola dei
+  // mesi corti vale una volta sola per tutte, anno compreso.
+  var MESI = { mese: 1, bimestre: 2, trimestre: 3, semestre: 6, anno: 12 }
+  var passo = MESI[ogni] || 1
+
   var d = new Date(y, m + indice * passo, 1)
-  // Se il giorno non esiste nel mese (31 in un mese di 30), si prende l'ultimo.
+  // Se il giorno non esiste nel mese di arrivo si prende l'ultimo disponibile:
+  // 31 gennaio + 1 mese fa 28 febbraio, non 3 marzo. Vale anche per l'anno:
+  // il 29 febbraio di un bisestile + 1 anno diventa 28 febbraio.
   var ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
   d.setDate(Math.min(g, ultimo))
   return dataISO(d)
@@ -8574,6 +8589,137 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+// LE FINESTRE — regola unica per tutto il programma
+//
+// Un clic fuori non deve mai cancellare mezz'ora di lavoro. E' successo con il
+// piano rateale: dodici rate scritte a mano, un clic di troppo, tutto perso.
+//
+//   FINESTRE DOVE SI SCRIVE  (pagamento, rate, classificazione, emissione)
+//     clic fuori: NON chiude, mai.
+//     Esc, X, Annulla: chiudono, ma se c'e' qualcosa di scritto chiedono prima.
+//
+//   FINESTRE DI SOLA LETTURA  (scadenze, storia modifiche)
+//     clic fuori: chiude. Non c'e' niente da perdere.
+//
+// «Qualcosa di scritto» non vuol dire «campi non vuoti»: una finestra appena
+// aperta ha gia' dei valori proposti, e chiedere conferma per quelli sarebbe
+// solo fastidioso. Si confronta con l'impronta presa all'apertura, cosi' la
+// domanda arriva solo se l'utente ha davvero cambiato qualcosa.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Quali finestre proteggere, e come chiuderle.
+var FINESTRE = {
+  'pagamento-overlay':    { chiudi: 'chiudiRegistraPagamento', protetta: true },
+  'rate-overlay':         { chiudi: 'chiudiPianoRateale',      protetta: true },
+  'classify-overlay':     { chiudi: 'closeClassifyPanel',      protetta: true },
+  'emit-confirm-overlay': { chiudi: 'closeEmitConfirm',        protetta: true },
+  'scadenze-overlay':     { chiudi: 'chiudiFinestraScadenze',  protetta: false },
+  'storia-overlay':       { chiudi: 'closeStoria',             protetta: false }
+}
+
+var improntaFinestre = {}   // id -> stato dei campi al momento dell'apertura
+var ordineApertura = []     // le finestre nell'ordine in cui sono state aperte
+
+// L'impronta: tutti i campi compilabili dentro la finestra, in un'unica stringa.
+// Le rate in corso di stesura non stanno nei campi ma in rateBozza: si aggiunge
+// anche quella, altrimenti dodici righe modificate a mano non risulterebbero.
+function improntaModale(idOverlay) {
+  var ov = el(idOverlay)
+  if (!ov) return ''
+  var pezzi = []
+  var campi = ov.querySelectorAll('input, select, textarea')
+  for (var i = 0; i < campi.length; i++) {
+    var c = campi[i]
+    if (c.type === 'checkbox' || c.type === 'radio') pezzi.push(c.checked ? '1' : '0')
+    else pezzi.push(String(c.value == null ? '' : c.value))
+  }
+  if (idOverlay === 'rate-overlay' && typeof rateBozza !== 'undefined') {
+    pezzi.push(JSON.stringify(rateBozza))
+  }
+  return pezzi.join('')
+}
+
+// Da chiamare appena la finestra si apre, DOPO aver riempito i campi proposti.
+function registraAperturaModale(idOverlay) {
+  improntaFinestre[idOverlay] = improntaModale(idOverlay)
+  // Si tiene anche l'ordine: se due finestre risultassero aperte insieme, Esc
+  // deve chiudere l'ULTIMA, non una a caso.
+  var i = ordineApertura.indexOf(idOverlay)
+  if (i !== -1) ordineApertura.splice(i, 1)
+  ordineApertura.push(idOverlay)
+}
+
+function modaleModificata(idOverlay) {
+  if (!(idOverlay in improntaFinestre)) return false
+  return improntaModale(idOverlay) !== improntaFinestre[idOverlay]
+}
+
+// La chiusura che passa dalla domanda. La usano la X, Annulla ed Esc.
+function chiudiModaleConConferma(idOverlay) {
+  var conf = FINESTRE[idOverlay]
+  if (!conf) return
+  var chiudi = window[conf.chiudi]
+  if (typeof chiudi !== 'function') return
+
+  // Finestra vuota o non toccata: si chiude subito, senza domande inutili.
+  function dimentica() {
+    delete improntaFinestre[idOverlay]
+    var i = ordineApertura.indexOf(idOverlay)
+    if (i !== -1) ordineApertura.splice(i, 1)
+  }
+  if (!conf.protetta || !modaleModificata(idOverlay)) {
+    dimentica()
+    chiudi()
+    return
+  }
+  if (window.confirm('Chiudere senza salvare?\n\nI dati inseriti andranno persi.')) {
+    dimentica()
+    chiudi()
+  }
+  // Se risponde Annulla non succede niente: la finestra resta aperta com'era.
+}
+
+// Qual e' la finestra aperta in questo momento (l'ultima in ordine di DOM).
+function modaleAperta() {
+  function eAperta(id) {
+    var ov = el(id)
+    return ov && ov.style.display !== 'none' && ov.style.display !== ''
+  }
+  // Prima si guarda l'ordine di apertura, dall'ultima alla prima.
+  for (var i = ordineApertura.length - 1; i >= 0; i--) {
+    if (eAperta(ordineApertura[i])) return ordineApertura[i]
+  }
+  // Ripiego per le finestre di sola lettura, che non registrano l'impronta.
+  var altre = Object.keys(FINESTRE).filter(eAperta)
+  return altre.length ? altre[altre.length - 1] : null
+}
+
+// ── Esc e clic fuori, in un posto solo ──────────────────────────────────────
+function installaGestioneFinestre() {
+  // Esc: chiude la finestra aperta, passando dalla domanda se serve.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return
+    var id = modaleAperta()
+    if (!id) return
+    e.preventDefault()
+    chiudiModaleConConferma(id)
+  })
+
+  // Clic fuori: SOLO sulle finestre di sola lettura.
+  Object.keys(FINESTRE).forEach(function (id) {
+    if (FINESTRE[id].protetta) return
+    var ov = el(id)
+    if (!ov) return
+    ov.addEventListener('click', function (e) {
+      // solo il clic sullo sfondo, non quello sul contenuto della finestra
+      if (e.target !== ov) return
+      chiudiModaleConConferma(id)
+    })
+  })
+}
+
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -8604,26 +8750,12 @@ document.addEventListener('DOMContentLoaded', function () {
   // Chiudi le modali cliccando lo sfondo o premendo Esc
   var clsOverlay = el('classify-overlay')
   if (clsOverlay) {
-    clsOverlay.addEventListener('click', function (e) {
-      if (e.target === clsOverlay) closeClassifyPanel()
-    })
+    // Il clic sullo sfondo NON chiude piu': qui si sta classificando un
+    // movimento, e un clic di troppo faceva ricominciare da capo.
   }
-  var storiaOverlay = el('storia-overlay')
-  if (storiaOverlay) {
-    storiaOverlay.addEventListener('click', function (e) {
-      if (e.target === storiaOverlay) closeStoria()
-    })
-  }
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Escape') return
-    var so = el('storia-overlay')
-    if (so && so.style.display !== 'none') { closeStoria(); return }
-    var o = el('classify-overlay')
-    if (o && o.style.display !== 'none') { closeClassifyPanel(); return }
-    // FASE 4 — la finestrella delle scadenze si chiude anche con Esc
-    var sc = el('scadenze-overlay')
-    if (sc && sc.style.display !== 'none') chiudiFinestraScadenze()
-  })
+  // Esc e clic-fuori sono gestiti in un posto solo, con la regola per tutte
+  // le finestre: vedi installaGestioneFinestre().
+  installaGestioneFinestre()
 
   // Mostra istruzioni SQL (visibili prima dell'auth)
   renderSqlInstructions()
