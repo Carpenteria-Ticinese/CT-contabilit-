@@ -3755,6 +3755,59 @@ function onAcquistoStatoChange() {
   /* niente da abilitare: il riquadro dei dati di pagamento non c'e' piu' */
 }
 
+// ── «Gia' pagata per intero» ───────────────────────────────────────────────
+// La scorciatoia era stata tolta nella FASE 8b perche' creava il pagamento con
+// la data del documento e nessun modo di cambiarla. Torna con quel difetto
+// risolto: data e metodo si scelgono qui. Resta una sola strada di scrittura —
+// si crea una riga in tm_conta_pagamenti, esattamente come farebbe
+// «+ Registra pagamento», e lo stato lo ricalcola il trigger.
+function onAcquistoGiaPagata() {
+  var spunta = el('a-gia-pagata')
+  var campi = el('a-gia-pagata-campi')
+  var acceso = !!(spunta && spunta.checked)
+  if (campi) campi.style.display = acceso ? 'flex' : 'none'
+  // La data si propone dalla fattura, ma resta modificabile: pagare il giorno
+  // stesso e' il caso comune, non una regola.
+  if (acceso && !getVal('a-pag-data')) setVal('a-pag-data', getVal('a-data') || oggiISO())
+}
+
+// Decide se mostrare la spunta o dire che i pagamenti ci sono gia'.
+async function aggiornaGiaPagata(idAcquisto, importoDoc) {
+  var box = el('a-gia-pagata-box')
+  var avviso = el('a-pagamenti-esistenti')
+  if (!box || !avviso) return
+
+  function soloSpunta() {
+    box.style.display = ''
+    avviso.style.display = 'none'
+    avviso.innerHTML = ''
+  }
+
+  if (!idAcquisto) { soloSpunta(); return }   // documento nuovo: non ha pagamenti
+
+  try {
+    await loadPagamenti(true)
+    var gia = totalePagatoDi('tm_conta_fatture_acquisto', idAcquisto)
+    if (!(gia > 0.005)) { soloSpunta(); return }
+
+    // Con dei pagamenti gia' registrati la spunta non ha piu' senso: aggiungerne
+    // un altro «per intero» porterebbe il totale oltre l'importo della fattura.
+    box.style.display = 'none'
+    var spunta = el('a-gia-pagata')
+    if (spunta) spunta.checked = false
+    var campi = el('a-gia-pagata-campi')
+    if (campi) campi.style.display = 'none'
+    avviso.style.display = ''
+    avviso.innerHTML = '💳 Pagato <strong>' + esc(fmtNumIt(gia)) + '</strong> di <strong>' +
+      esc(fmtNumIt(safeNum(importoDoc) || 0)) + '</strong> — gestisci i pagamenti dalla scheda.'
+  } catch (e) {
+    // Se i pagamenti non si leggono si mostra la spunta: il salvataggio la
+    // ricontrolla comunque prima di creare qualcosa.
+    console.warn('Pagamenti non letti:', e.message || e)
+    soloSpunta()
+  }
+}
+
 function fillAcquistoForm(v) {
   v = v || {}
   setVal('a-fornitore', v.fornitore)
@@ -3766,10 +3819,14 @@ function fillAcquistoForm(v) {
   // FASE 8 — sola lettura: il valore arriva dal documento, che a sua volta lo
   // ha ricevuto dal trigger. Qui non si sceglie piu' niente.
   setVal('a-stato',     v.stato_pagamento || 'aperto')
-  // FASE 8b — la scorciatoia «già pagata per intero» è stata tolta: creava il
-  // pagamento con la data del documento senza possibilità di cambiarla. Ogni
-  // pagamento si registra sempre dalla scheda, con «+ Registra pagamento»,
-  // dove data/metodo/riferimento sono editabili.
+  // La spunta «già pagata per intero» riparte sempre spenta: e' un'azione, non
+  // un dato del documento, e ripresentarla accesa in modifica farebbe creare un
+  // secondo pagamento a chi salva senza guardare.
+  var spunta = el('a-gia-pagata')
+  if (spunta) spunta.checked = false
+  setVal('a-pag-data', '')
+  setVal('a-pag-metodo', '')
+  onAcquistoGiaPagata()
   // FASE 2: gruppo e contatto collegato
   if (el('a-contatto-id')) el('a-contatto-id').value = v.contatto_id || ''
   riempiSelectGruppi('a-gruppo', v.gruppo_codice || '')
@@ -3855,6 +3912,7 @@ async function newAcquisto() {
   await ensureContiIva()      // per il menu Codice IVA
   await loadAziendaInfo()     // per la nota "non soggetto IVA"
   fillAcquistoForm({ data: oggiISO(), valuta: 'CHF', stato_pagamento: 'aperto' })
+  await aggiornaGiaPagata(null, null)  // nuovo: la spunta e' disponibile
   html('a-classificazione-riga', '')   // documento nuovo: niente da classificare
   // FASE 2: nessun contatto collegato su un documento nuovo
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
@@ -3890,6 +3948,7 @@ async function editAcquisto(id) {
     await ensureContiIva()
     await loadAziendaInfo()
     fillAcquistoForm(vals)
+    await aggiornaGiaPagata(id, data.importo)
     await aggiornaRigaClassificazioneForm('tm_conta_fatture_acquisto', id,
                                           'a-classificazione-riga', data)
   } catch (e) {
@@ -3972,11 +4031,51 @@ async function saveAcquisto() {
     acquistoOriginal = null
     clearAcquistoFileInput()   // caricato (o fallito): l'input riparte pulito
 
+    // «Già pagata per intero»: il pagamento si crea DOPO che la fattura esiste,
+    // perche' senza il suo id non avrebbe a cosa attaccarsi. Se fallisce, la
+    // fattura resta salvata e lo si dice: sparire in silenzio farebbe credere
+    // che il pagamento ci sia.
+    var pagamentoFallito = null
+    var spuntaPag = el('a-gia-pagata')
+    if (spuntaPag && spuntaPag.checked && editingAcquistoId) {
+      try {
+        var dataPag = getVal('a-pag-data') || payload.data
+        if (!validaData(dataPag)) throw new Error('la data del pagamento non è valida')
+        // Si ricontrolla adesso: fra l'apertura del form e il salvataggio
+        // qualcuno potrebbe aver registrato un pagamento dalla scheda.
+        await loadPagamenti(true)
+        if (totalePagatoDi('tm_conta_fatture_acquisto', editingAcquistoId) > 0.005) {
+          throw new Error('la fattura ha già dei pagamenti: registrali dalla scheda')
+        }
+        const { error: ePag } = await sb.from('tm_conta_pagamenti').insert({
+          azienda_id: currentAziendaId,
+          tabella_origine: 'tm_conta_fatture_acquisto',
+          id_origine: editingAcquistoId,
+          data: dataPag,
+          importo: payload.importo,
+          metodo: getVal('a-pag-metodo') || null,
+          created_by: currentUser ? currentUser.id : null
+        }).select()
+        if (ePag) throw ePag
+        invalidaCachePagamenti()
+      } catch (errPag) {
+        pagamentoFallito = errPag.message || String(errPag)
+        console.error('Pagamento «già pagata» non creato:', errPag)
+      }
+    }
+
     await loadAcquistiList()
     try { await refreshDaClassificareCount() } catch (_) {}
     acquistiBackToList()
-    if (allegatoFallito) {
-      showFattureBanner('acquisti-list-banner', 'warn', '⚠️ Fattura salvata MA allegato NON caricato: ' + allegatoFallito)
+    if (pagamentoFallito) {
+      showFattureBanner('acquisti-list-banner', 'warn',
+        'Fattura salvata MA pagamento NON registrato: ' + pagamentoFallito +
+        '. Registralo dalla scheda con «+ Registra pagamento».')
+    } else if (allegatoFallito) {
+      showFattureBanner('acquisti-list-banner', 'warn', 'Fattura salvata MA allegato NON caricato: ' + allegatoFallito)
+    } else if (spuntaPag && spuntaPag.checked) {
+      showFattureBanner('acquisti-list-banner', 'ok',
+        'Fattura d\'acquisto salvata e segnata come pagata.')
     } else if (fileDaCaricare) {
       showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto salvata con allegato «' + fileDaCaricare.name + '».')
     } else {
