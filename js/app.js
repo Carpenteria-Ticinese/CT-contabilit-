@@ -472,7 +472,7 @@ async function loadCanalB() {
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, doc_path, created_at, stato_conferma')
+      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, created_at, stato_conferma')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -1366,46 +1366,14 @@ function aggiornaLegatoDaId(prefix, id) {
 
 // Allegato già presente sul movimento Canale B: nome + apri + rimuovi
 function renderMovimentoAllegatoCorrente() {
+  // FASE 9 — vedi renderAcquistoAllegatoCorrente().
   var box = el('f-allegato-corrente')
-  var lbl = el('f-allegato-label')
-  if (!box) return
-  if (!editingDocPath) {
-    box.style.display = 'none'
-    box.innerHTML = ''
-    if (lbl) lbl.innerHTML = 'Allegato documento <span class="dim">(opzionale)</span>'
-    return
-  }
-  box.style.display = 'flex'
-  box.innerHTML =
-    '<span aria-hidden="true">📎</span>' +
-    '<span class="allegato-nome">' + esc(allegatoNomeFile(editingDocPath)) + '</span>' +
-    '<span class="allegato-actions">' +
-      '<button type="button" class="btn-secondary" onclick="openAllegato(\'' + esc(editingDocPath) + '\', \'inserimento-banner\')">📎 Apri allegato</button>' +
-      '<button type="button" class="btn-secondary" onclick="rimuoviAllegatoMovimento()">🗑️ Rimuovi allegato</button>' +
-    '</span>'
-  if (lbl) lbl.innerHTML = 'Sostituisci allegato <span class="dim">(scegli un nuovo file per rimpiazzare quello sopra)</span>'
+  if (box) { box.style.display = 'none'; box.innerHTML = '' }
 }
 
-async function rimuoviAllegatoMovimento() {
-  if (!editingDocPath) return
-  if (!window.confirm('Rimuovere l\'allegato?\n\nIl file verrà cancellato dallo storage: non si può annullare.')) return
-  var path = editingDocPath
-  try {
-    await deleteAllegatoStorage(path)
-    if (editingMovimentoId) {
-      const { error } = await sb.from('tm_conta_movimenti_propri')
-        .update({ doc_path: null }).eq('id', editingMovimentoId).eq('azienda_id', currentAziendaId).select()
-      if (error) throw error
-    }
-    editingDocPath = null
-    renderMovimentoAllegatoCorrente()
-    showInserimentoBanner('ok', 'Allegato rimosso', 'Il file è stato cancellato dallo storage.')
-    try { await loadRecentiInseriti() } catch (_) {}
-  } catch (e) {
-    console.error('rimuoviAllegatoMovimento:', e)
-    showInserimentoBanner('err', 'Rimozione allegato non riuscita', e.message || String(e))
-  }
-}
+// FASE 9 — rimuoviAllegatoMovimento() e' stata tolta: cancellava dallo Storage
+// un file che adesso e' nominato da una riga di tm_conta_allegati, lasciando
+// un allegato che non si apre. Si elimina dalla scheda, con eliminaAllegato().
 
 async function startEditMovimento(id) {
   if (!currentAziendaId) return
@@ -1416,7 +1384,7 @@ async function startEditMovimento(id) {
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, doc_path,' +
+      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita,' +
               ' data_scadenza, stato_pagamento, data_pagamento, gruppo_codice, contatto_id')
       .eq('id', id)
       .eq('azienda_id', currentAziendaId)
@@ -1439,7 +1407,6 @@ async function startEditMovimento(id) {
     }
     editingMovimentoId = id
     originalEditValues = vals
-    editingDocPath = data.doc_path || null
 
     showPage('inserimento')
     fillFormFromValues(vals)
@@ -1816,7 +1783,7 @@ async function loadExportDataset(force) {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture')
-      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id, doc_path')
+      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id')
       .eq('azienda_id', currentAziendaId)
       .eq('stato', 'emessa')
     if (error) throw error
@@ -2388,12 +2355,13 @@ async function initFatturePage() {
 }
 
 async function loadFattureList() {
+  try { await loadAllegati() } catch (_) {}
   if (!currentAziendaId) { html('fatture-table', '<div class="dim">Accedi per vedere le fatture.</div>'); return }
   html('fatture-table', loadingRow('Caricamento fatture…'))
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture')
-      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, doc_path')
+      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at')
       .eq('azienda_id', currentAziendaId)
       .order('created_at', { ascending: false })
     if (error) throw error
@@ -2475,7 +2443,7 @@ function renderFattureTable() {
         (f.stato === 'emessa' ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '') +
         // FASE 7 — si vede a colpo d'occhio a quali fatture manca il PDF: senza
         // questa spia il pacchetto esce incompleto e ci si accorge solo dopo.
-        (f.stato === 'emessa' && !f.doc_path
+        (f.stato === 'emessa' && !contaAllegati('tm_conta_fatture', f.id)
           ? ' <span class="pdf-mancante">📎 PDF mancante</span>'
           : '') + '</td>' +
       '<td class="row-actions">' + fattureRowActions(f) + '</td>' +
@@ -3199,6 +3167,8 @@ async function viewFattura(id) {
     // sulle bozze, che non sono ancora niente da classificare.
     if (f.stato === 'bozza') html('fatture-classificazione', '')
     else await aggiornaBoxClassificazione('tm_conta_fatture', f.id, 'fatture-classificazione', f)
+    await aggiornaBoxAllegati('tm_conta_fatture', f.id, 'fatture-allegati',
+                              'Fattura ' + (f.numero || ''))
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
@@ -3372,9 +3342,13 @@ function renderDetailActions(f) {
   // FASE 7 — il PDF si allega dopo averlo generato: da li' entra nel pacchetto
   // per il commercialista. Il testo cambia se ce n'e' gia' uno.
   if (f.stato !== 'bozza') {
-    a += f.doc_path
-      ? '<button class="btn-secondary" onclick="apriSceltaPdfFattura()">📎 PDF allegato — sostituisci</button>'
-      : '<button class="btn-secondary" onclick="apriSceltaPdfFattura()">📎 Allega PDF alla fattura</button>'
+    // Una via sola per allegare, la finestra. Il tipo arriva gia' su «Fattura»,
+    // che e' quello che si allega da qui.
+    a += '<button class="btn-secondary" onclick="apriAggiungiAllegato(\'tm_conta_fatture\', \'' +
+      esc(f.id) + '\', \'Fattura ' + esc(String(f.numero || '').replace(/'/g, '')) +
+      '\', \'fattura\')">' +
+      (contaAllegati('tm_conta_fatture', f.id)
+        ? '📎 Aggiungi un allegato' : '📎 Allega il PDF della fattura') + '</button>'
   }
   if (f.stato === 'bozza') {
     a += '<button class="btn-secondary" onclick="editFattura(\'' + f.id + '\')">✏️ Modifica bozza</button>'
@@ -3509,17 +3483,8 @@ function renderAcquistoDetail(a) {
     '</div>'
   }
 
-  // Allegato
-  if (a.doc_path) {
-    body += '<div class="allegato-box" style="margin-top:16px">' +
-      '<span aria-hidden="true">📎</span>' +
-      '<span class="allegato-nome">' + esc(allegatoNomeFile(a.doc_path)) + '</span>' +
-      '<span class="allegato-actions">' +
-        '<button class="btn-secondary" onclick="openAllegato(\'' + esc(a.doc_path) + '\', \'acquisti-detail-banner\')">📎 Apri allegato</button>' +
-      '</span></div>'
-  } else {
-    body += '<div class="dim" style="margin-top:16px">Nessun allegato.</div>'
-  }
+  // Gli allegati NON stanno piu' qui: hanno il loro riquadro sotto, che li
+  // mostra tutti invece del primo.
   html('acquisti-detail-body', body)
   // FASE 8 — pagamenti e rate sotto il dettaglio dell'acquisto.
   loadPagamenti().then(function () { return loadRate() }).then(function () {
@@ -3529,6 +3494,10 @@ function renderAcquistoDetail(a) {
   // Separata dai pagamenti: se la lettura dei pagamenti fallisce, la
   // classificazione non c'entra e non deve sparire con loro.
   aggiornaBoxClassificazione('tm_conta_fatture_acquisto', a.id, 'acquisti-classificazione', a)
+  // Gli allegati: riquadro suo, separato anche questo. Se la classificazione
+  // non si legge, gli allegati non c'entrano e devono comparire lo stesso.
+  aggiornaBoxAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-allegati',
+                      'Fattura ' + (a.numero_fornitore || '') + ' ' + (a.fornitore || ''))
 
   // Azioni: Modifica sempre consentita sugli acquisti
   html('acquisti-detail-actions',
@@ -3551,12 +3520,15 @@ async function initAcquistiPage() {
 }
 
 async function loadAcquistiList() {
+  // Gli allegati servono a disegnare «📎 3» su ogni riga: si leggono prima,
+  // una volta sola, non una query per riga.
+  try { await loadAllegati() } catch (_) {}
   if (!currentAziendaId) { html('acquisti-table', '<div class="dim">Accedi per vedere le fatture d\'acquisto.</div>'); return }
   html('acquisti-table', loadingRow('Caricamento…'))
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, doc_path, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, metodo_pagamento, riferimento_pagamento, gruppo_codice, contatto_id')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, metodo_pagamento, riferimento_pagamento, gruppo_codice, contatto_id')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -3579,7 +3551,7 @@ function statoAcquistoBadge(stato) {
 
 function acquistiRowActions(a) {
   var pagato = a.stato_pagamento === 'pagato'
-  return allegatoBtn(a.doc_path, 'acquisti-list-banner') +
+  return badgeAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-list-banner') +
     '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
     (pagato
       // FASE 8 — l'icona apre la modale del pagamento invece di segnare
@@ -3875,47 +3847,16 @@ function clearAcquistoFileInput() {
 // Mostra l'allegato già presente: nome + apri + rimuovi. L'input file funge da
 // "sostituisci" (caricando un nuovo file si rimpiazza il vecchio al salvataggio).
 function renderAcquistoAllegatoCorrente() {
+  // FASE 9 — il riquadro «allegato corrente» non c'e' piu': gli allegati si
+  // gestiscono dalla scheda, dove si vedono tutti e non solo il primo. Qui
+  // resta solo l'input per allegarne uno mentre si crea il documento.
   var box = el('a-allegato-corrente')
-  var lbl = el('a-allegato-label')
-  if (!box) return
-  if (!acquistoDocPath) {
-    box.style.display = 'none'
-    box.innerHTML = ''
-    if (lbl) lbl.innerHTML = 'Allegato documento <span class="dim">(opzionale)</span>'
-    return
-  }
-  box.style.display = 'flex'
-  box.innerHTML =
-    '<span aria-hidden="true">📎</span>' +
-    '<span class="allegato-nome">' + esc(allegatoNomeFile(acquistoDocPath)) + '</span>' +
-    '<span class="allegato-actions">' +
-      '<button type="button" class="btn-secondary" onclick="openAllegato(\'' + esc(acquistoDocPath) + '\', \'acquisti-edit-banner\')">📎 Apri allegato</button>' +
-      '<button type="button" class="btn-secondary" onclick="rimuoviAllegatoAcquisto()">🗑️ Rimuovi allegato</button>' +
-    '</span>'
-  if (lbl) lbl.innerHTML = 'Sostituisci allegato <span class="dim">(scegli un nuovo file per rimpiazzare quello sopra)</span>'
+  if (box) { box.style.display = 'none'; box.innerHTML = '' }
 }
 
-async function rimuoviAllegatoAcquisto() {
-  if (!acquistoDocPath) return
-  if (!window.confirm('Rimuovere l\'allegato?\n\nIl file verrà cancellato dallo storage: non si può annullare.')) return
-  var path = acquistoDocPath
-  try {
-    await deleteAllegatoStorage(path)
-    // se la fattura è già salvata, azzera anche doc_path a database
-    if (editingAcquistoId) {
-      const { error } = await sb.from('tm_conta_fatture_acquisto')
-        .update({ doc_path: null }).eq('id', editingAcquistoId).eq('azienda_id', currentAziendaId).select()
-      if (error) throw error
-    }
-    acquistoDocPath = null
-    renderAcquistoAllegatoCorrente()
-    showFattureBanner('acquisti-edit-banner', 'ok', 'Allegato rimosso.')
-    try { await loadAcquistiList() } catch (_) {}
-  } catch (e) {
-    console.error('rimuoviAllegatoAcquisto:', e)
-    showFattureBanner('acquisti-edit-banner', 'err', 'Rimozione allegato non riuscita: ' + (e.message || e))
-  }
-}
+// FASE 9 — rimuoviAllegatoAcquisto() e' stata tolta: cancellava dallo Storage
+// un file che adesso e' nominato da una riga di tm_conta_allegati, lasciando
+// un allegato che non si apre. Si elimina dalla scheda, con eliminaAllegato().
 
 async function newAcquisto() {
   editingAcquistoId = null
@@ -3948,7 +3889,6 @@ async function editAcquisto(id) {
     const { data, error } = await sb.from('tm_conta_fatture_acquisto').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
     editingAcquistoId = id
-    acquistoDocPath = data.doc_path || null
     var vals = {
       fornitore: data.fornitore || '', numero_fornitore: data.numero_fornitore || '',
       data: data.data || '', importo: data.importo == null ? '' : data.importo,
@@ -4022,18 +3962,10 @@ async function saveAcquisto() {
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
     var payload = collectAcquisto()
-    // allegato (opzionale): in modifica si parte dal doc esistente
-    var doc_path = editingAcquistoId ? acquistoDocPath : null
+    // FASE 9 — doc_path non si scrive piu'. Il file diventa una riga in
+    // tm_conta_allegati, creata DOPO il salvataggio: prima il documento non ha
+    // un id a cui attaccarla.
     var allegatoFallito = false
-    if (fileDaCaricare) {
-      try {
-        doc_path = await uploadAllegato(fileDaCaricare)
-      } catch (uploadErr) {
-        allegatoFallito = uploadErr.message || 'allegato non caricato'
-        console.error('Allegato acquisto — upload fallito:', uploadErr)
-      }
-    }
-    payload.doc_path = doc_path
 
     if (editingAcquistoId) {
       const { error } = await sb.from('tm_conta_fatture_acquisto').update(payload).eq('id', editingAcquistoId).eq('azienda_id', currentAziendaId).select()
@@ -4044,7 +3976,10 @@ async function saveAcquisto() {
       if (error) throw error
       editingAcquistoId = data && data[0] ? data[0].id : null
     }
-    acquistoDocPath = doc_path
+    if (fileDaCaricare) {
+      allegatoFallito = await creaAllegatoDaForm(
+        fileDaCaricare, 'tm_conta_fatture_acquisto', editingAcquistoId)
+    }
     acquistoOriginal = null
     clearAcquistoFileInput()   // caricato (o fallito): l'input riparte pulito
 
@@ -4462,16 +4397,11 @@ async function handleInserimentoSubmit(event) {
     if (isNaN(importoVal) || importoVal <= 0) throw new Error('L\'importo deve essere un numero positivo.')
     if (ricorrente && !periodicita) throw new Error('Seleziona la periodicità per le spese ricorrenti.')
 
-    // Upload allegato (opzionale). In modifica si parte dall'allegato esistente.
-    var doc_path = editingMovimentoId ? editingDocPath : null
+    // FASE 9 — come nel form acquisto: il file si legge adesso, ma l'allegato
+    // si crea dopo il salvataggio, quando il movimento ha un id.
+    var fileMovimento = (fileInput && fileInput.files && fileInput.files.length > 0)
+      ? fileInput.files[0] : null
     var allegatoFallito = false
-    if (fileInput && fileInput.files && fileInput.files.length > 0) {
-      try {
-        doc_path = await uploadAllegato(fileInput.files[0])
-      } catch (uploadErr) {
-        allegatoFallito = uploadErr.message || 'allegato non caricato'
-      }
-    }
 
     // FASE 8 — lo stato non si sceglie piu': se il movimento e' gia' stato
     // pagato lo si dice con la spunta, e si crea un pagamento vero. La regola
@@ -4489,7 +4419,6 @@ async function handleInserimentoSubmit(event) {
       valuta:        valuta,
       ricorrente:    ricorrente,
       periodicita:   periodicita,
-      doc_path:      doc_path,
       // ── Colonne della FASE 1: senza queste il movimento non comparirebbe
       //    correttamente in v_conta_flussi (e quindi nel cruscotto).
       data_documento:  dataVal,
@@ -4512,6 +4441,8 @@ async function handleInserimentoSubmit(event) {
         .eq('azienda_id', currentAziendaId)
         .select()
       if (error) throw error
+      allegatoFallito = await creaAllegatoDaForm(
+        fileMovimento, 'tm_conta_movimenti_propri', editingMovimentoId)
       exitEditMode()
       if (allegatoFallito) {
         showInserimentoBanner('warn', 'Modifiche salvate (senza nuovo allegato)', 'L\'allegato non è stato caricato: ' + allegatoFallito)
@@ -4525,6 +4456,8 @@ async function handleInserimentoSubmit(event) {
         .insert(payload)
         .select()
       if (error) throw error
+      allegatoFallito = await creaAllegatoDaForm(
+        fileMovimento, 'tm_conta_movimenti_propri', creatoMov && creatoMov[0] ? creatoMov[0].id : null)
 
       // FASE 8 — «gia' pagata»: si registra il versamento, e il trigger porta
       // il movimento a 'pagato' da solo.
@@ -4651,6 +4584,7 @@ async function uploadAllegato(file) {
 
 // ─── Ultimi inseriti Canale B ─────────────────────────────────────────────────
 async function loadRecentiInseriti() {
+  try { await loadAllegati() } catch (_) {}
   if (!currentAziendaId) {
     html('inserimento-recenti', '<div class="dim" style="padding:8px 0">Accedi per vedere i movimenti.</div>')
     return
@@ -4659,7 +4593,7 @@ async function loadRecentiInseriti() {
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, importo, valuta, ente_fornitore, ricorrente, periodicita, doc_path')
+      .select('id, data, descrizione, importo, valuta, ente_fornitore, ricorrente, periodicita')
       .eq('azienda_id', currentAziendaId)
       .order('created_at', { ascending: false })
       .limit(8)
@@ -4704,7 +4638,7 @@ async function loadRecentiInseriti() {
         : '<span class="dim">🏷 Non ancora classificato</span>'
       var classRiga = '<div class="class-riga-compatta">' + classTxt + '</div>'
 
-      var azioni = allegatoBtn(m.doc_path, 'inserimento-banner') + (bloccato
+      var azioni = badgeAllegati('tm_conta_movimenti_propri', m.id, 'inserimento-banner') + (bloccato
         ? '<span class="lock-tag" title="Periodo consegnato — sola lettura">🔒 Consegnato</span>'
         : '<button class="icon-btn" title="' +
             (cls && cls.conto_id ? 'Cambia conto, gruppo, cantiere o IVA' : 'Assegna conto e IVA') + '" ' +
@@ -7740,6 +7674,8 @@ function nomeUnico(usati, cartella, nome) {
 // fiscale, e' lavoro ancora da fatturare.
 async function raccogliDocumentiPacchetto(da, a) {
   var ds = await loadExportDataset()
+  // Senza questa lettura ogni documento risulterebbe senza allegati.
+  try { await loadAllegati() } catch (_) {}
   var d  = docsPeriodo(ds, da, a)      // applica gia' il filtro «da confermare»
   var usati = {}
   var voci = []
@@ -7752,7 +7688,7 @@ async function raccogliDocumentiPacchetto(da, a) {
       data: f.data_emissione,
       chi: f.cliente_nome,
       importo: f.totale,
-      path: f.doc_path || null,
+      allegati: allegatiDi('tm_conta_fatture', f.id),
       id: f.id,
       // Una fattura senza PDF non e' un errore dello Storage: e' un PDF che
       // nessuno ha ancora allegato. Il motivo va scritto per esteso.
@@ -7766,7 +7702,7 @@ async function raccogliDocumentiPacchetto(da, a) {
       sezione: 'acquisti',
       etichetta: 'Fattura ' + (x.numero_fornitore || '') + ' ' + (x.fornitore || ''),
       data: x.data, chi: x.fornitore, importo: x.importo,
-      path: x.doc_path || null, id: x.id,
+      allegati: allegatiDi('tm_conta_fatture_acquisto', x.id), id: x.id,
       motivoSeManca: 'nessun file caricato'
     })
   })
@@ -7779,7 +7715,7 @@ async function raccogliDocumentiPacchetto(da, a) {
       sezione: 'movimenti',
       etichetta: m.descrizione || 'Movimento',
       data: m.data, chi: m.ente || m.ente_fornitore || m.descrizione, importo: m.importo,
-      path: m.doc_path || null, id: m.origine_id,
+      allegati: allegatiDi('tm_conta_movimenti_propri', m.origine_id), id: m.origine_id,
       motivoSeManca: 'nessun file caricato'
     })
   })
@@ -7794,7 +7730,9 @@ async function raccogliDocumentiPacchetto(da, a) {
       sezione: 'spese_cantiere',
       etichetta: sp.descrizione || 'Spesa di cantiere',
       data: sp.data, chi: cantiereLabel(sp.cantiere_id), importo: sp.importo,
-      path: sp.foto_path || null, id: sp.id,
+      allegati: sp.foto_path
+        ? [{ path: sp.foto_path, tipo: 'altro', nome_file: null }] : [],
+      id: sp.id,
       bucket: 'cantiere-spese',
       motivoSeManca: 'foto mai scattata'
     })
@@ -7802,10 +7740,41 @@ async function raccogliDocumentiPacchetto(da, a) {
 
   // Il nome del file si assegna QUI, una volta sola: la stessa stringa andra'
   // nella cella ALLEGATO dell'Excel e nel percorso dentro lo ZIP.
+  // Il nome base si assegna QUI, una volta sola per documento: la stessa
+  // stringa va nella cella ALLEGATO dell'Excel e nel percorso dentro lo ZIP.
+  //
+  // Con piu' allegati i file stanno ACCANTO alla fattura, nella stessa cartella
+  // di sezione, distinti dal suffisso: _bolla1, _bolla2, _ricevuta1. Una
+  // sottocartella per documento farebbe dello ZIP un albero da navigare;
+  // cosi' il commercialista apre una cartella e li vede tutti in ordine di data.
   voci.forEach(function (v) {
-    if (!v.path) { v.nomeNelloZip = null; return }
-    var est = estensioneDa(v.path, v.sezione === 'spese_cantiere' ? 'jpg' : 'pdf')
-    v.nomeNelloZip = nomeUnico(usati, v.sezione, nomeFilePacchetto(v.data, v.chi, v.importo, est))
+    v.files = []
+    var lista = v.allegati || []
+    if (!lista.length) return
+
+    // L'allegato di tipo «fattura» viene per primo: e' il documento, gli altri
+    // sono il contorno. A parita' di tipo resta l'ordine di caricamento.
+    var ordinati = lista.slice().sort(function (p, q) {
+      return (p.tipo === 'fattura' ? 0 : 1) - (q.tipo === 'fattura' ? 0 : 1)
+    })
+
+    var contatori = {}
+    ordinati.forEach(function (al, i) {
+      var est = estensioneDa(al.path, v.sezione === 'spese_cantiere' ? 'jpg' : 'pdf')
+      var suffisso = ''
+      if (i > 0 || al.tipo !== 'fattura') {
+        contatori[al.tipo] = (contatori[al.tipo] || 0) + 1
+        suffisso = '_' + al.tipo + contatori[al.tipo]
+      }
+      // Il suffisso entra nel nome PRIMA dell'estensione: nomeFilePacchetto
+      // mette gia' il punto, incollarlo dopo darebbe «..pdf».
+      var nome = nomeFilePacchetto(v.data, v.chi, v.importo, est)
+      if (suffisso) {
+        var punto = nome.lastIndexOf('.')
+        nome = nome.slice(0, punto) + suffisso + nome.slice(punto)
+      }
+      v.files.push({ path: al.path, nomeNelloZip: nomeUnico(usati, v.sezione, nome) })
+    })
   })
 
   return { voci: voci, d: d, ds: ds }
@@ -7834,7 +7803,7 @@ async function aggiornaAnteprimaPacchetto() {
   box.innerHTML = loadingRow('Calcolo del pacchetto…')
   try {
     var r = await raccogliDocumentiPacchetto(da, a)
-    var conAllegato = r.voci.filter(function (v) { return !!v.path })
+    var conAllegato = r.voci.filter(function (v) { return v.files.length })
     var senza = r.voci.length - conAllegato.length
 
     if (!r.voci.length) {
@@ -7848,7 +7817,9 @@ async function aggiornaAnteprimaPacchetto() {
     // Stima: le foto pesano molto piu' dei PDF. Sono cifre grossolane e la
     // scritta lo dice: servono solo a evitare la sorpresa dei 200 MB.
     var stimaMB = 0
-    conAllegato.forEach(function (v) { stimaMB += (v.sezione === 'spese_cantiere') ? 3 : 0.35 })
+    conAllegato.forEach(function (v) {
+      stimaMB += v.files.length * ((v.sezione === 'spese_cantiere') ? 3 : 0.35)
+    })
     stimaMB = Math.max(0.1, stimaMB)
 
     var avviso = ''
@@ -7864,7 +7835,8 @@ async function aggiornaAnteprimaPacchetto() {
 
     box.innerHTML =
       '<div class="exp-riga"><span>Documenti nel periodo</span><span><strong>' + r.voci.length + '</strong></span></div>' +
-      '<div class="exp-riga"><span>Giustificativi da allegare</span><span><strong>' + conAllegato.length + '</strong></span></div>' +
+      '<div class="exp-riga"><span>Giustificativi da allegare</span><span><strong>' +
+        conAllegato.reduce(function (n, v) { return n + v.files.length }, 0) + '</strong></span></div>' +
       '<div class="exp-riga' + (senza ? ' exp-vuoto' : '') + '"><span>' +
         (senza ? '⏳ Documenti senza giustificativo' : '✅ Nessun documento senza giustificativo') +
         '</span><span><strong>' + senza + '</strong></span></div>' +
@@ -7927,35 +7899,43 @@ async function generaPacchetto() {
     }
 
     var zip = new JSZipLib()
-    var conAllegato = r.voci.filter(function (v) { return !!v.path })
+    var conAllegato = r.voci.filter(function (v) { return v.files.length })
     var scaricati = 0
 
     // ── Gli allegati, uno per uno ──────────────────────────────────────────
     // try/catch INTORNO A OGNI FILE: un allegato che non si scarica finisce
     // fra i mancanti e il pacchetto si genera lo stesso. Se bastasse un file
     // rotto a far fallire tutto, il pacchetto non si potrebbe mai consegnare.
-    for (var i = 0; i < conAllegato.length; i++) {
+    // Si conta per FILE, non per documento: una fattura con due bolle vale tre.
+    var daScaricare = []
+    conAllegato.forEach(function (v) {
+      v.files.forEach(function (fl) { daScaricare.push({ v: v, fl: fl }) })
+    })
+
+    for (var i = 0; i < daScaricare.length; i++) {
       if (pacchettoAnnullato) { bannerPacchetto('warn', 'Generazione annullata: nessun file è stato scaricato.'); return }
-      var v = conAllegato[i]
-      mostraProgressoPacchetto('Scarico allegato ' + (i + 1) + ' di ' + conAllegato.length + '…',
-                               5 + Math.round((i / conAllegato.length) * 80))
+      var v  = daScaricare[i].v
+      var fl = daScaricare[i].fl
+      mostraProgressoPacchetto('Scarico allegato ' + (i + 1) + ' di ' + daScaricare.length + '…',
+                               5 + Math.round((i / daScaricare.length) * 80))
       try {
         var bucket = v.bucket || STORAGE_BUCKET
-        const { data: blob, error } = await sb.storage.from(bucket).download(v.path)
+        const { data: blob, error } = await sb.storage.from(bucket).download(fl.path)
         if (error) throw error
         if (!blob) throw new Error('file vuoto')
-        zip.file(v.nomeNelloZip, blob)
+        zip.file(fl.nomeNelloZip, blob)
         scaricati++
       } catch (eFile) {
-        // Il file resta nell'Excel con la cella vuota, e il motivo va scritto.
-        v.nomeNelloZip = null
+        // Il file salta, ma gli altri dello stesso documento no: si azzera
+        // solo questo, e il motivo va scritto nominando il file.
+        fl.nomeNelloZip = null
         mancanti.push({ data: v.data, chi: v.chi, importo: v.importo,
                         motivo: 'file non scaricabile (' + (eFile.message || eFile) + ')' })
       }
     }
 
     // I documenti che non avevano proprio un file
-    r.voci.filter(function (v) { return !v.path }).forEach(function (v) {
+    r.voci.filter(function (v) { return !v.files.length }).forEach(function (v) {
       mancanti.push({ data: v.data, chi: v.chi, importo: v.importo, motivo: v.motivoSeManca })
     })
 
@@ -7964,7 +7944,13 @@ async function generaPacchetto() {
     // ── L'Excel, con la colonna ALLEGATO ───────────────────────────────────
     mostraProgressoPacchetto('Creazione dell\'Excel…', 88)
     var mappa = {}
-    r.voci.forEach(function (v) { if (v.nomeNelloZip) mappa[v.sezione + ':' + v.id] = v.nomeNelloZip })
+    // La cella ALLEGATO elenca tutti i file di quel documento, separati da «; ».
+    // Con la cella vuota il commercialista non saprebbe che le bolle esistono.
+    r.voci.forEach(function (v) {
+      var nomi = (v.files || []).map(function (fl) { return fl.nomeNelloZip })
+                                .filter(Boolean)
+      if (nomi.length) mappa[v.sezione + ':' + v.id] = nomi.join('; ')
+    })
     var wb = costruisciWorkbookPacchetto(r, mappa, da, a)
     var xlsxBin = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
     zip.file('01_Riepilogo.xlsx', xlsxBin)
@@ -8035,7 +8021,9 @@ function costruisciWorkbookPacchetto(r, mappa, da, a) {
   if (speseCant.length) {
     var aoa = [['Data', 'Cantiere', 'Descrizione', 'Importo', 'ALLEGATO']]
     speseCant.forEach(function (v) {
-      aoa.push([v.data || '', v.chi || '', v.etichetta || '', safeNum(v.importo) || 0, v.nomeNelloZip || ''])
+      var nomiSp = (v.files || []).map(function (fl) { return fl.nomeNelloZip })
+                                  .filter(Boolean).join('; ')
+      aoa.push([v.data || '', v.chi || '', v.etichetta || '', safeNum(v.importo) || 0, nomiSp])
     })
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Spese cantiere')
   }
@@ -8187,51 +8175,10 @@ function proponiConsegna() {
 
 // ── Il PDF allegato alla fattura di vendita ─────────────────────────────────
 
-function apriSceltaPdfFattura() {
-  var inp = el('fat-pdf-input')
-  if (inp) { inp.value = ''; inp.click() }
-}
-
-async function allegaPdfFattura(input) {
-  if (!input || !input.files || !input.files.length) return
-  var file = input.files[0]
-  var f = currentDetailFattura
-  if (!f) return
-
-  html('fatture-allegato-banner', loadingRow('Caricamento del PDF…'))
-  try {
-    if (file.type && file.type.indexOf('pdf') === -1) {
-      throw new Error('Serve un file PDF. Genera prima il documento con «Scarica PDF».')
-    }
-    var path = await uploadAllegato(file)      // stesso bucket e stesso formato degli acquisti
-    const { error } = await sb.from('tm_conta_fatture')
-      .update({ doc_path: path })
-      .eq('id', f.id).eq('azienda_id', currentAziendaId).select()
-    if (error) throw error
-
-    currentDetailFattura.doc_path = path
-    exportDataset = null                        // il pacchetto deve rileggere
-    html('fatture-allegato-banner',
-      '<div class="fase-banner ok"><span class="icon" aria-hidden="true">✅</span>' +
-      '<div class="msg">PDF allegato alla fattura. Da adesso entra nel pacchetto per il commercialista.</div></div>')
-    await loadFattureList()
-    await viewFattura(f.id)
-  } catch (e) {
-    var m = String(e.message || e)
-    // Se il trigger di immutabilita' rifiuta, NON si aggira: si segnala.
-    if (m.indexOf('non si puo modificare') !== -1 || m.indexOf('sola lettura') !== -1) {
-      m = 'Il database ha rifiutato la modifica come se doc_path fosse un campo congelato. ' +
-          'Non va aggirato: segnalalo, perché vuol dire che SQL_FASE7.sql non è stato applicato ' +
-          'oppure che il trigger è diverso da quello previsto. Messaggio: ' + m
-    }
-    html('fatture-allegato-banner',
-      '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
-      '<div class="msg">' + esc(m) + '</div></div>')
-  } finally {
-    if (input) input.value = ''
-  }
-}
-
+// FASE 9A — apriSceltaPdfFattura() e allegaPdfFattura() non ci sono piu':
+// allegavano UN file scrivendo doc_path. Adesso si passa dalla finestra
+// «Aggiungi allegato», che vale per tutti i documenti e scrive in
+// tm_conta_allegati. Una strada sola.
 
 // ══════════════════════════════════════════════════════════════════════════════
 // FASE 8 — PAGAMENTI PARZIALI E RATE
@@ -8880,6 +8827,7 @@ var FINESTRE = {
   'pagamento-overlay':    { chiudi: 'chiudiRegistraPagamento', protetta: true },
   'rate-overlay':         { chiudi: 'chiudiPianoRateale',      protetta: true },
   'classify-overlay':     { chiudi: 'closeClassifyPanel',      protetta: true },
+  'allegato-overlay':     { chiudi: 'chiudiAggiungiAllegato',  protetta: true },
   'emit-confirm-overlay': { chiudi: 'closeEmitConfirm',        protetta: true },
   'scadenze-overlay':     { chiudi: 'chiudiFinestraScadenze',  protetta: false },
   'storia-overlay':       { chiudi: 'closeStoria',             protetta: false }
@@ -9370,6 +9318,300 @@ async function aggiornaRigaClassificazioneForm(tabella, idDoc, idContenitore, do
     console.warn('Riga classificazione nel form:', e.message || e)
     html(idContenitore, '')
   }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 9A — GLI ALLEGATI
+//
+// Prima ogni documento aveva UN allegato: la colonna doc_path. Una fattura con
+// due bolle di consegna e la ricevuta del bonifico non ci stava — o si caricava
+// la fattura, o si caricava la bolla.
+//
+// Adesso ogni allegato e' una riga in tm_conta_allegati, con il suo tipo.
+// doc_path resta nel database come storico (SQL_FASE9) ma NON si legge e NON si
+// scrive piu' da nessuna parte: una fonte sola, come per i pagamenti.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var LIMITE_ALLEGATO_MB = 10
+
+// I quattro tipi, con icona ed etichetta. L'icona non va mai da sola.
+var TIPI_ALLEGATO = [
+  { v: 'fattura',  et: 'Fattura',  ic: '📄' },
+  { v: 'bolla',    et: 'Bolla',    ic: '📋' },
+  { v: 'ricevuta', et: 'Ricevuta', ic: '🧾' },
+  { v: 'altro',    et: 'Altro',    ic: '📎' }
+]
+
+function etichettaTipoAllegato(tipo) {
+  for (var i = 0; i < TIPI_ALLEGATO.length; i++) {
+    if (TIPI_ALLEGATO[i].v === tipo) return TIPI_ALLEGATO[i]
+  }
+  return TIPI_ALLEGATO[3]
+}
+
+// ── La cache ────────────────────────────────────────────────────────────────
+// Si caricano tutti gli allegati dell'azienda in un colpo: sono poche righe, e
+// cosi' gli elenchi possono scrivere «📎 3» senza una query per riga.
+let allegatiCache = []
+let allegatiCaricati = false
+
+// Il file scelto nel form diventa un allegato del documento appena salvato.
+// Restituisce null se e' andato tutto bene, o il motivo del fallimento: il
+// documento resta salvato comunque, e il chiamante lo dice.
+async function creaAllegatoDaForm(file, tabella, idDoc) {
+  if (!file || !idDoc) return null
+  try {
+    var mb = file.size / (1024 * 1024)
+    if (mb > LIMITE_ALLEGATO_MB) {
+      return 'il file pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' + LIMITE_ALLEGATO_MB + ' MB'
+    }
+    var path = await uploadAllegato(file)
+    const { error } = await sb.from('tm_conta_allegati').insert({
+      azienda_id: currentAziendaId,
+      tabella_origine: tabella,
+      id_origine: idDoc,
+      tipo: 'fattura',
+      path: path,
+      nome_file: file.name,
+      dimensione: file.size,
+      created_by: currentUser ? currentUser.id : null
+    }).select()
+    if (error) {
+      // Il file e' salito ma la riga no: si toglie, altrimenti resta nello
+      // Storage senza che niente lo nomini.
+      try { await deleteAllegatoStorage(path) } catch (_) {}
+      throw error
+    }
+    invalidaCacheAllegati()
+    return null
+  } catch (e) {
+    return e.message || String(e)
+  }
+}
+
+async function loadAllegati(force) {
+  if (allegatiCaricati && !force) return allegatiCache
+  if (!currentAziendaId) { allegatiCache = []; return allegatiCache }
+  const { data, error } = await sb.from('tm_conta_allegati')
+    .select('id, tabella_origine, id_origine, tipo, path, nome_file, dimensione, created_at')
+    .eq('azienda_id', currentAziendaId)
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  allegatiCache = data || []
+  allegatiCaricati = true
+  return allegatiCache
+}
+
+function invalidaCacheAllegati() { allegatiCaricati = false }
+
+function allegatiDi(tabella, id) {
+  if (!id) return []
+  return (allegatiCache || []).filter(function (a) {
+    return a.tabella_origine === tabella && a.id_origine === id
+  })
+}
+
+function contaAllegati(tabella, id) { return allegatiDi(tabella, id).length }
+
+// La spia negli elenchi: il NUMERO, non un generico «Allegato». Sapere che ce
+// ne sono tre senza aprire la scheda e' il punto di tutta la fase.
+function badgeAllegati(tabella, id, bannerId) {
+  var n = contaAllegati(tabella, id)
+  if (!n) return ''
+  var primo = allegatiDi(tabella, id)[0]
+  return '<button class="icon-btn" title="' + (n === 1 ? 'Apri l allegato' : 'Apri il primo dei ' + n + ' allegati') +
+    '" onclick="event.stopPropagation(); openAllegato(\'' + esc(primo.path) + '\', \'' + esc(bannerId || '') + '\')">📎 ' + n + '</button>'
+}
+
+// ── Il riquadro nella scheda ────────────────────────────────────────────────
+function boxAllegatiHtml(tabella, id, nome) {
+  var lista = allegatiDi(tabella, id)
+  var argomenti = "'" + esc(tabella) + "', '" + esc(id) + "', '" +
+                  esc(String(nome || '').replace(/'/g, '')) + "'"
+
+  var righe = lista.length
+    ? lista.map(function (a) {
+        var t = etichettaTipoAllegato(a.tipo)
+        // Il tipo si puo' cambiare dopo: capita di caricare una bolla e
+        // accorgersi solo dopo di averla segnata come fattura.
+        var sel = '<select class="alleg-tipo" title="Tipo di documento" ' +
+          'onchange="cambiaTipoAllegato(\'' + esc(a.id) + '\', this.value, ' + argomenti + ')">' +
+          TIPI_ALLEGATO.map(function (x) {
+            return '<option value="' + x.v + '"' + (x.v === a.tipo ? ' selected' : '') + '>' +
+                   x.ic + ' ' + x.et + '</option>'
+          }).join('') + '</select>'
+        return '<div class="alleg-riga">' +
+          sel +
+          '<span class="alleg-nome" title="' + esc(a.path) + '">' +
+            esc(a.nome_file || allegatoNomeFile(a.path)) + '</span>' +
+          '<span class="alleg-azioni">' +
+            '<button type="button" class="icon-btn" onclick="openAllegato(\'' + esc(a.path) +
+              '\', \'' + esc(bannerAllegatiDi(tabella)) + '\')">📎 Apri</button>' +
+            '<button type="button" class="icon-btn danger" onclick="eliminaAllegato(\'' + esc(a.id) +
+              '\', ' + argomenti + ')">🗑️ Elimina</button>' +
+          '</span>' +
+        '</div>'
+      }).join('')
+    : '<div class="cru-vuoto">Nessun allegato.</div>'
+
+  return '<div class="card">' +
+    '<div class="card-title">📎 Allegati' + (lista.length ? ' (' + lista.length + ')' : '') + '</div>' +
+    righe +
+    '<div class="form-actions" style="margin-top:12px">' +
+      '<button type="button" class="btn-secondary" onclick="apriAggiungiAllegato(' + argomenti + ')">' +
+        '➕ Aggiungi allegato</button>' +
+    '</div>' +
+  '</div>'
+}
+
+// Dove finiscono gli avvisi, a seconda della schermata da cui si guarda.
+function bannerAllegatiDi(tabella) {
+  if (tabella === 'tm_conta_fatture') return 'fatture-allegato-banner'
+  if (tabella === 'tm_conta_fatture_acquisto') return 'acquisti-detail-banner'
+  return 'inserimento-banner'
+}
+
+async function aggiornaBoxAllegati(tabella, id, idContenitore, nome) {
+  try {
+    await loadAllegati(true)
+    html(idContenitore, boxAllegatiHtml(tabella, id, nome))
+  } catch (e) {
+    html(idContenitore, '<div class="card"><div class="card-title">📎 Allegati</div>' +
+      '<div class="cru-vuoto">Allegati non leggibili: ' + esc(e.message || e) + '</div></div>')
+  }
+}
+
+// ── La finestra «Aggiungi allegato» ─────────────────────────────────────────
+var docAllegatoCorrente = null
+
+function apriAggiungiAllegato(tabella, id, nome, tipoProposto) {
+  docAllegatoCorrente = { tabella: tabella, id: id, nome: nome || '' }
+  var inp = el('alleg-file'); if (inp) inp.value = ''
+  setVal('alleg-tipo', tipoProposto || 'fattura')
+  html('alleg-banner', '')
+  html('alleg-riepilogo',
+    '<div class="cls-sum-title">' + esc(nome || 'Documento') + '</div>' +
+    '<div class="cls-sum-meta"><span>Massimo ' + LIMITE_ALLEGATO_MB + ' MB per file</span></div>')
+  var ov = el('allegato-overlay')
+  if (ov) ov.style.display = 'flex'
+  registraAperturaModale('allegato-overlay')
+}
+
+function chiudiAggiungiAllegato() {
+  var ov = el('allegato-overlay')
+  if (ov) ov.style.display = 'none'
+  docAllegatoCorrente = null
+}
+
+async function salvaAllegato() {
+  if (!docAllegatoCorrente) return
+  var d = docAllegatoCorrente
+  var btn = el('alleg-salva-btn')
+  var inp = el('alleg-file')
+  var file = (inp && inp.files && inp.files.length) ? inp.files[0] : null
+  try {
+    if (!file) throw new Error('Scegli un file da allegare.')
+    // Il limite si controlla PRIMA di caricare: mandare 40 MB per sentirsi dire
+    // di no dopo due minuti di attesa e' il modo peggiore di dirlo.
+    var mb = file.size / (1024 * 1024)
+    if (mb > LIMITE_ALLEGATO_MB) {
+      throw new Error('Il file pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' +
+        LIMITE_ALLEGATO_MB + ' MB. Riducilo o caricalo diviso.')
+    }
+    var tipo = getVal('alleg-tipo') || 'altro'
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Caricamento…' }
+
+    var path = await uploadAllegato(file)     // stesso bucket e stesso formato di sempre
+    const { error } = await sb.from('tm_conta_allegati').insert({
+      azienda_id: currentAziendaId,
+      tabella_origine: d.tabella,
+      id_origine: d.id,
+      tipo: tipo,
+      path: path,
+      nome_file: file.name,
+      dimensione: file.size,
+      created_by: currentUser ? currentUser.id : null
+    }).select()
+    if (error) {
+      // Il file e' gia' nello Storage ma la riga no: senza questo rimarrebbe
+      // un file che nessuno puo' piu' raggiungere.
+      try { await deleteAllegatoStorage(path) } catch (_) {}
+      throw error
+    }
+
+    invalidaCacheAllegati()
+    exportDataset = null                       // il pacchetto deve rileggere
+    chiudiAggiungiAllegato()
+    await ricaricaDopoAllegato(d)
+  } catch (e) {
+    html('alleg-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">' + esc(e.message || e) + '</div></div>')
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Allega' }
+  }
+}
+
+// Cambiare il tipo dopo: una UPDATE sola, nessun file toccato.
+async function cambiaTipoAllegato(idAllegato, tipo, tabella, id, nome) {
+  try {
+    const { error } = await sb.from('tm_conta_allegati')
+      .update({ tipo: tipo }).eq('id', idAllegato).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    invalidaCacheAllegati()
+    exportDataset = null
+    await ricaricaDopoAllegato({ tabella: tabella, id: id, nome: nome })
+  } catch (e) {
+    avvisoAllegato(bannerAllegatiDi(tabella), 'err', 'Tipo non cambiato: ' + (e.message || e))
+  }
+}
+
+// Eliminare cancella ANCHE il file dallo Storage: senza, lo Storage si
+// riempirebbe di file che nessuna riga nomina piu' e che nessuno sa cosa siano.
+// La conferma lo dice, perche' non si torna indietro.
+async function eliminaAllegato(idAllegato, tabella, id, nome) {
+  var a = (allegatiCache || []).filter(function (x) { return x.id === idAllegato })[0]
+  if (!a) return
+  var etichetta = a.nome_file || allegatoNomeFile(a.path)
+  if (!window.confirm('Eliminare l\'allegato «' + etichetta + '»?\n\n' +
+      'Il file viene cancellato dallo storage: non si può annullare.')) return
+  try {
+    // Prima la riga, poi il file: se il file non si cancella resta un file
+    // orfano, fastidioso ma innocuo. Al contrario resterebbe una riga che
+    // punta al vuoto, e l'elenco mostrerebbe un allegato che non si apre.
+    const { error } = await sb.from('tm_conta_allegati')
+      .delete().eq('id', idAllegato).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    try {
+      await deleteAllegatoStorage(a.path)
+    } catch (eFile) {
+      console.warn('File non cancellato dallo storage:', eFile.message || eFile, a.path)
+      avvisoAllegato(bannerAllegatiDi(tabella), 'warn',
+        'Allegato tolto dal documento, ma il file è rimasto nello storage: ' + (eFile.message || eFile))
+    }
+    invalidaCacheAllegati()
+    exportDataset = null
+    await ricaricaDopoAllegato({ tabella: tabella, id: id, nome: nome })
+  } catch (e) {
+    avvisoAllegato(bannerAllegatiDi(tabella), 'err', 'Allegato non eliminato: ' + (e.message || e))
+  }
+}
+
+// Ridisegna quello che mostra gli allegati, senza ricaricare la schermata.
+async function ricaricaDopoAllegato(d) {
+  try {
+    await loadAllegati(true)
+    if (d.tabella === 'tm_conta_fatture') {
+      if (el('fatture-allegati')) html('fatture-allegati', boxAllegatiHtml(d.tabella, d.id, d.nome))
+      await loadFattureList()
+    } else if (d.tabella === 'tm_conta_fatture_acquisto') {
+      if (el('acquisti-allegati')) html('acquisti-allegati', boxAllegatiHtml(d.tabella, d.id, d.nome))
+      await loadAcquistiList()
+    } else {
+      if (currentPage === 'inserimento') await loadRecentiInseriti()
+    }
+  } catch (e) { console.warn('Ricarica dopo allegato:', e.message || e) }
 }
 
 
