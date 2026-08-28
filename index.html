@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=22" />
+  <link rel="stylesheet" href="css/style.css?v=23" />
 </head>
 <body>
 
@@ -1128,6 +1128,7 @@
         <div class="no-print" id="fatture-allegato-banner" role="status" aria-live="polite"></div>
         <!-- FASE 8: pagamenti e rate della fattura -->
         <div class="no-print" id="fatture-pagamenti"></div>
+        <div class="no-print" id="fatture-classificazione"></div>
 
         <div class="card">
           <div id="fatture-print"></div>
@@ -1212,6 +1213,7 @@
         </div>
         <!-- FASE 8: pagamenti e rate della fattura d'acquisto -->
         <div id="acquisti-pagamenti"></div>
+        <div id="acquisti-classificazione"></div>
         <div style="display:none">
         </div>
       </div>
@@ -1909,7 +1911,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=22"></script>
+<script src="js/app.js?v=23"></script>
 
 </body>
 </html>
