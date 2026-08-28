@@ -785,8 +785,11 @@ function calcolaIva(importo, aliquota, ivaInclusa) {
 }
 
 // Carica conti (pacchetto + propri) e codici IVA in cache (una volta).
-async function ensureContiIva() {
-  if (contiCache && ivaCache) return
+async function ensureContiIva(force) {
+  // Come per i gruppi: si controlla che ci sia DENTRO qualcosa. Un array vuoto
+  // e' «vero» in JavaScript, e un tentativo fallito prima del login bloccava
+  // ogni tentativo successivo.
+  if (cacheOk('conti') && cacheOk('iva') && !force) return
   try {
     const { data, error } = await sb
       .from('tm_conta_piano_conti')
@@ -796,7 +799,9 @@ async function ensureContiIva() {
       .order('codice_conto')
     if (error) throw error
     contiCache = data || []
+    segnaCacheOk('conti')
   } catch (e) {
+    // NON si scrive [] nella cache: il prossimo tentativo deve poter riuscire.
     contiCache = contiCache || []
     console.warn('Conti:', e.message)
   }
@@ -809,15 +814,42 @@ async function ensureContiIva() {
       .order('aliquota', { ascending: false })
     if (error) throw error
     ivaCache = data || []
+    segnaCacheOk('iva')
   } catch (e) {
     ivaCache = ivaCache || []
     console.warn('IVA:', e.message)
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// LE CACHE — ricordarsi se la lettura e' RIUSCITA, non solo cosa ha dato
+//
+// Lo schema di prima era «if (xxxCache) return xxxCache», e un array vuoto in
+// JavaScript e' vero. Una lettura fallita — tipicamente prima del login,
+// quando la RLS blocca tutto — lasciava [] nella cache, e da li' in poi
+// nessuno riprovava piu': i menu restavano vuoti per il resto della sessione,
+// senza un errore da nessuna parte.
+//
+// Non basta pero' controllare che la cache abbia righe dentro: «zero righe» e
+// «non sono riuscito a leggere» sono due cose diverse. La tabella spese di
+// App Cantieri e' legittimamente vuota, e rileggerla a ogni chiamata perche'
+// e' vuota sarebbe un difetto nuovo al posto di quello vecchio.
+//
+// Percio' la riuscita si tiene a parte, qui. Una lettura riuscita che non
+// trova niente e' un risultato valido e non si ripete; una fallita si ritenta.
+//
+// La cache resta comunque un array anche dopo un errore: c'e' chi la legge
+// senza passare dal caricatore, e trovarla a null farebbe rompere quel codice
+// invece di mostrargli un elenco vuoto.
+// ══════════════════════════════════════════════════════════════════════════════
+var cacheRiuscite = {}
+function cacheOk(nome)        { return cacheRiuscite[nome] === true }
+function segnaCacheOk(nome)   { cacheRiuscite[nome] = true }
+function scadeCache(nome)     { cacheRiuscite[nome] = false }
+
 // Carica cantieri (sola lettura, con fallback progressivo). Mai bloccante.
-async function loadCantieri() {
-  if (cantieriCache !== null) return
+async function loadCantieri(force) {
+  if (cacheOk('cantieri') && !force) return
   try {
     // FASE 6A — servono anche luogo e stato: il luogo distingue due cantieri
     // con lo stesso nome, lo stato decide l'ordine della tendina.
@@ -829,21 +861,26 @@ async function loadCantieri() {
       return { id: c.id, nome: c.nome, luogo: c.luogo || null,
                stato: c.stato || null, committente: c.committente || null }
     })
+    segnaCacheOk('cantieri')
     return
   } catch (e0) {
   try {
     const { data, error } = await sb.from('cantieri').select('id, nome').limit(500)
     if (error) throw error
     cantieriCache = (data || []).map(function (c) { return { id: c.id, nome: c.nome } })
+    segnaCacheOk('cantieri')
     return
   } catch (e1) {
     try {
       const { data, error } = await sb.from('cantieri').select('id').limit(500)
       if (error) throw error
       cantieriCache = (data || []).map(function (c) { return { id: c.id, nome: null } })
+      segnaCacheOk('cantieri')
       return
     } catch (e2) {
-      cantieriCache = []
+      // La cache resta un array vuoto per chi la legge, ma NON si segna come
+      // riuscita: il prossimo tentativo riprova.
+      cantieriCache = cantieriCache || []
       console.warn('Cantieri non disponibili:', e2.message)
     }
   }
@@ -897,7 +934,10 @@ function buildContoOptions(filter, selectedId) {
     var mio = c.azienda_id != null ? ' — mio' : ''
     return '<option value="' + esc(c.id) + '"' + sel + '>' + esc(c.codice_conto + ' · ' + c.descrizione + mio) + '</option>'
   }
-  if (!conti.length) return '<option value="" disabled>Nessun conto trovato</option>'
+  if (!contiCache || !contiCache.length) {
+    return '<option value="">⚠️ Piano dei conti non caricato — ricarica la pagina</option>'
+  }
+  if (!conti.length) return '<option value="" disabled>Nessun conto trovato con questo filtro</option>'
   var out = ''
   if (propri.length)    out += '<optgroup label="I miei conti">' + propri.map(opt).join('') + '</optgroup>'
   if (pacchetto.length) out += '<optgroup label="Pacchetto CH">' + pacchetto.map(opt).join('') + '</optgroup>'
@@ -906,6 +946,7 @@ function buildContoOptions(filter, selectedId) {
 
 function buildIvaOptions(selectedId) {
   var iva = ivaCache || []
+  if (!iva.length) return '<option value="">⚠️ Codici IVA non caricati — ricarica la pagina</option>'
   var out = '<option value="">— Seleziona codice IVA —</option>'
   out += iva.map(function (c) {
     var alq = safeNum(c.aliquota)
@@ -4370,6 +4411,15 @@ function showBucketInfo(evt) {
   }
 }
 
+// Tutto quello che serve alla pagina «Inserimento manuale» quando si apre.
+// Prima non esisteva: la pagina si limitava a caricare gli ultimi movimenti,
+// e i menu che vanno riempiti da JavaScript restavano vuoti.
+async function initInserimentoPage() {
+  try { await loadRecentiInseriti() } catch (e) { console.warn('Recenti:', e.message || e) }
+  try { await riempiSelectGruppi('f-gruppo', getVal('f-gruppo') || '') }
+  catch (e) { console.warn('Gruppi:', e.message || e) }
+}
+
 function resetInserimentoForm() {
   var form = el('form-inserimento')
   if (form) form.reset()
@@ -4972,8 +5022,12 @@ let rubricaSuggest  = { prefix: null, list: [], hi: -1 }   // stato del menu a t
 // ── Caricamento dati di base ─────────────────────────────────────────────────
 
 // I 9 gruppi di costo/ricavo. Tabella condivisa, si carica una volta sola.
-async function loadGruppi() {
-  if (gruppiCache) return gruppiCache
+async function loadGruppi(force) {
+  // La guardia controlla anche che ci sia DENTRO qualcosa: un array vuoto e'
+  // «vero» in JavaScript, e prima bastava un tentativo fallito — di solito
+  // prima del login, quando la RLS blocca tutto — per lasciare i menu vuoti
+  // per il resto della sessione, senza un errore da nessuna parte.
+  if (cacheOk('gruppi') && !force) return gruppiCache || []
   try {
     const { data, error } = await sb
       .from('tm_conta_gruppi')
@@ -4981,16 +5035,21 @@ async function loadGruppi() {
       .order('ordine')
     if (error) throw error
     gruppiCache = data || []
+    segnaCacheOk('gruppi')
   } catch (e) {
-    gruppiCache = []
+    // Non si segna come riuscita: il prossimo tentativo riprova.
+    gruppiCache = gruppiCache || []
     console.warn('Gruppi non caricati:', e.message || e)
   }
-  return gruppiCache
+  return gruppiCache || []
 }
 
 // Opzioni per un menu «gruppo». La voce vuota è esplicita: «nessun gruppo» è
 // una scelta legittima, non un campo dimenticato.
 function buildGruppoOptions(selected) {
+  // Protetto alla fonte, non solo in riempiSelectGruppi: chiunque la chiami
+  // deve ottenere un menu che dice la verita', non uno muto.
+  if (!gruppiCache || !gruppiCache.length) return opzioneGruppiMancanti()
   var out = '<option value="">— nessun gruppo —</option>'
   ;(gruppiCache || []).forEach(function (g) {
     out += '<option value="' + esc(g.codice) + '"' +
@@ -5000,14 +5059,29 @@ function buildGruppoOptions(selected) {
   return out
 }
 
+// Se i gruppi non ci sono, il menu lo DICE. Prima restava con la sola voce
+// «— nessun gruppo —»: indistinguibile da un elenco che non si e' caricato,
+// e chi lo guardava non aveva modo di capire che era un guasto.
+function opzioneGruppiMancanti() {
+  return '<option value="">⚠️ Gruppi non caricati — ricarica la pagina</option>'
+}
+
 async function riempiSelectGruppi(id, selected) {
-  await loadGruppi()
   var sel = el(id)
-  if (sel) sel.innerHTML = buildGruppoOptions(selected || '')
+  if (!sel) return                       // l'elemento non c'e' ancora: niente da fare
+  // Si aspettano i gruppi invece di uscire in silenzio.
+  var g = await loadGruppi()
+  if (!g || !g.length) {
+    sel.innerHTML = opzioneGruppiMancanti()
+    return
+  }
+  sel.innerHTML = buildGruppoOptions(selected || '')
 }
 
 async function loadContatti(force) {
-  if (contattiCache && !force) return contattiCache
+  if (cacheOk('contatti') && !force) return contattiCache || []
+  // Senza sessione non si legge niente, ma non e' una lettura riuscita:
+  // segnarla tale bloccherebbe ogni tentativo dopo il login.
   if (!currentAziendaId) { contattiCache = []; return contattiCache }
   const { data, error } = await sb
     .from('tm_contatti')
@@ -5018,6 +5092,7 @@ async function loadContatti(force) {
     .order('ragione_sociale', { nullsFirst: false })
   if (error) throw error
   contattiCache = data || []
+  segnaCacheOk('contatti')
   return contattiCache
 }
 
@@ -5652,7 +5727,9 @@ function periodoCruscotto() { return { da: getVal('cru-da'), a: getVal('cru-a') 
 // ── Dati ─────────────────────────────────────────────────────────────────────
 
 async function loadFlussi(force) {
-  if (flussiCache && !force) return flussiCache
+  if (cacheOk('flussi') && !force) return flussiCache || []
+  // Senza sessione non si legge niente, ma non e' una lettura riuscita:
+  // segnarla tale bloccherebbe ogni tentativo dopo il login.
   if (!currentAziendaId) { flussiCache = []; return flussiCache }
   const { data, error } = await sb
     .from('v_conta_flussi')
@@ -5663,11 +5740,12 @@ async function loadFlussi(force) {
     .eq('azienda_id', currentAziendaId)
   if (error) throw error
   flussiCache = data || []
+  segnaCacheOk('flussi')
   return flussiCache
 }
 
 async function loadIvaPeriodi(force) {
-  if (ivaPeriodiCache && !force) return ivaPeriodiCache
+  if (cacheOk('ivaPeriodi') && !force) return ivaPeriodiCache || []
   try {
     const { data, error } = await sb
       .from('tm_conta_iva_periodi')
@@ -5676,8 +5754,9 @@ async function loadIvaPeriodi(force) {
       .order('valido_da')
     if (error) throw error
     ivaPeriodiCache = data || []
+    segnaCacheOk('ivaPeriodi')
   } catch (e) {
-    ivaPeriodiCache = []
+    ivaPeriodiCache = ivaPeriodiCache || []   // non riuscita: il prossimo tentativo riprova
     console.warn('Periodi IVA non letti:', e.message || e)
   }
   return ivaPeriodiCache
@@ -6104,6 +6183,8 @@ async function aggiornaGruppoDaConto(forzaRiallineo) {
 // Il campo resta visibile anche quando e' vuoto: «Non assegnato» e' scritto,
 // non lasciato indovinare da un menu vuoto.
 function buildGruppoOptionsCls(selected) {
+  // Stessa regola del menu principale: un elenco vuoto si dichiara.
+  if (!gruppiCache || !gruppiCache.length) return opzioneGruppiMancanti()
   var out = '<option value=""' + (!selected ? ' selected' : '') + '>— Non assegnato —</option>'
   ;(gruppiCache || []).forEach(function (g) {
     out += '<option value="' + esc(g.codice) + '"' + (g.codice === selected ? ' selected' : '') + '>' +
@@ -7089,45 +7170,48 @@ function costoOrarioAggiornatoIl() { return impostazione('costo_orario_aggiornat
 // ── Letture (tutte in sola lettura) ─────────────────────────────────────────
 
 async function loadSpeseCantiere(force) {
-  if (speseCantiereCache && !force) return speseCantiereCache
+  if (cacheOk('speseCantiere') && !force) return speseCantiereCache || []
   try {
     const { data, error } = await sb.from('spese')
       .select('id, cantiere_id, data, descrizione, importo, valuta, note')
       .limit(2000)
     if (error) throw error
     speseCantiereCache = data || []
+    segnaCacheOk('speseCantiere')
   } catch (e) {
-    speseCantiereCache = []
+    speseCantiereCache = speseCantiereCache || []   // non riuscita: il prossimo tentativo riprova
     console.warn('Spese di cantiere non lette:', e.message || e)
   }
   return speseCantiereCache
 }
 
 async function loadRegiaCantiere(force) {
-  if (regiaCantiereCache && !force) return regiaCantiereCache
+  if (cacheOk('regiaCantiere') && !force) return regiaCantiereCache || []
   try {
     const { data, error } = await sb.from('regia')
       .select('id, cantiere_id, data, descrizione, quantita, um, prezzo_unitario, fatturato')
       .limit(2000)
     if (error) throw error
     regiaCantiereCache = data || []
+    segnaCacheOk('regiaCantiere')
   } catch (e) {
-    regiaCantiereCache = []
+    regiaCantiereCache = regiaCantiereCache || []   // non riuscita: il prossimo tentativo riprova
     console.warn('Regia non letta:', e.message || e)
   }
   return regiaCantiereCache
 }
 
 async function loadGiornate(force) {
-  if (giornateCache && !force) return giornateCache
+  if (cacheOk('giornate') && !force) return giornateCache || []
   try {
     const { data, error } = await sb.from('giornate')
       .select('id, cantiere_id, data, ore_totali, note')
       .limit(5000)
     if (error) throw error
     giornateCache = data || []
+    segnaCacheOk('giornate')
   } catch (e) {
-    giornateCache = []
+    giornateCache = giornateCache || []   // non riuscita: il prossimo tentativo riprova
     console.warn('Giornate non lette:', e.message || e)
   }
   return giornateCache
@@ -8230,7 +8314,9 @@ let docPagamentoCorrente = null   // {tabella, id, importo, verso, nome} nella m
 // ── Letture ─────────────────────────────────────────────────────────────────
 
 async function loadPagamenti(force) {
-  if (pagamentiCache && !force) return pagamentiCache
+  if (cacheOk('pagamenti') && !force) return pagamentiCache || []
+  // Senza sessione non si legge niente, ma non e' una lettura riuscita:
+  // segnarla tale bloccherebbe ogni tentativo dopo il login.
   if (!currentAziendaId) { pagamentiCache = []; return pagamentiCache }
   try {
     const { data, error } = await sb.from('tm_conta_pagamenti')
@@ -8239,15 +8325,18 @@ async function loadPagamenti(force) {
       .order('data')
     if (error) throw error
     pagamentiCache = data || []
+    segnaCacheOk('pagamenti')
   } catch (e) {
-    pagamentiCache = []
+    pagamentiCache = pagamentiCache || []   // non riuscita: il prossimo tentativo riprova
     console.warn('Pagamenti non letti:', e.message || e)
   }
   return pagamentiCache
 }
 
 async function loadRate(force) {
-  if (rateCache && !force) return rateCache
+  if (cacheOk('rate') && !force) return rateCache || []
+  // Senza sessione non si legge niente, ma non e' una lettura riuscita:
+  // segnarla tale bloccherebbe ogni tentativo dopo il login.
   if (!currentAziendaId) { rateCache = []; return rateCache }
   try {
     const { data, error } = await sb.from('tm_conta_rate')
@@ -8256,8 +8345,9 @@ async function loadRate(force) {
       .order('numero_rata')
     if (error) throw error
     rateCache = data || []
+    segnaCacheOk('rate')
   } catch (e) {
-    rateCache = []
+    rateCache = rateCache || []   // non riuscita: il prossimo tentativo riprova
     console.warn('Rate non lette:', e.message || e)
   }
   return rateCache
@@ -9041,7 +9131,7 @@ function applicaStato(stato) {
 function caricaPagina(pageId) {
   try {
     if (pageId === 'movimenti')   { loadDaClassificare() }
-    if (pageId === 'inserimento') { loadRecentiInseriti() }
+    if (pageId === 'inserimento') { initInserimentoPage() }
     if (pageId === 'export')      { initExportPage() }
     if (pageId === 'fatture')     { initFatturePage() }
     if (pageId === 'acquisti')    { initAcquistiPage() }
@@ -9382,7 +9472,6 @@ function etichettaTipoAllegato(tipo) {
 // Si caricano tutti gli allegati dell'azienda in un colpo: sono poche righe, e
 // cosi' gli elenchi possono scrivere «📎 3» senza una query per riga.
 let allegatiCache = []
-let allegatiCaricati = false
 
 // Il file scelto nel form diventa un allegato del documento appena salvato.
 // Restituisce null se e' andato tutto bene, o il motivo del fallimento: il
@@ -9419,7 +9508,9 @@ async function creaAllegatoDaForm(file, tabella, idDoc) {
 }
 
 async function loadAllegati(force) {
-  if (allegatiCaricati && !force) return allegatiCache
+  if (cacheOk('allegati') && !force) return allegatiCache || []
+  // Senza sessione non si legge niente, ma non e' una lettura riuscita:
+  // segnarla tale bloccherebbe ogni tentativo dopo il login.
   if (!currentAziendaId) { allegatiCache = []; return allegatiCache }
   const { data, error } = await sb.from('tm_conta_allegati')
     .select('id, tabella_origine, id_origine, tipo, path, nome_file, dimensione, created_at')
@@ -9427,11 +9518,11 @@ async function loadAllegati(force) {
     .order('created_at', { ascending: true })
   if (error) throw error
   allegatiCache = data || []
-  allegatiCaricati = true
+  segnaCacheOk('allegati')
   return allegatiCache
 }
 
-function invalidaCacheAllegati() { allegatiCaricati = false }
+function invalidaCacheAllegati() { scadeCache('allegati') }
 
 function allegatiDi(tabella, id) {
   if (!id) return []
@@ -9792,7 +9883,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '31'
+var VERSIONE = '33'
 
 function controllaVersionePagina() {
   try {
@@ -9838,7 +9929,7 @@ document.addEventListener('DOMContentLoaded', function () {
       var pageId = btn.dataset.page
       showPage(pageId)
       if (pageId === 'movimenti')   { loadDaClassificare() }
-      if (pageId === 'inserimento') { loadRecentiInseriti() }
+      if (pageId === 'inserimento') { initInserimentoPage() }
       if (pageId === 'export')      { initExportPage() }
       if (pageId === 'fatture')     { initFatturePage() }
       if (pageId === 'acquisti')    { initAcquistiPage() }
