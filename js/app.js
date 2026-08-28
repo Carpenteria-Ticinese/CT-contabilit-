@@ -3486,11 +3486,28 @@ function renderAcquistoDetail(a) {
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Pagamento</div>' +
     riga('Stato', statoAcquistoBadge(a.stato_pagamento)) +
+    // Data pagamento resta: la scrive il trigger dai pagamenti, e' il dato vero.
     (pagato || a.data_pagamento ? riga('Data pagamento', a.data_pagamento ? esc(fmtDate(a.data_pagamento)) : '—') : '') +
-    (pagato || a.metodo_pagamento ? riga('Metodo', esc(a.metodo_pagamento || '—')) : '') +
-    (a.riferimento_pagamento ? riga('Riferimento', esc(a.riferimento_pagamento)) : '') +
+    // Metodo e Riferimento NON stanno piu' qui: dalla FASE 8 ogni versamento ha
+    // il suo, nel riquadro Pagamenti. Mostrarne uno solo accanto allo stato
+    // dava due risposte alla stessa domanda nella stessa schermata. Le colonne
+    // vecchie restano leggibili in fondo, dichiarate per quello che sono.
     (a.note ? '<div class="ro-sep"></div><div class="ro-section">Note</div><div class="ro-lbl"></div><div class="ro-val" style="font-weight:400;white-space:pre-line">' + esc(a.note) + '</div>' : '') +
     '</div>'
+
+  // I valori delle colonne storiche, se ci sono: non si nascondono, si
+  // separano e si datano. Su una fattura nuova questo blocco non compare.
+  if (a.metodo_pagamento || a.riferimento_pagamento) {
+    body += '<div class="ro-grid" style="margin-top:16px">' +
+      '<div class="ro-section">Dati storici (prima di agosto 2026)</div>' +
+      riga('Metodo', esc(a.metodo_pagamento || '—')) +
+      riga('Riferimento', esc(a.riferimento_pagamento || '—')) +
+      '<div class="ro-lbl"></div><div class="ro-val" style="font-weight:400;color:var(--text3)">' +
+        'ℹ️ Scritti prima che i pagamenti avessero una riga ciascuno. ' +
+        'I metodi in uso stanno nel riquadro Pagamenti.' +
+      '</div>' +
+    '</div>'
+  }
 
   // Allegato
   if (a.doc_path) {
