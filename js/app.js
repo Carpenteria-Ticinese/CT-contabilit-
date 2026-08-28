@@ -211,7 +211,11 @@ function showPage(pageId) {
   if (page) page.classList.add('active')
   const navBtn = document.querySelector('.nav-item[data-page="' + pageId + '"]')
   if (navBtn) navBtn.classList.add('active')
+  var cambiata = (currentPage !== pageId)
   currentPage = pageId
+  // La schermata entra nella cronologia: cosi' il tasto Indietro torna qui
+  // invece di uscire dal programma. Durante un «indietro» non si ripusha.
+  if (cambiata) spingiStato(pageId, vistaCorrente[pageId], false)
 }
 
 // ─── Stato auth nella sidebar ─────────────────────────────────────────────────
@@ -1295,6 +1299,17 @@ async function saveClassificazione() {
     closeClassifyPanel()
     if (currentPage === 'movimenti') await loadDaClassificare()
     await refreshDaClassificareCount()
+    // Se si stava riclassificando da una scheda, il riquadro si rifa' subito:
+    // altrimenti mostrerebbe ancora il conto vecchio.
+    var t0 = classifyTargets && classifyTargets[0]
+    if (t0) {
+      if (t0.origine_tipo === 'fattura' && el('fatture-classificazione'))
+        await aggiornaBoxClassificazione('tm_conta_fatture', t0.origine_id, 'fatture-classificazione')
+      if (t0.origine_tipo === 'acquisto' && el('acquisti-classificazione'))
+        await aggiornaBoxClassificazione('tm_conta_fatture_acquisto', t0.origine_id, 'acquisti-classificazione')
+      if (t0.origine_tipo === 'proprio' && currentPage === 'inserimento')
+        await loadRecentiInseriti()
+    }
   } catch (e) {
     showClsBanner('err', 'Salvataggio: ' + e.message)
   } finally {
@@ -2316,6 +2331,7 @@ async function unlockPeriod() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function showFattureView(which) {
+  registraVista('fatture', which)
   var views = ['list', 'edit', 'detail']
   for (var i = 0; i < views.length; i++) {
     var v = el('fatture-' + views[i] + '-view')
@@ -3164,6 +3180,10 @@ async function viewFattura(id) {
       html('fatture-pagamenti', f.stato === 'bozza' ? ''
         : boxPagamentiHtml('tm_conta_fatture', f.id, f.totale, 'entrata', f.cliente_nome))
     } catch (ePag) { html('fatture-pagamenti', '') }
+    // Il riquadro della classificazione: c'e' solo sui documenti veri, non
+    // sulle bozze, che non sono ancora niente da classificare.
+    if (f.stato === 'bozza') html('fatture-classificazione', '')
+    else await aggiornaBoxClassificazione('tm_conta_fatture', f.id, 'fatture-classificazione')
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
@@ -3402,6 +3422,7 @@ function confirmEmitNow() {
 // Registratore come origine_tipo='acquisto' (lato costo).
 // ══════════════════════════════════════════════════════════════════════════════
 function showAcquistiView(which) {
+  registraVista('acquisti', which)
   var views = ['list', 'detail', 'edit']
   for (var i = 0; i < views.length; i++) {
     var v = el('acquisti-' + views[i] + '-view')
@@ -3472,7 +3493,8 @@ function renderAcquistoDetail(a) {
   loadPagamenti().then(function () { return loadRate() }).then(function () {
     html('acquisti-pagamenti',
       boxPagamentiHtml('tm_conta_fatture_acquisto', a.id, a.importo, 'uscita', a.fornitore))
-  }).catch(function () { html('acquisti-pagamenti', '') })
+    return aggiornaBoxClassificazione('tm_conta_fatture_acquisto', a.id, 'acquisti-classificazione')
+  }).catch(function () { html('acquisti-pagamenti', ''); html('acquisti-classificazione', '') })
 
   // Azioni: Modifica sempre consentita sugli acquisti
   html('acquisti-detail-actions',
@@ -4567,26 +4589,38 @@ async function loadRecentiInseriti() {
       var ids = data.map(function (m) { return m.id })
       const { data: cls, error: clsErr } = await sb
         .from('tm_conta_classificazioni')
-        .select('origine_id, stato')
+        .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, cantiere_id, note, stato')
         .eq('azienda_id', currentAziendaId)
         .eq('origine_tipo', 'proprio')
         .in('origine_id', ids)
       if (!clsErr && cls) {
         for (var ci = 0; ci < cls.length; ci++) {
           statoById[cls[ci].origine_id] = cls[ci].stato
-          var key = 'proprio:' + cls[ci].origine_id
-          if (!classByKey[key]) classByKey[key] = {}
-          classByKey[key].stato = cls[ci].stato
+          classByKey['proprio:' + cls[ci].origine_id] = cls[ci]
         }
       }
+      // I conti servono per scrivere il nome accanto al numero.
+      await ensureContiIva()
     } catch (_) { /* non bloccante */ }
 
     var rows = data.map(function (m, i) {
       var importoStr = fmtImporto(m.importo, m.valuta)
       var bloccato = statoById[m.id] === 'bloccato'
+      // I movimenti propri non hanno una scheda a se': l'elenco e' il loro
+      // dettaglio, quindi la classificazione si mostra e si corregge da qui.
+      var cls = classByKey['proprio:' + m.id]
+      var classTxt = cls && cls.conto_id
+        ? '🏷 ' + esc(contoLabel(cls.conto_id))
+        : '<span class="dim">🏷 Non ancora classificato</span>'
+      var classRiga = '<div class="class-riga-compatta">' + classTxt + '</div>'
+
       var azioni = allegatoBtn(m.doc_path, 'inserimento-banner') + (bloccato
         ? '<span class="lock-tag" title="Periodo consegnato — sola lettura">🔒 Consegnato</span>'
-        : '<button class="icon-btn" title="Modifica" onclick="editRecente(' + i + ')">✏️ Modifica</button>' +
+        : '<button class="icon-btn" title="' +
+            (cls && cls.conto_id ? 'Cambia conto, gruppo, cantiere o IVA' : 'Assegna conto e IVA') + '" ' +
+            'onclick="riclassificaDocumento(\'tm_conta_movimenti_propri\', \'' + esc(m.id) + '\')">' +
+            (cls && cls.conto_id ? '🏷 Riclassifica' : '🏷 Classifica') + '</button>' +
+          '<button class="icon-btn" title="Modifica" onclick="editRecente(' + i + ')">✏️ Modifica</button>' +
           '<button class="icon-btn danger" title="Elimina" onclick="deleteRecente(' + i + ')">🗑️ Elimina</button>')
       return (
         '<div class="recent-item">' +
@@ -4597,6 +4631,7 @@ async function loadRecentiInseriti() {
           '<div class="recent-desc">' + esc(m.descrizione) + '</div>' +
           (m.ente_fornitore ? '<div class="dim" style="font-size:11px">' + esc(m.ente_fornitore) + '</div>' : '') +
           '<div class="recent-amount">' + importoStr + '</div>' +
+          classRiga +
           '<div class="row-actions" style="margin-top:6px">' + azioni + '</div>' +
         '</div>'
       )
@@ -4982,6 +5017,7 @@ function showRubricaBanner(tipo, msg) {
 }
 
 function mostraRubricaVista(quale) {
+  registraVista('rubrica', quale)
   var lista  = el('rubrica-lista-view')
   var scheda = el('rubrica-scheda-view')
   if (lista)  lista.style.display  = (quale === 'lista')  ? 'block' : 'none'
@@ -7208,6 +7244,7 @@ function ordinaCantieriPer(campo) {
 }
 
 function tornaElencoCantieri() {
+  registraVista('cantieri', 'elenco')
   cantiereApertoId = null
   var e = el('cantieri-elenco-view'); if (e) e.style.display = 'block'
   var s = el('cantieri-scheda-view'); if (s) s.style.display = 'none'
@@ -7305,6 +7342,7 @@ function renderElencoCantieri() {
 
 function apriCantiere(id) {
   if (!id) return
+  registraVista('cantieri', 'scheda')
   cantiereApertoId = id
   var e = el('cantieri-elenco-view'); if (e) e.style.display = 'none'
   var s = el('cantieri-scheda-view'); if (s) s.style.display = 'block'
@@ -8720,6 +8758,332 @@ function installaGestioneFinestre() {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+// LA CRONOLOGIA — il tasto Indietro torna alla schermata precedente
+//
+// Prima usciva dal programma: la navigazione interna non lasciava traccia nella
+// cronologia del browser, quindi «Indietro» riportava alla pagina di prima —
+// cioe' fuori. Su un telefono, dove Indietro e' il gesto piu' usato, era un modo
+// sicuro per perdere quello che si stava facendo.
+//
+// Si usa l'indirizzo con il cancelletto (#situazione, #fatture/dettaglio):
+// non ricarica niente, funziona anche su GitHub Pages che serve il sito da una
+// sottocartella, e rende i collegamenti diretti condivisibili.
+//
+// Livelli: ogni sezione puo' avere un sottolivello (elenco -> dettaglio ->
+// modifica). Indietro ne risale UNO alla volta, non salta all'inizio.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var navInCorso = false      // true mentre si applica un «indietro»: non si ripusha
+var vistaCorrente = {}      // pagina -> sottolivello attuale, es. {fatture: 'detail'}
+
+// Le sezioni che hanno sottolivelli, con la funzione che li applica.
+// L'ordine conta: e' quello in cui «Indietro» li risale.
+var LIVELLI = {
+  fatture:   { livelli: ['list', 'detail', 'edit'],   applica: 'showFattureView' },
+  acquisti:  { livelli: ['list', 'detail', 'edit'],   applica: 'showAcquistiView' },
+  rubrica:   { livelli: ['lista', 'scheda'],          applica: 'mostraRubricaVista' },
+  cantieri:  { livelli: ['elenco', 'scheda'],         applica: '_vistaCantieri' }
+}
+
+// I cantieri non hanno una funzione unica: si passa da due funzioni diverse.
+function _vistaCantieri(quale) {
+  if (quale === 'scheda' && cantiereApertoId) apriCantiere(cantiereApertoId)
+  else tornaElencoCantieri()
+}
+
+// L'indirizzo che descrive dove siamo: «#fatture/detail».
+function indirizzoDi(pagina, vista) {
+  if (!pagina) return '#'
+  return '#' + pagina + (vista && vista !== 'list' && vista !== 'lista' && vista !== 'elenco'
+                         ? '/' + vista : '')
+}
+
+// Mette la posizione attuale nella cronologia. `sostituisci` per il primo
+// caricamento, dove non si deve creare una voce in piu'.
+function spingiStato(pagina, vista, sostituisci) {
+  if (navInCorso) return
+  var stato = { p: pagina, v: vista || null }
+  var url = indirizzoDi(pagina, vista)
+  try {
+    if (sostituisci) history.replaceState(stato, '', url)
+    else history.pushState(stato, '', url)
+  } catch (e) { /* se la cronologia non e' disponibile si naviga lo stesso */ }
+}
+
+// Applica uno stato SENZA rimetterlo nella cronologia.
+function applicaStato(stato) {
+  if (!stato || !stato.p) return
+  navInCorso = true
+  try {
+    if (currentPage !== stato.p) {
+      showPage(stato.p)
+      caricaPagina(stato.p)
+    }
+    var conf = LIVELLI[stato.p]
+    if (conf) {
+      var fn = window[conf.applica]
+      if (typeof fn === 'function') fn(stato.v || conf.livelli[0])
+      vistaCorrente[stato.p] = stato.v || conf.livelli[0]
+    }
+  } finally {
+    navInCorso = false
+  }
+}
+
+// Il caricamento dei dati di una pagina, uguale a quello del menu: cosi'
+// arrivando da un collegamento diretto la schermata non resta vuota.
+function caricaPagina(pageId) {
+  try {
+    if (pageId === 'movimenti')   { loadDaClassificare() }
+    if (pageId === 'inserimento') { loadRecentiInseriti() }
+    if (pageId === 'export')      { initExportPage() }
+    if (pageId === 'fatture')     { initFatturePage() }
+    if (pageId === 'acquisti')    { initAcquistiPage() }
+    if (pageId === 'rubrica')     { initRubricaPage() }
+    if (pageId === 'cruscotto')   { initCruscottoPage() }
+    if (pageId === 'scadenze')    { initScadenzePage() }
+    if (pageId === 'cantieri')    { initCantieriPage() }
+    if (pageId === 'impostazioni'){ initImpostazioniPage() }
+  } catch (e) { console.warn('Caricamento pagina ' + pageId + ':', e.message || e) }
+}
+
+// Da chiamare quando cambia il sottolivello dentro una sezione.
+function registraVista(pagina, vista) {
+  if (navInCorso) return
+  if (vistaCorrente[pagina] === vista) return     // niente di nuovo da ricordare
+  vistaCorrente[pagina] = vista
+  spingiStato(pagina, vista, false)
+}
+
+// ── Il tasto Indietro ───────────────────────────────────────────────────────
+function installaCronologia() {
+  window.addEventListener('popstate', function (ev) {
+    // 1. Se c'e' una finestra aperta, Indietro chiude PRIMA quella.
+    //    Con la stessa domanda di Esc, se ci sono dati non salvati.
+    var idModale = (typeof modaleAperta === 'function') ? modaleAperta() : null
+    if (idModale) {
+      var eraAperta = true
+      chiudiModaleConConferma(idModale)
+      var ov = el(idModale)
+      var ancoraAperta = ov && ov.style.display !== 'none' && ov.style.display !== ''
+      // In tutti e due i casi — chiusa, oppure lasciata aperta perche' l'utente
+      // ha risposto «Annulla» — la posizione nella cronologia va rimessa com'era:
+      // il tasto Indietro ha consumato una voce che non doveva consumare.
+      spingiStato(currentPage, vistaCorrente[currentPage], false)
+      return
+    }
+
+    // 2. Nessuna finestra aperta: si torna dove dice la cronologia.
+    var stato = ev.state
+    if (!stato) {
+      // Voce senza stato (il primo caricamento): si legge l'indirizzo.
+      stato = statoDaIndirizzo()
+    }
+    if (stato && stato.p) applicaStato(stato)
+    else {
+      // Si e' risaliti oltre l'inizio: si torna alla schermata di partenza.
+      applicaStato({ p: currentUser ? 'setup' : 'login', v: null })
+    }
+  })
+}
+
+// Legge «#fatture/detail» e ne fa uno stato.
+function statoDaIndirizzo() {
+  var h = String(window.location.hash || '').replace(/^#/, '')
+  if (!h) return null
+  var pezzi = h.split('/')
+  var pagina = pezzi[0]
+  if (!el('page-' + pagina)) return null      // indirizzo di una pagina che non c'e'
+  return { p: pagina, v: pezzi[1] || null }
+}
+
+// All'avvio: se l'indirizzo ha un cancelletto, si apre quella schermata.
+// Serve ai collegamenti diretti e al ricaricamento della pagina.
+function apriDaIndirizzo() {
+  var stato = statoDaIndirizzo()
+  if (!stato) return false
+  // Le pagine riservate si aprono solo a utente autenticato: senza, si finisce
+  // sul login e l'indirizzo verrebbe solo a promettere qualcosa che non c'e'.
+  var btn = document.querySelector('.nav-item[data-page="' + stato.p + '"]')
+  if (btn && btn.classList.contains('auth-only') && !currentUser) return false
+  applicaStato(stato)
+  spingiStato(stato.p, stato.v, true)
+  return true
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LA CLASSIFICAZIONE NELLA SCHEDA DEL DOCUMENTO
+//
+// Prima, una volta classificato un documento, non c'era piu' modo di cambiargli
+// il conto: «Da classificare» era a zero e la scheda non offriva niente. Per
+// correggere un conto sbagliato bisognava aspettare che il documento tornasse
+// nell'elenco, cosa che non succedeva mai.
+//
+// Adesso ogni scheda mostra come e' classificato il documento e permette di
+// rifarlo, riusando la stessa modale di «Da classificare»: una sola finestra,
+// una sola logica di salvataggio, un solo posto dove l'audit registra tutto.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// La classificazione di un documento, letta dalla mappa gia' caricata.
+function classificazioneDi(origineTipo, origineId) {
+  return (classByKey && classByKey[origineTipo + ':' + origineId]) || null
+}
+
+// Ricostruisce il "movimento" nella forma che la modale si aspetta.
+// Le tre schede hanno campi con nomi diversi: qui si normalizzano una volta.
+function movimentoPerClassificare(tabella, doc) {
+  if (tabella === 'tm_conta_fatture') {
+    return {
+      origine_tipo: 'fattura', origine_id: doc.id,
+      data: doc.data_emissione, importo: safeNum(doc.totale),
+      valuta: doc.valuta || 'CHF', cantiere_id: null,
+      descrizione: (doc.tipo === 'nota_credito' ? 'Nota di credito ' : 'Fattura ') +
+                   (doc.numero || '') + ' — ' + (doc.cliente_nome || ''),
+      ente: doc.cliente_nome || null,
+      _sorgente: 'Fatture vendita', _tipo_label: 'Fattura di vendita', _icon: '📤'
+    }
+  }
+  if (tabella === 'tm_conta_fatture_acquisto') {
+    return {
+      origine_tipo: 'acquisto', origine_id: doc.id,
+      data: doc.data, importo: safeNum(doc.importo),
+      valuta: doc.valuta || 'CHF', cantiere_id: null,
+      descrizione: 'Acquisto ' + (doc.numero_fornitore || '') + ' — ' + (doc.fornitore || ''),
+      ente: doc.fornitore || null,
+      _sorgente: 'Fatture acquisto', _tipo_label: 'Fattura acquisto', _icon: '📥'
+    }
+  }
+  return {
+    origine_tipo: 'proprio', origine_id: doc.id,
+    data: doc.data, importo: safeNum(doc.importo),
+    valuta: doc.valuta || 'CHF', cantiere_id: null,
+    descrizione: doc.descrizione || 'Movimento',
+    ente: doc.ente_fornitore || null,
+    _sorgente: 'Inserimento manuale', _tipo_label: 'Movimento proprio', _icon: '➕'
+  }
+}
+
+// Il riquadro. Mostra i quattro dati che contano e il bottone per rifarla.
+function boxClassificazioneHtml(tabella, doc) {
+  var m = movimentoPerClassificare(tabella, doc)
+  var c = classificazioneDi(m.origine_tipo, m.origine_id)
+  var bloccato = isBloccato(m.origine_tipo, m.origine_id)
+
+  var azione
+  if (bloccato) {
+    // Il periodo consegnato non si tocca: si dice perche' e come sbloccarlo,
+    // invece di lasciare un bottone che da' errore quando lo si preme.
+    azione = '<button type="button" class="btn-secondary" disabled ' +
+      'title="Il periodo e stato consegnato al commercialista">🔒 Periodo consegnato</button>' +
+      '<div class="form-hint" style="margin-top:6px">' +
+        'Periodo consegnato — sblocca da «Export &amp; consegna» per modificare.</div>'
+  } else {
+    azione = '<button type="button" class="btn-secondary" ' +
+      'onclick="riclassificaDocumento(\'' + esc(tabella) + '\', \'' + esc(doc.id) + '\')">' +
+      (c ? '🏷 Riclassifica' : '🏷 Classifica') + '</button>'
+  }
+
+  if (!c) {
+    return '<div class="card">' +
+      '<div class="card-title">🏷 Classificazione</div>' +
+      '<div class="cru-vuoto"><strong>Non ancora classificato.</strong><br>' +
+        'Finché non ha un conto, questo documento non entra nei gruppi di spesa ' +
+        'né nell\'export per il commercialista.</div>' +
+      '<div class="form-actions" style="margin-top:12px">' + azione + '</div>' +
+    '</div>'
+  }
+
+  // Il gruppo si deriva dal conto (FASE 3): qui si mostra quello che vedra' il
+  // cruscotto, dicendo da dove viene.
+  var conto = (contiCache || []).filter(function (x) { return x.id === c.conto_id })[0]
+  var gruppoCod = doc.gruppo_codice || (conto ? conto.gruppo_codice : null)
+  var gruppoTesto = gruppoCod
+    ? gruppoCod + ' ' + nomeGruppo(gruppoCod) + (doc.gruppo_codice ? ' (scelto a mano)' : ' (dal conto)')
+    : 'nessuno'
+
+  function riga(etichetta, valore) {
+    return '<div class="class-riga">' +
+      '<span class="class-et">' + esc(etichetta) + '</span>' +
+      '<span class="class-val">' + esc(valore) + '</span></div>'
+  }
+
+  return '<div class="card">' +
+    '<div class="card-title">🏷 Classificazione</div>' +
+    riga('Conto',    contoLabel(c.conto_id)) +
+    riga('Gruppo',   gruppoTesto) +
+    riga('Cantiere', c.cantiere_id ? cantiereLabel(c.cantiere_id) : 'nessuno (spesa aziendale)') +
+    riga('IVA',      ivaLabel(c.codice_iva_id)) +
+    (c.note ? riga('Note', c.note) : '') +
+    '<div class="class-stato">' + statoBadge(c.stato) + '</div>' +
+    '<div class="form-actions" style="margin-top:12px">' + azione + '</div>' +
+  '</div>'
+}
+
+// Apre la modale gia' esistente, precompilata con i valori attuali.
+// Ogni modifica passa da saveClassificazione(), quindi finisce nell'audit come
+// sempre: non c'e' una seconda strada di salvataggio da tenere allineata.
+async function riclassificaDocumento(tabella, idDoc) {
+  try {
+    var doc = trovaDocumento(tabella, idDoc)
+    if (!doc) throw new Error('Documento non trovato: ricarica la pagina.')
+    var m = movimentoPerClassificare(tabella, doc)
+
+    if (isBloccato(m.origine_tipo, m.origine_id)) {
+      window.alert('Periodo consegnato (bloccato).\n\nRiaprilo dalla pagina «Export & consegna» per riclassificare.')
+      return
+    }
+    classifyMode = 'single'
+    await openSingleClassify(m, classificazioneDi(m.origine_tipo, m.origine_id))
+  } catch (e) {
+    window.alert('Impossibile aprire la classificazione: ' + (e.message || e))
+  }
+}
+
+// Il documento, preso dagli elenchi gia' in memoria.
+function trovaDocumento(tabella, idDoc) {
+  if (tabella === 'tm_conta_fatture') {
+    if (currentDetailFattura && currentDetailFattura.id === idDoc) return currentDetailFattura
+    return (fattureList || []).filter(function (x) { return x.id === idDoc })[0]
+  }
+  if (tabella === 'tm_conta_fatture_acquisto') {
+    return (acquistiList || []).filter(function (x) { return x.id === idDoc })[0]
+  }
+  return (recentiList || []).filter(function (x) { return x.id === idDoc })[0]
+}
+
+// Le classificazioni servono anche fuori dalla schermata «Da classificare»:
+// senza questa lettura le schede mostrerebbero «non classificato» per tutto.
+async function assicuraClassificazioni(force) {
+  if (classByKey && Object.keys(classByKey).length && !force) return classByKey
+  if (!currentAziendaId) return classByKey
+  try {
+    const { data, error } = await sb.from('tm_conta_classificazioni')
+      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato')
+      .eq('azienda_id', currentAziendaId)
+    if (error) throw error
+    classByKey = {}
+    ;(data || []).forEach(function (c) { classByKey[c.origine_tipo + ':' + c.origine_id] = c })
+  } catch (e) {
+    console.warn('Classificazioni non lette:', e.message || e)
+  }
+  return classByKey
+}
+
+// Ridisegna il riquadro dopo un salvataggio, senza ricaricare la schermata.
+async function aggiornaBoxClassificazione(tabella, idDoc, idContenitore) {
+  try {
+    await assicuraClassificazioni(true)
+    await ensureContiIva()
+    await loadCantieri()
+    await loadGruppi()
+    var doc = trovaDocumento(tabella, idDoc)
+    if (doc) html(idContenitore, boxClassificazioneHtml(tabella, doc))
+  } catch (e) { html(idContenitore, '') }
+}
+
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -8756,6 +9120,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // Esc e clic-fuori sono gestiti in un posto solo, con la regola per tutte
   // le finestre: vedi installaGestioneFinestre().
   installaGestioneFinestre()
+  installaCronologia()
 
   // Mostra istruzioni SQL (visibili prima dell'auth)
   renderSqlInstructions()
@@ -8794,8 +9159,9 @@ document.addEventListener('DOMContentLoaded', function () {
       currentUser = session.user
       loadAziendaId().then(function () {
         updateSidebarAuth()
-        showPage('setup')
-        runSetupCheck()
+        // Se l'indirizzo chiede una schermata precisa si apre quella, altrimenti
+        // si parte dal setup come sempre.
+        if (!apriDaIndirizzo()) { showPage('setup'); runSetupCheck() }
         refreshDaClassificareCount()
         // FASE 4 — all'avvio: badge, e la finestrella se c'e' qualcosa in sospeso
         refreshScadenzeCount().then(function () { forseMostraFinestraScadenze() })
