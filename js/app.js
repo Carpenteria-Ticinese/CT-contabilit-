@@ -3755,15 +3755,10 @@ function fillAcquistoForm(v) {
   // FASE 8 — sola lettura: il valore arriva dal documento, che a sua volta lo
   // ha ricevuto dal trigger. Qui non si sceglie piu' niente.
   setVal('a-stato',     v.stato_pagamento || 'aperto')
-  var chkGia = el('a-gia-pagata')
-  if (chkGia) {
-    // La spunta ha senso solo su un documento NUOVO: su uno esistente i
-    // pagamenti si aggiungono dalla scheda, uno per uno.
-    var nuovo = !editingAcquistoId
-    var grp = el('a-gia-pagata-group')
-    if (grp) grp.style.display = nuovo ? 'block' : 'none'
-    chkGia.checked = false
-  }
+  // FASE 8b — la scorciatoia «già pagata per intero» è stata tolta: creava il
+  // pagamento con la data del documento senza possibilità di cambiarla. Ogni
+  // pagamento si registra sempre dalla scheda, con «+ Registra pagamento»,
+  // dove data/metodo/riferimento sono editabili.
   // FASE 2: gruppo e contatto collegato
   if (el('a-contatto-id')) el('a-contatto-id').value = v.contatto_id || ''
   riempiSelectGruppi('a-gruppo', v.gruppo_codice || '')
@@ -3926,33 +3921,9 @@ function collectAcquisto() {
   }
 }
 
-// FASE 8 — se alla creazione si spunta «gia' pagata per intero», si registra
-// subito un pagamento con la data del documento. Cosi' non si perde
-// l'inserimento veloce di una fattura arrivata gia' saldata, senza rimettere
-// in piedi la scrittura a mano dello stato.
-async function creaPagamentoSeGiaPagata(idAcquisto, importo, dataDoc) {
-  var chk = el('a-gia-pagata')
-  if (!chk || !chk.checked) return
-  var imp = safeNum(importo)
-  if (imp == null || imp <= 0) return
-  try {
-    const { error } = await sb.from('tm_conta_pagamenti').insert({
-      azienda_id: currentAziendaId,
-      tabella_origine: 'tm_conta_fatture_acquisto',
-      id_origine: idAcquisto,
-      data: dataDoc || oggiISO(),
-      importo: imp,
-      note: 'Registrato alla creazione con «gia pagata per intero».',
-      created_by: currentUser ? currentUser.id : null
-    }).select()
-    if (error) throw error
-    invalidaCachePagamenti()
-  } catch (e) {
-    showFattureBanner('acquisti-edit-banner', 'warn',
-      'Fattura salvata, ma il pagamento non e stato registrato: ' + (e.message || e) +
-      ' — puoi aggiungerlo dalla scheda del documento.')
-  }
-}
+// FASE 8b — la scorciatoia «già pagata per intero» è stata rimossa: il
+// pagamento si registra sempre dalla scheda del documento, con
+// «+ Registra pagamento», dove data/metodo/riferimento restano modificabili.
 
 async function saveAcquisto() {
   html('acquisti-edit-banner', '')
@@ -3985,11 +3956,6 @@ async function saveAcquisto() {
       const { data, error } = await sb.from('tm_conta_fatture_acquisto').insert(payload).select()
       if (error) throw error
       editingAcquistoId = data && data[0] ? data[0].id : null
-      // FASE 8 — se era spuntato «gia pagata per intero», il pagamento si crea
-      // adesso: prima non esisteva ancora l'id del documento a cui collegarlo.
-      if (editingAcquistoId) {
-        await creaPagamentoSeGiaPagata(editingAcquistoId, payload.importo, payload.data)
-      }
     }
     acquistoDocPath = doc_path
     acquistoOriginal = null
