@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=26" />
+  <link rel="stylesheet" href="css/style.css?v=28" />
 </head>
 <body>
 
@@ -1355,11 +1355,45 @@
             </div>
           </div>
 
+          <!-- Se la fattura ha gia' dei pagamenti la spunta sparisce: si
+               gestiscono dalla scheda, dove si vedono tutti. -->
+          <div id="a-pagamenti-esistenti" class="rimando-box" style="display:none"></div>
+
+          <div id="a-gia-pagata-box">
+            <label class="check-riga" for="a-gia-pagata">
+              <input type="checkbox" id="a-gia-pagata" onchange="onAcquistoGiaPagata()" />
+              <span>Gi&agrave; pagata per intero</span>
+            </label>
+            <div class="form-hint">
+              Registra subito un pagamento dell&rsquo;intero importo. Per un acconto o
+              un pagamento in pi&ugrave; volte, salva e usa <strong>+ Registra pagamento</strong>
+              nella scheda.
+            </div>
+            <div class="form-row" id="a-gia-pagata-campi" style="display:none; margin-top:10px">
+              <div class="form-group" style="flex:1">
+                <label for="a-pag-data" class="form-label">Data del pagamento</label>
+                <input type="date" id="a-pag-data" class="form-input" />
+                <div class="form-hint">Proposta: la data della fattura.</div>
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="a-pag-metodo" class="form-label">Metodo</label>
+                <select id="a-pag-metodo" class="form-input">
+                  <option value="">&mdash; non indicato &mdash;</option>
+                  <option value="Bonifico">Bonifico</option>
+                  <option value="Contanti">Contanti</option>
+                  <option value="TWINT">TWINT</option>
+                  <option value="Carta / Bancomat">Carta / Bancomat</option>
+                  <option value="Addebito diretto (LSV)">Addebito diretto (LSV)</option>
+                  <option value="Altro">Altro</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
           <div class="rimando-box" id="a-pagamento-rimando">
-            💳 Per registrare che è stata pagata, salva la fattura e poi usa
-            <strong>+ Registra pagamento</strong> nella scheda del documento:
-            lì scegli tu data, metodo e riferimento.
-            <span class="dim">Una fattura saldata in tre volte ha tre pagamenti, ognuno con i suoi dati.</span>
+            💳 Pagamenti parziali o in pi&ugrave; volte: salva la fattura e usa
+            <strong>+ Registra pagamento</strong> nella scheda, dove scegli data,
+            metodo e riferimento di ogni versamento.
           </div>
           <div class="form-group">
             <label for="a-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
@@ -1887,7 +1921,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=26"></script>
+<script src="js/app.js?v=28"></script>
 
 </body>
 </html>
