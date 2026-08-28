@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=23" />
+  <link rel="stylesheet" href="css/style.css?v=24" />
 </head>
 <body>
 
@@ -1276,6 +1276,8 @@
           <div id="ponte-ai-note" style="margin-top:12px"></div>
         </div>
 
+        <div id="a-classificazione-riga"></div>
+
         <div class="card">
           <div class="card-title">🏢 Fornitore e documento</div>
           <div class="form-group rubrica-pick">
@@ -1359,31 +1361,11 @@
             </div>
           </div>
 
-          <div id="a-pagamento-group" class="pagamento-box">
-            <div class="pagamento-title">💳 Dati del pagamento</div>
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="a-data-pagamento" class="form-label">Data pagamento</label>
-                <input type="date" id="a-data-pagamento" class="form-input" />
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="a-metodo" class="form-label">Metodo di pagamento</label>
-                <select id="a-metodo" class="form-input">
-                  <option value="">— Non indicato —</option>
-                  <option value="Bonifico">Bonifico</option>
-                  <option value="Contanti">Contanti</option>
-                  <option value="TWINT">TWINT</option>
-                  <option value="Carta/Bancomat">Carta/Bancomat</option>
-                  <option value="Addebito diretto (LSV)">Addebito diretto (LSV)</option>
-                  <option value="Altro">Altro</option>
-                </select>
-              </div>
-            </div>
-            <div class="form-group" style="margin-bottom:0">
-              <label for="a-riferimento" class="form-label">Riferimento <span class="dim">(ricevuta, estratto conto…)</span></label>
-              <input type="text" id="a-riferimento" class="form-input" maxlength="120" placeholder="es. ricevuta 12345 / estratto 07-2026" />
-            </div>
-            <div class="form-hint" id="a-pagamento-hint"></div>
+          <div class="rimando-box" id="a-pagamento-rimando">
+            💳 I pagamenti si registrano dalla scheda della fattura,
+            con <strong>+ Registra pagamento</strong>.
+            <span class="dim">Data, metodo e riferimento stanno su ogni singolo pagamento:
+            una fattura saldata in tre volte ha tre metodi.</span>
           </div>
           <div class="form-group">
             <label for="a-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
@@ -1911,7 +1893,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=23"></script>
+<script src="js/app.js?v=24"></script>
 
 </body>
 </html>
