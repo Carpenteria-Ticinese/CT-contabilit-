@@ -3572,7 +3572,7 @@ async function loadAcquistiList() {
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, metodo_pagamento, riferimento_pagamento, gruppo_codice, contatto_id')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -3653,13 +3653,11 @@ function renderAcquistiTable() {
   var qv    = el('acquisti-search') ? el('acquisti-search').value.trim().toLowerCase() : ''
   var clearBtn = el('acquisti-search-clear'); if (clearBtn) clearBtn.style.display = qv ? 'flex' : 'none'
 
-  var metodo = el('acquisti-filtro-metodo') ? el('acquisti-filtro-metodo').value : ''
   // FASE 6A — filtro per cantiere. '__nessuno__' = le spese aziendali, che sono
   // una risposta valida e devono potersi cercare come le altre.
   var cantF = el('acquisti-filtro-cantiere') ? el('acquisti-filtro-cantiere').value : ''
   var list = acquistiList.filter(function (a) {
     if (stato && a.stato_pagamento !== stato) return false
-    if (metodo && a.metodo_pagamento !== metodo) return false
     if (anno && (!a.data || String(a.data).slice(0, 4) !== String(anno))) return false
     if (cantF) {
       var ca = cantiereDiAcquisto(a.id)
@@ -3678,7 +3676,7 @@ function renderAcquistiTable() {
     })
   }
   if (!list.length) {
-    var attivo = qv || stato || anno || metodo
+    var attivo = qv || stato || anno
     html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
       (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
     return
@@ -3689,16 +3687,13 @@ function renderAcquistiTable() {
     var ivaSub = (impo != null || ivaI != null)
       ? '<span class="cell-sub">imp. ' + fmtNum2(impo) + ' · IVA ' + fmtNum2(ivaI) + '</span>'
       : ''
-    // riga secondaria compatta: pagamento (es. "Pagato il 14.07 · Bonifico")
-    var paySub = ''
-    if (a.stato_pagamento === 'pagato') {
-      var parts = []
-      if (a.data_pagamento) parts.push('il ' + fmtDate(a.data_pagamento))
-      if (a.metodo_pagamento) parts.push(a.metodo_pagamento)
-      if (parts.length) paySub = '<span class="cell-sub">' + esc(parts.join(' · ')) + '</span>'
-    } else if (a.metodo_pagamento || a.data_pagamento) {
-      paySub = '<span class="cell-sub">dati pagamento salvati</span>'
-    }
+    // Riga secondaria: la sola data del pagamento, che il trigger scrive dai
+    // pagamenti veri. Il metodo NON si mostra piu' qui: dalla FASE 8 ogni
+    // versamento ha il suo, e mostrarne uno solo accanto allo stato dava due
+    // risposte alla stessa domanda. Sta nel riquadro Pagamenti della scheda.
+    var paySub = (a.stato_pagamento === 'pagato' && a.data_pagamento)
+      ? '<span class="cell-sub">il ' + esc(fmtDate(a.data_pagamento)) + '</span>'
+      : ''
     return '<tr class="row-clickable" onclick="viewAcquisto(\'' + a.id + '\')">' +
       '<td>' + esc(a.fornitore || '') + '</td>' +
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
@@ -9883,7 +9878,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '33'
+var VERSIONE = '34'
 
 function controllaVersionePagina() {
   try {
