@@ -2147,3 +2147,55 @@ tbody tr.row-clickable { cursor: pointer; }
   white-space: nowrap;
 }
 .spia-doppione:hover { filter: brightness(0.95); }
+
+/* == FASE 10 — lettura automatica e «da confermare» ======================= */
+
+/* Il costo stimato, sotto i campi appena compilati */
+.lettura-costo {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg2);
+  border-left: 3px solid var(--accent);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.lettura-costo .dim { margin-left: 6px; font-size: 11.5px; }
+
+/* Lo stato del Worker nelle Impostazioni */
+.lettura-stato { font-size: 13.5px; font-weight: 600; }
+.lettura-stato.ok   { color: var(--ok); }
+.lettura-stato.warn { color: var(--warn); }
+.lettura-stato.dim  { color: var(--text3); font-weight: 500; }
+
+/* La spia «Da confermare» nell'elenco */
+.spia-conferma {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  white-space: nowrap;
+  margin-left: 6px;
+}
+
+/* La riga di una fattura non ancora confermata: si distingue senza gridare */
+.riga-da-confermare > td { background: var(--warn-bg); }
+.riga-da-confermare:hover > td { filter: brightness(0.98); }
+
+/* Il bottone Conferma */
+.icon-btn.conferma {
+  border-color: var(--ok);
+  color: var(--ok);
+  font-weight: 600;
+}
+
+/* Il riquadro nella scheda del documento */
+.avviso-conferma {
+  border-left: 4px solid var(--warn);
+}
+
+/* Il badge nel menu */
+.nav-badge.badge-conferma { background: var(--warn); color: #fff; }
