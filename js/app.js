@@ -2840,7 +2840,10 @@ async function emettiFatturaCorrente() {
   var tot     = recalcFatturaTotals().totale
   var sumRows = [['Tipo', tipoLbl], ['Cliente', cliente || '—'], ['Data', dataVal ? fmtDate(dataVal) : 'oggi (all\'emissione)']]
   if (editorTipo !== 'nota_credito') {
-    sumRows.push(['IBAN', resolveEditorIban() || (aziendaInfo && aziendaInfo.iban) || '— predefinito —'])
+    // FASE 18 — l'emissione e' il punto in cui l'errore diventa definitivo:
+    // l'IBAN si legge per intero, a gruppi di 4.
+    var ibanConf = resolveEditorIban() || (aziendaInfo && aziendaInfo.iban) || ''
+    sumRows.push(['IBAN', ibanConf ? ibanLeggibile(ibanConf) : '— predefinito —'])
   }
   sumRows.push(['Totale', fmtNum2(tot) + ' ' + valuta, true])
   openEmitConfirm(emitSummaryRows(sumRows), doEmitCorrente)
@@ -2870,7 +2873,11 @@ async function emettiFatturaById(id) {
   if (f && f.id === id) {
     var tLbl = f.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura'
     sumRows = [['Tipo', tLbl], ['Cliente', f.cliente_nome || '—'], ['Data', f.data_emissione ? fmtDate(f.data_emissione) : 'oggi (all\'emissione)']]
-    if (f.tipo !== 'nota_credito') sumRows.push(['IBAN', (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '— predefinito —')])
+    // FASE 18 — stessa conferma, stesso IBAN per intero.
+    if (f.tipo !== 'nota_credito') {
+      var ibanConfId = (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
+      sumRows.push(['IBAN', ibanConfId ? ibanLeggibile(ibanConfId) : '— predefinito —'])
+    }
     sumRows.push(['Totale', fmtNum2(safeNum(f.totale)) + ' ' + (f.valuta || 'CHF'), true])
   } else {
     sumRows = [['Documento', 'pronto per l\'emissione']]
@@ -2977,9 +2984,23 @@ async function creaNotaCredito(id) {
 }
 
 // ── Rubrica IBAN per cantiere (Fase 8) ───────────────────────────────────────
+// FASE 18 — questa funzione non ha piu' nessun chiamante: tutti i punti in cui
+// si sceglie o si conferma un IBAN adesso lo mostrano intero (ibanLeggibile).
+// Resta qui, e non e' una svista: se un domani un IBAN andasse mostrato a
+// qualcuno che non e' Umberto, il mascheramento serve gia' pronto.
 function maskIban(iban) {
   var s = String(iban || '').replace(/\s+/g, '')
   return s.length <= 4 ? s : '…' + s.slice(-4)
+}
+
+// FASE 18 — l'IBAN scritto per intero, a gruppi di 4 come si legge sulla
+// fattura. Sono gli IBAN dell'azienda, che finiscono comunque stampati sul
+// documento: nasconderne le cifre non protegge niente e toglie l'unico modo
+// per distinguere due conti che finiscono con le stesse quattro cifre.
+function ibanLeggibile(iban) {
+  var s = String(iban || '').replace(/\s+/g, '').toUpperCase()
+  if (!s) return ''
+  return s.replace(/(.{4})/g, '$1 ').trim()
 }
 
 async function loadIbanRubrica(force) {
@@ -3003,13 +3024,15 @@ async function loadIbanRubrica(force) {
 // ── Editor fattura: selezione IBAN ───────────────────────────────────────────
 function buildEditorIbanOptions(currentIban) {
   var a = aziendaInfo || {}
-  var defMask = a.iban ? ' (' + maskIban(a.iban) + ')' : ' (non impostato)'
+  // FASE 18 — IBAN per intero: qui si SCEGLIE su quale conto farsi pagare, e
+  // due conti che finiscono uguale erano indistinguibili.
+  var defMask = a.iban ? ' (' + ibanLeggibile(a.iban) + ')' : ' (non impostato)'
   var out = '<option value="">Predefinito aziendale' + esc(defMask) + '</option>'
   var attive = (ibanRubrica || []).filter(function (x) { return x.attivo })
   for (var i = 0; i < attive.length; i++) {
     var e = attive[i]
     var sel = (currentIban && e.iban === currentIban) ? ' selected' : ''
-    out += '<option value="' + esc(e.iban) + '"' + sel + '>' + esc(e.etichetta + ' — ' + maskIban(e.iban)) + '</option>'
+    out += '<option value="' + esc(e.iban) + '"' + sel + '>' + esc(e.etichetta + ' — ' + ibanLeggibile(e.iban)) + '</option>'
   }
   out += '<option value="__new__">➕ Nuovo IBAN…</option>'
   return out
@@ -3085,7 +3108,9 @@ async function renderIbanRubrica() {
   box.innerHTML = list.map(function (e) {
     return '<div class="iban-row' + (e.attivo ? '' : ' chiuso') + '">' +
       '<span class="iban-etichetta">' + esc(e.etichetta) + '</span>' +
-      '<span class="iban-mask">' + esc(maskIban(e.iban)) + '</span>' +
+      // FASE 18 — anche qui per intero: e' l'elenco da cui si sceglie quale
+      // conto modificare o chiudere, e sbagliare riga si paga caro.
+      '<span class="iban-mask">' + esc(ibanLeggibile(e.iban)) + '</span>' +
       (e.attivo ? '' : ' ' + badge('warn', 'chiuso')) +
       '<span class="iban-actions">' +
         '<button class="icon-btn" title="Modifica" onclick="editIbanEntry(\'' + e.id + '\')">✏️</button>' +
@@ -5083,6 +5108,7 @@ let contattiCache   = null   // [{...}] tutti i contatti dell'azienda
 let gruppiCache     = null   // [{codice, nome, esempi, ordine}]
 let rubricaTab      = 'cliente'
 let editingContattoId = null
+let contattoLetturaId = null   // FASE 18 — contatto aperto in sola lettura
 let rubricaSuggest  = { prefix: null, list: [], hi: -1 }   // stato del menu a tendina
 
 // FASE 17 — le colonne e_cliente / e_fornitore arrivano con SQL_FASE17.sql.
@@ -5203,6 +5229,22 @@ function contattoSub(c) {
 // per una delle due spunte di doppio uso. Il doppio uso vale solo per clienti e
 // fornitori: e' li' che capita davvero (il fornitore che ogni tanto compra una
 // prestazione). Collaboratori e generici restano a categoria singola.
+// FASE 18 — in quali schede compare un contatto, scritto a parole. Serve nella
+// vista «Tutti», dove categorie diverse stanno una sotto l'altra.
+var RUBRICA_ETICHETTE = {
+  cliente: 'Cliente', fornitore: 'Fornitore',
+  collaboratore: 'Collaboratore', generico: 'Generico'
+}
+
+function contattoSchedeTesto(c) {
+  if (!c) return ''
+  var principale = RUBRICA_ETICHETTE[c.categoria] || 'Generico'
+  var extra = []
+  if (c.categoria !== 'cliente'   && c.e_cliente   === true) extra.push('anche cliente')
+  if (c.categoria !== 'fornitore' && c.e_fornitore === true) extra.push('anche fornitore')
+  return extra.length ? principale + ' · ' + extra.join(' · ') : principale
+}
+
 function contattoInCategoria(c, cat) {
   if (!c) return false
   if (c.categoria === cat) return true
@@ -5241,15 +5283,21 @@ function showRubricaBanner(tipo, msg) {
 
 function mostraRubricaVista(quale) {
   registraVista('rubrica', quale)
-  var lista  = el('rubrica-lista-view')
-  var scheda = el('rubrica-scheda-view')
-  if (lista)  lista.style.display  = (quale === 'lista')  ? 'block' : 'none'
-  if (scheda) scheda.style.display = (quale === 'scheda') ? 'block' : 'none'
+  var lista   = el('rubrica-lista-view')
+  var lettura = el('rubrica-lettura-view')   // FASE 18 — sola lettura
+  var scheda  = el('rubrica-scheda-view')
+  if (lista)   lista.style.display   = (quale === 'lista')   ? 'block' : 'none'
+  if (lettura) lettura.style.display = (quale === 'lettura') ? 'block' : 'none'
+  if (scheda)  scheda.style.display  = (quale === 'scheda')  ? 'block' : 'none'
 }
+
+// FASE 18 — «tutti» è una scheda in più, non una categoria: non esiste nel
+// database, vive solo qui come filtro.
+var RUBRICA_SCHEDE = ['tutti', 'cliente', 'fornitore', 'collaboratore', 'generico']
 
 function setRubricaTab(cat) {
   rubricaTab = cat
-  ;['cliente', 'fornitore', 'collaboratore', 'generico'].forEach(function (c) {
+  RUBRICA_SCHEDE.forEach(function (c) {
     var t = el('tab-' + c)
     if (t) t.setAttribute('aria-selected', c === cat ? 'true' : 'false')
   })
@@ -5269,8 +5317,16 @@ function renderContattiList() {
     if (b) b.textContent = String(n)
   })
 
+  // FASE 18 — «Tutti» conta i contatti DISTINTI, non la somma delle altre
+  // schede: chi ha la spunta del doppio uso sta in due schede, ma è una
+  // persona sola e va contata una volta.
+  var bTutti = el('cnt-tutti')
+  if (bTutti) {
+    bTutti.textContent = String(tutti.filter(function (x) { return x.attivo !== false }).length)
+  }
+
   var list = tutti.filter(function (c) {
-    if (!contattoInCategoria(c, rubricaTab)) return false
+    if (rubricaTab !== 'tutti' && !contattoInCategoria(c, rubricaTab)) return false
     if (!mostraInattivi && c.attivo === false) return false
     return true
   })
@@ -5290,7 +5346,9 @@ function renderContattiList() {
   if (!list.length) {
     var vuotoMsg = q
       ? 'Nessun contatto trovato per «' + esc(q) + '». Prova a cercare un pezzo di parola.'
-      : 'Nessun contatto in questa scheda. Premi «➕ Nuovo contatto» per aggiungerne uno.'
+      : (rubricaTab === 'tutti'
+          ? 'La rubrica è vuota. Premi «➕ Nuovo contatto» per aggiungere il primo.'
+          : 'Nessun contatto in questa scheda. Premi «➕ Nuovo contatto» per aggiungerne uno.')
     html('rubrica-table', '<div class="dim" style="padding:14px 2px">' + vuotoMsg + '</div>')
     return
   }
@@ -5310,7 +5368,8 @@ function renderContattiList() {
                 ' onclick="event.stopPropagation()"' +
                 ' aria-label="Scrivi una mail a ' + esc(nome) + '">✉️ Scrivi mail</a>'
     }
-    azioni += '<button class="azione-rapida" onclick="event.stopPropagation(); apriContatto(\'' + c.id + '\')">✏️ Apri scheda</button>'
+    // FASE 18 — la scheda si apre in lettura: la matita direbbe una cosa falsa.
+    azioni += '<button class="azione-rapida" onclick="event.stopPropagation(); apriContatto(\'' + c.id + '\')">👁️ Apri scheda</button>'
 
     return '<div class="contatto-row' + (c.attivo === false ? ' inattivo' : '') + '"' +
              ' onclick="apriContatto(\'' + c.id + '\')" role="button" tabindex="0"' +
@@ -5318,6 +5377,11 @@ function renderContattiList() {
              '<div class="contatto-main">' +
                '<div class="contatto-nome">' + esc(nome) +
                  (c.attivo === false ? ' ' + badge('warn', '📦 Archiviato') : '') + '</div>' +
+               // FASE 18 — nella scheda «Tutti» clienti e fornitori sono
+               // mescolati: senza dire chi è chi l'elenco non si legge.
+               (rubricaTab === 'tutti'
+                 ? '<div class="contatto-cat">' + esc(contattoSchedeTesto(c)) + '</div>'
+                 : '') +
                '<div class="contatto-sub">' + esc(contattoSub(c) || 'nessun recapito registrato') + '</div>' +
              '</div>' +
              '<div class="contatto-azioni">' + azioni + '</div>' +
@@ -5338,7 +5402,10 @@ async function nuovoContatto(categoriaIniziale) {
   await riempiSelectGruppi('c-gruppo', '')
   var form = el('form-contatto')
   if (form) form.reset()
-  if (el('c-categoria')) el('c-categoria').value = categoriaIniziale || rubricaTab
+  // FASE 18 — «tutti» non è una categoria: dalla scheda «Tutti» si propone
+  // Cliente, che è la voce più frequente, e resta cambiabile dal menu.
+  var catIniziale = categoriaIniziale || (rubricaTab === 'tutti' ? 'cliente' : rubricaTab)
+  if (el('c-categoria')) el('c-categoria').value = catIniziale
   if (el('c-paese'))     el('c-paese').value = 'CH'
   if (el('c-attivo'))    el('c-attivo').checked = true
   if (el('c-anche-cliente'))   el('c-anche-cliente').checked = false
@@ -5352,7 +5419,205 @@ async function nuovoContatto(categoriaIniziale) {
   if (el('c-ragione')) el('c-ragione').focus()
 }
 
+// FASE 18 — aprire un contatto lo MOSTRA soltanto. Prima si entrava dritti nel
+// modulo modificabile, e bastava sfiorare un campo per cambiare un dato senza
+// accorgersene. Per modificare si passa dal bottone «✏️ Modifica».
 async function apriContatto(id) {
+  var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
+  if (!c) { showRubricaBanner('err', 'Contatto non trovato: ricarica la pagina.'); return }
+  contattoLetturaId = id
+  editingContattoId = null            // in lettura non si sta modificando niente
+
+  if (el('contatto-lettura-titolo')) {
+    el('contatto-lettura-titolo').textContent = '👤 ' + contattoNome(c)
+  }
+  html('contatto-lettura-azioni', azioniRapideHtml(c.telefono, c.email, contattoNome(c)))
+  html('contatto-lettura-dati', contattoLetturaHtml(c))
+  html('contatto-lettura-fatture', loadingRow('Caricamento fatture…'))
+  mostraRubricaVista('lettura')
+  // Le fatture arrivano dopo: la scheda si vede subito, senza aspettare la rete.
+  renderFattureDelContatto(id)
+}
+
+// La scheda letta, con gli stessi dati del modulo. Solo i campi valorizzati:
+// una griglia di trattini non dice niente.
+function contattoLetturaHtml(c) {
+  function riga(lbl, val, mono) {
+    if (val === null || val === undefined || val === '') return ''
+    return '<div class="ro-lbl">' + esc(lbl) + '</div>' +
+           '<div class="ro-val' + (mono ? ' mono' : '') + '">' + val + '</div>'
+  }
+  var luogo = [c.cap, c.citta].filter(Boolean).join(' ')
+  var out = '<div class="ro-grid">' +
+    '<div class="ro-section">Chi è</div>' +
+    riga('Categoria', esc(contattoSchedeTesto(c))) +
+    riga('Ragione sociale', esc(c.ragione_sociale || '')) +
+    riga('Nome e cognome', esc([c.nome, c.cognome].filter(Boolean).join(' '))) +
+    (c.attivo === false ? riga('Stato', badge('warn', '📦 Archiviato')) : '') +
+    '<div class="ro-sep"></div>' +
+    '<div class="ro-section">Dove</div>' +
+    riga('Indirizzo', esc(c.indirizzo || '')) +
+    riga('NPA e località', esc(luogo)) +
+    riga('Paese', esc(c.paese || '')) +
+    '<div class="ro-sep"></div>' +
+    '<div class="ro-section">Recapiti</div>' +
+    riga('Telefono', esc(c.telefono || '')) +
+    riga('Email', esc(c.email || '')) +
+    riga('Sito web', esc(c.sito_web || '')) +
+    '<div class="ro-sep"></div>' +
+    '<div class="ro-section">Dati amministrativi</div>' +
+    riga('UID / Partita IVA', esc(c.uid_partita_iva || ''), true) +
+    // L'IBAN del contatto per intero, come gli altri: serve a confrontarlo con
+    // quello scritto su una fattura ricevuta.
+    riga('IBAN', esc(ibanLeggibile(c.iban || '')), true) +
+    riga('Gruppo predefinito', esc(c.gruppo_default || '')) +
+    riga('Giorni di pagamento', c.giorni_pagamento == null ? '' : esc(String(c.giorni_pagamento) + ' giorni')) +
+    riga('Note', c.note ? esc(c.note).replace(/\n/g, '<br>') : '') +
+    '</div>'
+  return out
+}
+
+// Gli stessi bottoni «Chiama / Scrivi mail» dell'elenco, su un contatto letto.
+function azioniRapideHtml(tel, email, nome) {
+  var out = ''
+  if (tel) {
+    out += '<a class="azione-rapida" href="tel:' + esc(String(tel).replace(/\s/g, '')) + '"' +
+           ' aria-label="Chiama ' + esc(nome || '') + '">📞 Chiama ' + esc(tel) + '</a> '
+  }
+  if (email) {
+    out += '<a class="azione-rapida" href="mailto:' + esc(email) + '"' +
+           ' aria-label="Scrivi una mail a ' + esc(nome || '') + '">✉️ Scrivi mail a ' + esc(email) + '</a>'
+  }
+  if (!out) {
+    out = '<div class="dim" style="font-size:12px">Nessun recapito registrato: né telefono né email.</div>'
+  }
+  return out
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 18 / A5 — Le fatture di vendita intestate a un contatto
+// Si leggono da tm_conta_fatture filtrando su contatto_id. Quel collegamento
+// esiste solo dalla FASE 17 in avanti: le fatture emesse prima non ce l'hanno
+// e non compaiono. Lo dice il riquadro stesso, altrimenti sembrano dati persi.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var AVVISO_FATTURE_STORICHE =
+  'ℹ️ Compaiono solo le fatture collegate a questo contatto in rubrica: ' +
+  'quelle emesse prima di questo collegamento non ce l\'hanno e non si vedono qui.'
+
+// Dalla rubrica alla fattura: viewFattura() da sola cambia solo la vista dentro
+// la pagina Fatture, e restando in Rubrica non si vedrebbe niente.
+async function apriFatturaDaRubrica(id) {
+  showPage('fatture')
+  await viewFattura(id)
+}
+
+async function renderFattureDelContatto(contattoId) {
+  var box = 'contatto-lettura-fatture'
+  if (!currentAziendaId) { html(box, ''); return }
+  try {
+    const { data, error } = await sb
+      .from('tm_conta_fatture')
+      .select('id, numero, data_emissione, totale, valuta, stato, stato_pagamento, tipo')
+      .eq('azienda_id', currentAziendaId)
+      .eq('contatto_id', contattoId)
+      .order('data_emissione', { ascending: false, nullsFirst: false })
+    if (error) throw error
+
+    // Il residuo non si ricalcola qui: lo espone gia' v_conta_flussi, che tiene
+    // conto dei pagamenti parziali e del segno delle note di credito. Rifarlo a
+    // mano darebbe un secondo numero, e prima o poi i due divergerebbero.
+    var residuo = null
+    try {
+      var flussi = await loadFlussi()
+      residuo = 0
+      for (var i = 0; i < flussi.length; i++) {
+        var r = flussi[i]
+        if (r.tabella_origine !== 'tm_conta_fatture') continue
+        if (r.contatto_id !== contattoId) continue
+        if (r.stato_pagamento === 'pagato') continue
+        var res = safeNum(r.residuo)
+        if (res == null) res = (safeNum(r.importo_totale) || 0) - (safeNum(r.importo_pagato) || 0)
+        residuo += res
+      }
+      residuo = round2(residuo)
+    } catch (e) { residuo = null }   // il totale è un di più: l'elenco si vede lo stesso
+
+    // La scheda puo' essere gia' cambiata mentre la lettura era in corso.
+    if (contattoLetturaId !== contattoId) return
+    html(box, fattureContattoHtml(data || [], residuo))
+  } catch (e) {
+    if (contattoLetturaId !== contattoId) return
+    html(box,
+      '<div class="card-sub">' +
+        '<div class="card-title">🧾 Fatture di vendita</div>' +
+        '<div class="fase-banner warn" role="alert">' +
+          '<span class="icon" aria-hidden="true">⚠️</span>' +
+          '<div class="msg">Elenco non caricato: ' + esc(e.message || e) + '</div>' +
+        '</div>' +
+      '</div>')
+  }
+}
+
+function fattureContattoHtml(list, residuo) {
+  var testa = '<div class="card-title">🧾 Fatture di vendita</div>'
+
+  if (!list.length) {
+    return '<div class="card-sub">' + testa +
+      '<div class="dim" style="padding:6px 0">' +
+        'Nessuna fattura collegata a questo contatto.' +
+      '</div>' +
+      '<div class="form-hint">' + esc(AVVISO_FATTURE_STORICHE) + '</div>' +
+    '</div>'
+  }
+
+  var valuta = 'CHF'
+  for (var i = 0; i < list.length; i++) if (list[i].valuta) valuta = list[i].valuta
+
+  var righe = list.map(function (f) {
+    var isNC = f.tipo === 'nota_credito'
+    var nome = f.numero ? esc(f.numero) : 'bozza senza numero'
+    var stati = statoFatturaBadge(f.stato) +
+                (f.stato === 'emessa' && !isNC ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '')
+    return '<div class="contatto-fatt-row"' +
+             ' onclick="apriFatturaDaRubrica(\'' + f.id + '\')" role="button" tabindex="0"' +
+             ' onkeydown="if(event.key===\'Enter\'){apriFatturaDaRubrica(\'' + f.id + '\')}">' +
+             '<div class="contatto-fatt-main">' +
+               '<div class="contatto-fatt-num">' +
+                 (isNC ? '↩️ Nota di credito ' : '🧾 Fattura ') + nome +
+               '</div>' +
+               '<div class="contatto-fatt-sub">' +
+                 (f.data_emissione ? esc(fmtDate(f.data_emissione)) : 'senza data') +
+                 ' · ' + stati +
+               '</div>' +
+             '</div>' +
+             '<div class="contatto-fatt-tot' + (isNC ? ' nc' : '') + '">' +
+               (isNC ? '− ' : '') + esc(fmtImporto(f.totale, f.valuta)) +
+             '</div>' +
+           '</div>'
+  }).join('')
+
+  var somma = (residuo == null)
+    ? '<span class="contatto-fatt-somma dim">Totale da incassare non disponibile</span>'
+    : '<span class="contatto-fatt-somma">Ancora da incassare: <strong>' +
+        esc(fmtNum2(residuo) + ' ' + valuta) + '</strong></span>'
+
+  return '<div class="card-sub">' + testa +
+    '<div class="contatto-fatt-testa">' +
+      '<span>' + list.length + (list.length === 1 ? ' documento collegato' : ' documenti collegati') + '</span>' +
+      somma +
+    '</div>' +
+    righe +
+    '<div class="form-hint">' + esc(AVVISO_FATTURE_STORICHE) + '</div>' +
+  '</div>'
+}
+
+function modificaContattoCorrente() {
+  // Restituisce la promessa: chi chiama puo' aspettare che il modulo sia pronto.
+  return contattoLetturaId ? modificaContatto(contattoLetturaId) : Promise.resolve()
+}
+
+async function modificaContatto(id) {
   var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
   if (!c) { showRubricaBanner('err', 'Contatto non trovato: ricarica la pagina.'); return }
   editingContattoId = id
@@ -5403,16 +5668,9 @@ function chiudiSchedaContatto() {
 function renderAzioniRapide() {
   var tel   = getVal('c-telefono')
   var email = getVal('c-email')
-  var out = ''
-  if (tel) {
-    out += '<a class="azione-rapida" href="tel:' + esc(tel.replace(/\s/g, '')) + '">📞 Chiama ' + esc(tel) + '</a> '
-  }
-  if (email) {
-    out += '<a class="azione-rapida" href="mailto:' + esc(email) + '">✉️ Scrivi mail a ' + esc(email) + '</a>'
-  }
-  if (!out) {
-    out = '<div class="dim" style="font-size:12px">Inserisci telefono o email: qui compaiono i pulsanti per chiamare e scrivere.</div>'
-  }
+  var out = (tel || email)
+    ? azioniRapideHtml(tel, email, getVal('c-ragione') || getVal('c-cognome'))
+    : '<div class="dim" style="font-size:12px">Inserisci telefono o email: qui compaiono i pulsanti per chiamare e scrivere.</div>'
   html('contatto-azioni-rapide', out)
 }
 
@@ -5477,6 +5735,117 @@ function raccogliContatto() {
   return payload
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 18 / B3 — Avviso doppione, mai blocco
+// ══════════════════════════════════════════════════════════════════════════════
+
+var contattoForzaNuovo = false   // «Salva comunque»: vale per un solo salvataggio
+
+// Le forme societarie non distinguono due ditte: «Bianchi SA» e «Bianchi Sagl»
+// scritte per la stessa ditta devono somigliarsi. Si tolgono, insieme ad
+// accenti, punteggiatura e spazi doppi.
+var FORME_SOCIETARIE = /\b(sa|sagl|srl|sarl|ag|gmbh|spa|snc|sas)\b/g
+
+function normalizzaNomeContatto(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // accenti
+    // I punti si TOLGONO, non diventano spazio: «S.R.L.» dev'essere «srl», non
+    // tre lettere sciolte che nessuna regola riconosce piu' come forma
+    // societaria. Il resto della punteggiatura separa, e diventa spazio.
+    .replace(/\./g, '')
+    .replace(/[,;:'’"`()\[\]\/\\-]/g, ' ')
+    .replace(FORME_SOCIETARIE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// L'UID si confronta a cifre nude: «CHE-123.456.789» e «CHE123456789» sono lo
+// stesso numero scritto in due modi.
+function normalizzaUid(s) {
+  return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+}
+
+// Restituisce i contatti che assomigliano a quello che si sta salvando.
+// `forte` = stesso UID: due ditte diverse non hanno lo stesso UID, li' e'
+// quasi certo che sia lo stesso soggetto.
+function cercaContattiSimili(payload) {
+  var nome = normalizzaNomeContatto(payload.ragione_sociale ||
+                                    [payload.cognome, payload.nome].filter(Boolean).join(' '))
+  var uid = normalizzaUid(payload.uid_partita_iva)
+  var fuori = []
+  ;(contattiCache || []).forEach(function (x) {
+    var uidUguale = !!uid && normalizzaUid(x.uid_partita_iva) === uid
+    var nomeUguale = !!nome && normalizzaNomeContatto(contattoNome(x)) === nome
+    if (uidUguale || nomeUguale) fuori.push({ c: x, forte: uidUguale })
+  })
+  return fuori
+}
+
+function mostraAvvisoDoppione(simili) {
+  var forte = simili.some(function (s) { return s.forte })
+  var righe = simili.map(function (s) {
+    var x = s.c
+    var dettagli = [x.citta, x.telefono].filter(Boolean).join(' · ')
+    return '<div class="dop-riga">' +
+             '<div class="dop-chi">' +
+               '<strong>' + esc(contattoNome(x)) + '</strong>' +
+               (s.forte ? ' ' + badge('err', '🆔 stesso UID') : ' ' + badge('warn', '👥 stesso nome')) +
+               (x.attivo === false ? ' ' + badge('warn', '📦 Archiviato') : '') +
+               '<div class="dim">' + esc(dettagli || 'nessun recapito registrato') + '</div>' +
+             '</div>' +
+             '<button type="button" class="btn-secondary"' +
+               ' onclick="apriContattoDaAvviso(\'' + x.id + '\')">📂 Apri quello esistente</button>' +
+           '</div>'
+  }).join('')
+
+  html('contatto-banner',
+    '<div class="fase-banner ' + (forte ? 'err' : 'warn') + '" role="alert">' +
+      '<span class="icon" aria-hidden="true">' + (forte ? '🆔' : '👥') + '</span>' +
+      '<div class="msg">' +
+        '<strong>' + (forte
+          ? 'C\'è già un contatto con lo stesso UID / partita IVA.'
+          : 'C\'è già un contatto con lo stesso nome.') + '</strong>' +
+        '<div style="margin-top:4px">' + (forte
+          ? 'Due ditte diverse non hanno lo stesso UID: quasi sicuramente è lo stesso soggetto.'
+          : 'Può essere un omonimo, oppure lo stesso soggetto già in rubrica.') +
+        ' Decidi tu: il programma non salva e non scarta niente da solo.</div>' +
+        '<div class="dop-lista">' + righe + '</div>' +
+        '<div class="dop-azioni">' +
+          '<button type="button" class="btn-primary"' +
+            ' onclick="salvaComunqueContatto()">💾 Salva comunque come nuovo</button>' +
+          '<button type="button" class="btn-secondary"' +
+            ' onclick="annullaAvvisoDoppione()">✖️ Annulla</button>' +
+        '</div>' +
+        '<div class="form-hint" style="margin-top:8px">' +
+          'Aprendo quello esistente, quello che hai scritto qui non viene salvato.' +
+        '</div>' +
+      '</div>' +
+    '</div>')
+}
+
+// «Salva comunque»: si risalva senza altre domande. La forzatura vale una volta
+// sola, cosi' il contatto dopo torna a essere controllato.
+function salvaComunqueContatto() {
+  contattoForzaNuovo = true
+  return salvaContatto()   // si restituisce la promessa: il salvataggio è atteso
+}
+
+function annullaAvvisoDoppione() {
+  contattoForzaNuovo = false
+  html('contatto-banner', '')
+}
+
+function apriContattoDaAvviso(id) {
+  contattoForzaNuovo = false
+  html('contatto-banner', '')
+  // Si arrivava da un documento («crea al volo»): quel ritorno non ha piu'
+  // senso se si abbandona il contatto nuovo, e lasciarlo appeso farebbe
+  // ripartire il rientro al primo salvataggio successivo.
+  rubricaRitorno = null
+  apriContatto(id)
+}
+
 async function salvaContatto(event) {
   if (event) event.preventDefault()
   var btn = el('contatto-submit-btn')
@@ -5484,6 +5853,17 @@ async function salvaContatto(event) {
   html('contatto-banner', '')
   try {
     var payload = raccogliContatto()
+
+    // FASE 18 — avviso doppione. Solo su un contatto NUOVO: in modifica un
+    // contatto somiglierebbe a se stesso. E' un AVVISO, non un blocco: gli
+    // omonimi esistono, e lo stesso soggetto con due IBAN oggi si registra due
+    // volte perche' la scheda ha un solo campo IBAN. Decide Umberto.
+    if (!editingContattoId && !contattoForzaNuovo) {
+      var simili = cercaContattiSimili(payload)
+      if (simili.length) { mostraAvvisoDoppione(simili); return }
+    }
+    contattoForzaNuovo = false
+
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
 
     var nuovoIdSalvato = editingContattoId
@@ -5568,7 +5948,11 @@ function rubricaCampi(prefix) {
   if (prefix === 'v') {
     return { testo: 'f-cli-nome', hidden: 'f-cli-contatto-id', suggest: 'f-cli-nome-suggest',
              legato: 'f-cli-contatto-legato', gruppo: null, scadenza: null,
-             data: 'f-fat-data', categoria: 'cliente' }
+             data: 'f-fat-data', categoria: 'cliente',
+             // FASE 18 — l'anagrafica che si compila da sola scegliendo il
+             // cliente: e' il motivo per cui un cliente si collega a una fattura.
+             indirizzo: 'f-cli-indirizzo', paese: 'f-cli-paese', uid: 'f-cli-iva',
+             btnSfoglia: 'f-cli-sfoglia' }
   }
   return { testo: 'f-ente', hidden: 'f-contatto-id', suggest: 'f-ente-suggest',
            legato: 'f-contatto-legato', gruppo: 'f-gruppo', scadenza: 'f-scadenza',
@@ -5578,7 +5962,7 @@ function rubricaCampi(prefix) {
 function chiudiSuggerimenti(prefix) {
   var c = rubricaCampi(prefix)
   html(c.suggest, '')
-  rubricaSuggest = { prefix: null, list: [], hi: -1 }
+  rubricaSuggest = { prefix: null, list: [], hi: -1, sfoglia: false }
 }
 
 async function rubricaSuggerisci(prefix) {
@@ -5605,7 +5989,38 @@ async function rubricaSuggerisci(prefix) {
     return termini.every(function (t) { return hay.indexOf(t) !== -1 })
   }).slice(0, 8)
 
-  var out = trovati.map(function (x, i) {
+  mostraSuggerimenti(prefix, trovati)
+}
+
+// FASE 18 — «📇 Scegli dalla rubrica»: lo stesso menu, ma con TUTTI i contatti
+// attivi, anche a campo vuoto. Se il nome non si ricorda, prima si era fermi.
+// Nessun secondo motore: si riusa lo stesso elenco e lo stesso scegliContatto.
+async function rubricaSfoglia(prefix) {
+  var c = rubricaCampi(prefix)
+  var box = el(c.suggest)
+  // Secondo clic sul bottone: si richiude, come ci si aspetta da un menu.
+  if (box && box.innerHTML && rubricaSuggest.prefix === prefix && rubricaSuggest.sfoglia) {
+    chiudiSuggerimenti(prefix)
+    return
+  }
+  try { await loadContatti() } catch (e) { /* l'elenco è un aiuto, non un requisito */ }
+  var tutti = (contattiCache || []).filter(function (x) { return x.attivo !== false })
+  tutti.sort(function (a, b) { return contattoNome(a).localeCompare(contattoNome(b), 'it') })
+  mostraSuggerimenti(prefix, tutti, true)
+  if (el(c.testo)) el(c.testo).focus()
+}
+
+// Disegna il menu a tendina. Unico punto in cui si costruiscono le voci:
+// ricerca e sfoglia devono comportarsi allo stesso modo alla scelta.
+function mostraSuggerimenti(prefix, trovati, sfoglia) {
+  var c = rubricaCampi(prefix)
+  var out = ''
+
+  if (sfoglia && !trovati.length) {
+    out += '<div class="suggest-vuoto dim">La rubrica non ha ancora nessun contatto attivo.</div>'
+  }
+
+  out += trovati.map(function (x) {
     return '<button type="button" class="suggest-item" role="option"' +
            ' onclick="scegliContatto(\'' + prefix + '\', \'' + x.id + '\')">' +
            esc(contattoNome(x)) +
@@ -5614,14 +6029,19 @@ async function rubricaSuggerisci(prefix) {
   }).join('')
 
   // La creazione al volo è sempre in fondo: si crea solo se davvero non c'è.
-  out += '<button type="button" class="suggest-item suggest-new"' +
-         ' onclick="creaContattoAlVolo(\'' + prefix + '\')">' +
-         '➕ Crea «' + esc(getVal(c.testo)) + '» come nuovo contatto' +
-         '<span class="s-sub">lo salva in rubrica e lo collega a questo documento</span>' +
-         '</button>'
+  // Sfogliando a campo vuoto non c'è nessun nome da creare: si offre solo
+  // quando qualcosa è stato scritto.
+  var scritto = getVal(c.testo)
+  if (scritto) {
+    out += '<button type="button" class="suggest-item suggest-new"' +
+           ' onclick="creaContattoAlVolo(\'' + prefix + '\')">' +
+           '➕ Crea «' + esc(scritto) + '» come nuovo contatto' +
+           '<span class="s-sub">lo salva in rubrica e lo collega a questo documento</span>' +
+           '</button>'
+  }
 
   html(c.suggest, out)
-  rubricaSuggest = { prefix: prefix, list: trovati, hi: -1 }
+  rubricaSuggest = { prefix: prefix, list: trovati, hi: -1, sfoglia: !!sfoglia }
 }
 
 // Frecce su/giù per scorrere, Invio per scegliere, Esc per chiudere.
@@ -5680,7 +6100,35 @@ async function scegliContatto(prefix, id) {
     }
   }
 
+  // FASE 18 — anagrafica del cliente sulla fattura di vendita. Stessa regola
+  // del gruppo: si compila SOLO il campo vuoto. Quello che c'e' scritto puo'
+  // essere una correzione fatta a mano, e vale piu' del dato in rubrica.
+  var indirizzoFatt = indirizzoPerFattura(x)
+  if (indirizzoFatt && el(c.indirizzo) && !el(c.indirizzo).value.trim()) {
+    el(c.indirizzo).value = indirizzoFatt
+    compilati.push('indirizzo')
+  }
+  if (x.paese && el(c.paese) && !el(c.paese).value.trim()) {
+    el(c.paese).value = String(x.paese).toUpperCase().slice(0, 2)
+    compilati.push('paese')
+  }
+  if (x.uid_partita_iva && el(c.uid) && !el(c.uid).value.trim()) {
+    el(c.uid).value = x.uid_partita_iva
+    compilati.push('n. IVA')
+  }
+
   renderContattoLegato(prefix, x, compilati)
+}
+
+// L'indirizzo come si stampa in fattura: la via su una riga, NPA e localita'
+// sulla seconda. Il paese ha un campo suo e non entra qui.
+function indirizzoPerFattura(x) {
+  if (!x) return ''
+  var righe = []
+  if (x.indirizzo) righe.push(String(x.indirizzo).trim())
+  var cittaRiga = [x.cap, x.citta].filter(Boolean).join(' ').trim()
+  if (cittaRiga) righe.push(cittaRiga)
+  return righe.join('\n')
 }
 
 // Riquadro sotto il campo: dice quale contatto è collegato e cosa è stato
@@ -5872,7 +6320,7 @@ async function loadFlussi(force) {
   if (!currentAziendaId) { flussiCache = []; return flussiCache }
   const { data, error } = await sb
     .from('v_conta_flussi')
-    .select('id_origine, tabella_origine, origine_tipo, verso, controparte_nome, descrizione,' +
+    .select('id_origine, tabella_origine, origine_tipo, verso, contatto_id, controparte_nome, descrizione,' +
             ' data_documento, data_scadenza, importo_totale, importo_iva, stato_pagamento,' +
             ' data_pagamento, conto_codice, conto_descrizione, gruppo_codice, gruppo_manuale,' +
             ' gruppo_da_conto, stato_conferma, importo_pagato, residuo, prossima_rata')
@@ -9226,7 +9674,9 @@ var vistaCorrente = {}      // pagina -> sottolivello attuale, es. {fatture: 'de
 var LIVELLI = {
   fatture:   { livelli: ['list', 'detail', 'edit'],   applica: 'showFattureView' },
   acquisti:  { livelli: ['list', 'detail', 'edit'],   applica: 'showAcquistiView' },
-  rubrica:   { livelli: ['lista', 'scheda'],          applica: 'mostraRubricaVista' },
+  // FASE 18 — «lettura» sta fra elenco e modulo: Indietro dal modulo torna
+  // alla scheda letta, e da li' all'elenco.
+  rubrica:   { livelli: ['lista', 'lettura', 'scheda'], applica: 'mostraRubricaVista' },
   cantieri:  { livelli: ['elenco', 'scheda'],         applica: '_vistaCantieri' }
 }
 
@@ -10032,7 +10482,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '37'
+var VERSIONE = '38'
 
 function controllaVersionePagina() {
   try {
@@ -10532,6 +10982,10 @@ document.addEventListener('click', function (ev) {
     if (!box || !box.innerHTML) return
     var campo = el(c.testo)
     if (box.contains(ev.target) || (campo && campo === ev.target)) return
+    // FASE 18 — il bottone «Scegli dalla rubrica» apre il menu: se lo chiudesse
+    // anche questo gestore, il menu si aprirebbe e si richiuderebbe da solo.
+    var btn = c.btnSfoglia ? el(c.btnSfoglia) : null
+    if (btn && (btn === ev.target || btn.contains(ev.target))) return
     html(c.suggest, '')
   })
 })
