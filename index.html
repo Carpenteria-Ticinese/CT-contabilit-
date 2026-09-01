@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=34" />
+  <link rel="stylesheet" href="css/style.css?v=35" />
 </head>
-<body data-versione="34">
+<body data-versione="35">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -77,6 +77,8 @@
     <button class="nav-item auth-only" data-page="acquisti">
       <span aria-hidden="true">📥</span>
       <span>Fatture acquisto</span>
+      <span class="nav-badge badge-conferma" id="nav-badge-acquisti"
+            style="display:none" aria-live="polite"></span>
     </button>
 
     <button class="nav-item auth-only" data-page="export">
@@ -1200,6 +1202,7 @@
           <div id="acquisti-detail-body"></div>
         </div>
         <!-- FASE 8: pagamenti e rate della fattura d'acquisto -->
+        <div id="acquisti-detail-conferma"></div>
         <div id="acquisti-pagamenti"></div>
         <div id="acquisti-classificazione"></div>
         <div id="acquisti-allegati"></div>
@@ -1228,6 +1231,15 @@
           </div>
 
           <div class="form-actions" style="margin-top:0">
+            <!-- FASE 10B — compare solo su una fattura NUOVA e solo se
+                 l'indirizzo del Worker e' configurato. -->
+            <button type="button" class="btn-primary" id="btn-lettura-ai"
+                    style="display:none" onclick="apriSceltaFileLettura()">
+              📄 Leggi da PDF o foto
+            </button>
+            <input type="file" id="lettura-file" style="display:none"
+                   accept=".pdf,.jpg,.jpeg,.png,.webp,image/*" capture="environment"
+                   onchange="leggiFatturaDaFile(this)" />
             <button type="button" class="btn-secondary" onclick="copiaPromptFattura()">
               📋 Copia prompt
             </button>
@@ -1263,6 +1275,7 @@
 
           <!-- Segnalazioni della lettura: compaiono dopo aver compilato -->
           <div id="ponte-ai-note" style="margin-top:12px"></div>
+          <div id="lettura-costo"></div>
         </div>
 
         <div id="a-classificazione-riga"></div>
@@ -1550,6 +1563,41 @@
           <div class="form-hint">
             Giorni. Quanto prima della scadenza una fattura entra fra quelle «in scadenza».
           </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🤖 Lettura automatica delle fatture</div>
+        <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
+          Con questa attiva, nel modulo di una fattura d&rsquo;acquisto nuova compare
+          <strong>📄 Leggi da PDF o foto</strong>: scegli il file (o scatti la foto
+          col telefono) e i campi si compilano da soli.
+        </p>
+
+        <div class="form-group">
+          <label for="imp-lettura-url" class="form-label">Indirizzo del Worker</label>
+          <input type="url" id="imp-lettura-url" class="form-input"
+                 placeholder="https://ct-lettura-fatture.xxx.workers.dev"
+                 autocomplete="off" spellcheck="false" />
+          <div class="form-hint">
+            Lo trovi su Cloudflare, nella pagina del Worker. Vedi
+            <code>ISTRUZIONI_CLOUDFLARE.md</code>.
+          </div>
+        </div>
+
+        <div class="form-actions" style="margin-top:0">
+          <button type="button" class="btn-secondary" id="imp-lettura-prova-btn"
+                  onclick="provaConnessioneWorker()">🔌 Prova la connessione</button>
+        </div>
+
+        <div style="margin-top:12px">
+          <span class="form-label" style="margin:0 8px 0 0">Stato:</span>
+          <span id="imp-lettura-stato"></span>
+        </div>
+
+        <div class="sql-tip" style="margin-top:12px">
+          🔒 La chiave API sta su Cloudflare, non in questo programma.
+          Qui va solo l&rsquo;indirizzo del Worker, che non &egrave; un segreto.
         </div>
       </div>
 
@@ -1948,7 +1996,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=34"></script>
+<script src="js/app.js?v=35"></script>
 
 </body>
 </html>
