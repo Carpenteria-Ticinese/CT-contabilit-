@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=35" />
+  <link rel="stylesheet" href="css/style.css?v=37" />
 </head>
-<body data-versione="35">
+<body data-versione="37">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -690,7 +690,7 @@
                 <label for="c-categoria" class="form-label">
                   Categoria <span class="req" aria-hidden="true">*</span>
                 </label>
-                <select id="c-categoria" class="form-input">
+                <select id="c-categoria" class="form-input" onchange="onCategoriaContattoChange()">
                   <option value="cliente">Cliente</option>
                   <option value="fornitore">Fornitore</option>
                   <option value="collaboratore">Collaboratore</option>
@@ -704,6 +704,27 @@
                 <input type="text" id="c-ragione" class="form-input" maxlength="200"
                        placeholder="es. Ferramenta Bianchi SA" />
               </div>
+            </div>
+
+            <!-- Doppio uso: la categoria qui sopra resta una sola, ma un contatto
+                 puo' comparire ANCHE in un'altra scheda. Serve al fornitore che
+                 ogni tanto compra una prestazione: una scheda sola, non due. -->
+            <div id="c-anche-cliente-riga">
+              <label class="form-label-check">
+                <input type="checkbox" id="c-anche-cliente" />
+                <span>Compare anche fra i Clienti
+                  <span class="dim">(oltre alla categoria scelta qui sopra)</span></span>
+              </label>
+            </div>
+            <div id="c-anche-fornitore-riga">
+              <label class="form-label-check">
+                <input type="checkbox" id="c-anche-fornitore" />
+                <span>Compare anche fra i Fornitori
+                  <span class="dim">(oltre alla categoria scelta qui sopra)</span></span>
+              </label>
+            </div>
+            <div class="form-hint" style="margin-top:6px;margin-bottom:14px">
+              Se non spunti niente, il contatto resta dov&rsquo;&egrave;: in una scheda sola.
             </div>
 
             <div class="form-row">
@@ -1024,9 +1045,17 @@
 
         <div class="card">
           <div class="card-title">👤 Cliente</div>
-          <div class="form-group">
+          <div class="form-group rubrica-pick">
             <label for="f-cli-nome" class="form-label">Nome / Ragione sociale <span class="req" aria-hidden="true">*</span></label>
-            <input type="text" id="f-cli-nome" class="form-input" maxlength="200" placeholder="es. Rossi Costruzioni SA" />
+            <input type="text" id="f-cli-nome" class="form-input" maxlength="200"
+                   autocomplete="off" placeholder="Scrivi per cercare in rubrica…"
+                   oninput="rubricaSuggerisci('v')"
+                   onkeydown="rubricaTasti(event, 'v')"
+                   aria-autocomplete="list" aria-controls="f-cli-nome-suggest" />
+            <input type="hidden" id="f-cli-contatto-id" />
+            <div id="f-cli-nome-suggest" class="rubrica-suggest" role="listbox"
+                 aria-label="Contatti trovati in rubrica"></div>
+            <div id="f-cli-contatto-legato"></div>
           </div>
           <div class="form-group">
             <label for="f-cli-indirizzo" class="form-label">Indirizzo</label>
@@ -1996,7 +2025,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=35"></script>
+<script src="js/app.js?v=37"></script>
 
 </body>
 </html>
