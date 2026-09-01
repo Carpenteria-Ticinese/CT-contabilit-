@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=37" />
+  <link rel="stylesheet" href="css/style.css?v=38" />
 </head>
-<body data-versione="37">
+<body data-versione="38">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -633,6 +633,14 @@
         <div class="card">
 
           <div class="tabs" role="tablist" aria-label="Categoria contatti">
+            <!-- FASE 18 — «Tutti»: clienti e fornitori insieme. Il conteggio
+                 qui conta le PERSONE, non le presenze nelle schede: chi sta in
+                 due schede resta uno. -->
+            <button class="tab" role="tab" id="tab-tutti" aria-selected="false"
+                    onclick="setRubricaTab('tutti')">
+              <span aria-hidden="true">📚</span> Tutti
+              <span class="tab-count" id="cnt-tutti">0</span>
+            </button>
             <button class="tab" role="tab" id="tab-cliente" aria-selected="true"
                     onclick="setRubricaTab('cliente')">
               <span aria-hidden="true">👤</span> Clienti
@@ -675,6 +683,29 @@
         </div>
       </div>
 
+      <!-- FASE 18 — Scheda contatto in SOLA LETTURA.
+           Aprire un contatto non deve poter cambiare un dato per sbaglio:
+           si guarda, e solo premendo «Modifica» si entra nel modulo. -->
+      <div id="rubrica-lettura-view" style="display:none">
+        <div class="card">
+          <div class="card-title" id="contatto-lettura-titolo">👤 Scheda contatto</div>
+
+          <div id="contatto-lettura-azioni" style="margin-bottom:14px"></div>
+
+          <div id="contatto-lettura-dati"></div>
+
+          <!-- Fatture di vendita intestate a questo contatto -->
+          <div id="contatto-lettura-fatture" style="margin-top:18px"></div>
+
+          <div class="form-actions">
+            <button type="button" class="btn-primary" id="contatto-lettura-modifica"
+                    onclick="modificaContattoCorrente()">✏️ Modifica</button>
+            <button type="button" class="btn-secondary"
+                    onclick="chiudiSchedaContatto()">&larr; Torna all&rsquo;elenco</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Scheda contatto -->
       <div id="rubrica-scheda-view" style="display:none">
         <div class="card">
@@ -683,14 +714,14 @@
 
           <div id="contatto-azioni-rapide" style="margin-bottom:14px"></div>
 
-          <form id="form-contatto" onsubmit="salvaContatto(event)" novalidate>
+          <form id="form-contatto" onsubmit="salvaContatto(event)" novalidate autocomplete="off">
 
             <div class="form-row">
               <div class="form-group" style="flex:1">
                 <label for="c-categoria" class="form-label">
                   Categoria <span class="req" aria-hidden="true">*</span>
                 </label>
-                <select id="c-categoria" class="form-input" onchange="onCategoriaContattoChange()">
+                <select id="c-categoria" class="form-input" onchange="onCategoriaContattoChange()" autocomplete="off">
                   <option value="cliente">Cliente</option>
                   <option value="fornitore">Fornitore</option>
                   <option value="collaboratore">Collaboratore</option>
@@ -702,7 +733,7 @@
                   Ragione sociale <span class="dim">(o nome dell&rsquo;attivit&agrave;)</span>
                 </label>
                 <input type="text" id="c-ragione" class="form-input" maxlength="200"
-                       placeholder="es. Ferramenta Bianchi SA" />
+                       placeholder="es. Ferramenta Bianchi SA" / autocomplete="off">
               </div>
             </div>
 
@@ -730,11 +761,11 @@
             <div class="form-row">
               <div class="form-group" style="flex:1">
                 <label for="c-nome" class="form-label">Nome <span class="dim">(persona)</span></label>
-                <input type="text" id="c-nome" class="form-input" maxlength="100" />
+                <input type="text" id="c-nome" class="form-input" maxlength="100" / autocomplete="off">
               </div>
               <div class="form-group" style="flex:1">
                 <label for="c-cognome" class="form-label">Cognome <span class="dim">(persona)</span></label>
-                <input type="text" id="c-cognome" class="form-input" maxlength="100" />
+                <input type="text" id="c-cognome" class="form-input" maxlength="100" / autocomplete="off">
               </div>
             </div>
             <div class="form-hint" style="margin-top:-6px;margin-bottom:14px">
@@ -745,21 +776,21 @@
             <div class="form-group">
               <label for="c-indirizzo" class="form-label">Indirizzo</label>
               <input type="text" id="c-indirizzo" class="form-input" maxlength="200"
-                     placeholder="es. Via Girardolo del Nado 2" />
+                     placeholder="es. Via Girardolo del Nado 2" / autocomplete="off">
             </div>
 
             <div class="form-row">
               <div class="form-group" style="flex:1">
                 <label for="c-cap" class="form-label">NPA <span class="dim">(codice postale)</span></label>
-                <input type="text" id="c-cap" class="form-input" maxlength="10" placeholder="6500" />
+                <input type="text" id="c-cap" class="form-input" maxlength="10" placeholder="6500" / autocomplete="off">
               </div>
               <div class="form-group" style="flex:2">
                 <label for="c-citta" class="form-label">Localit&agrave;</label>
-                <input type="text" id="c-citta" class="form-input" maxlength="100" placeholder="Bellinzona" />
+                <input type="text" id="c-citta" class="form-input" maxlength="100" placeholder="Bellinzona" / autocomplete="off">
               </div>
               <div class="form-group" style="flex:1">
                 <label for="c-paese" class="form-label">Paese</label>
-                <input type="text" id="c-paese" class="form-input" maxlength="2" value="CH" placeholder="CH" />
+                <input type="text" id="c-paese" class="form-input" maxlength="2" value="CH" placeholder="CH" / autocomplete="off">
               </div>
             </div>
 
@@ -767,38 +798,38 @@
               <div class="form-group" style="flex:1">
                 <label for="c-telefono" class="form-label">Telefono</label>
                 <input type="tel" id="c-telefono" class="form-input" maxlength="40"
-                       placeholder="+41 91 000 00 00" oninput="renderAzioniRapide()" />
+                       placeholder="+41 91 000 00 00" oninput="renderAzioniRapide()" / autocomplete="off">
               </div>
               <div class="form-group" style="flex:1">
                 <label for="c-email" class="form-label">Email</label>
                 <input type="email" id="c-email" class="form-input" maxlength="150"
-                       placeholder="nome@esempio.ch" oninput="renderAzioniRapide()" />
+                       placeholder="nome@esempio.ch" oninput="renderAzioniRapide()" / autocomplete="off">
               </div>
             </div>
 
             <div class="form-group">
               <label for="c-sito" class="form-label">Sito web</label>
               <input type="text" id="c-sito" class="form-input" maxlength="200"
-                     placeholder="www.esempio.ch" />
+                     placeholder="www.esempio.ch" / autocomplete="off">
             </div>
 
             <div class="form-row">
               <div class="form-group" style="flex:1">
                 <label for="c-uid" class="form-label">UID / Partita IVA</label>
                 <input type="text" id="c-uid" class="form-input" maxlength="40"
-                       placeholder="CHE-123.456.789" />
+                       placeholder="CHE-123.456.789" / autocomplete="off">
               </div>
               <div class="form-group" style="flex:2">
                 <label for="c-iban" class="form-label">IBAN</label>
                 <input type="text" id="c-iban" class="form-input" maxlength="40"
-                       placeholder="CH00 0000 0000 0000 0000 0" />
+                       placeholder="CH00 0000 0000 0000 0000 0" / autocomplete="off">
               </div>
             </div>
 
             <div class="form-row">
               <div class="form-group" style="flex:2">
                 <label for="c-gruppo" class="form-label">Gruppo predefinito</label>
-                <select id="c-gruppo" class="form-input"></select>
+                <select id="c-gruppo" class="form-input" autocomplete="off"></select>
                 <div class="form-hint">
                   Proposto ogni volta che si sceglie questo contatto in un movimento. Resta modificabile.
                 </div>
@@ -806,14 +837,14 @@
               <div class="form-group" style="flex:1">
                 <label for="c-giorni" class="form-label">Giorni di pagamento</label>
                 <input type="number" id="c-giorni" class="form-input" min="0" max="365" step="1"
-                       placeholder="30" />
+                       placeholder="30" / autocomplete="off">
                 <div class="form-hint">Giorni. Serve a calcolare la scadenza.</div>
               </div>
             </div>
 
             <div class="form-group">
               <label for="c-note" class="form-label">Note</label>
-              <textarea id="c-note" class="form-input" rows="3" maxlength="1000"></textarea>
+              <textarea id="c-note" class="form-input" rows="3" maxlength="1000" autocomplete="off"></textarea>
             </div>
 
             <label class="form-label-check">
@@ -1047,11 +1078,22 @@
           <div class="card-title">👤 Cliente</div>
           <div class="form-group rubrica-pick">
             <label for="f-cli-nome" class="form-label">Nome / Ragione sociale <span class="req" aria-hidden="true">*</span></label>
-            <input type="text" id="f-cli-nome" class="form-input" maxlength="200"
-                   autocomplete="off" placeholder="Scrivi per cercare in rubrica…"
-                   oninput="rubricaSuggerisci('v')"
-                   onkeydown="rubricaTasti(event, 'v')"
-                   aria-autocomplete="list" aria-controls="f-cli-nome-suggest" />
+            <div class="campo-con-bottone">
+              <input type="text" id="f-cli-nome" class="form-input" maxlength="200"
+                     autocomplete="off" placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
+                     oninput="rubricaSuggerisci('v')"
+                     onkeydown="rubricaTasti(event, 'v')"
+                     aria-autocomplete="list" aria-controls="f-cli-nome-suggest" />
+              <button type="button" class="btn-secondary" id="f-cli-sfoglia"
+                      onclick="rubricaSfoglia('v')"
+                      aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
+                📇 Scegli dalla rubrica
+              </button>
+            </div>
+            <div class="form-hint">
+              Scrivi due lettere per cercare, oppure premi &laquo;Scegli dalla rubrica&raquo;
+              per vedere l&rsquo;elenco completo.
+            </div>
             <input type="hidden" id="f-cli-contatto-id" />
             <div id="f-cli-nome-suggest" class="rubrica-suggest" role="listbox"
                  aria-label="Contatti trovati in rubrica"></div>
@@ -2025,7 +2067,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=37"></script>
+<script src="js/app.js?v=38"></script>
 
 </body>
 </html>
