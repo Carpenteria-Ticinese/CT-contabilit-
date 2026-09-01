@@ -3540,6 +3540,26 @@ function renderAcquistoDetail(a) {
   aggiornaBoxAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-allegati',
                       'Fattura ' + (a.numero_fornitore || '') + ' ' + (a.fornitore || ''))
 
+  // FASE 10B.4 — chi sta guardando la scheda puo' confermare da li': e' il
+  // momento in cui ha davanti data e importo.
+  if (daConfermare(a)) {
+    html('acquisti-detail-conferma',
+      '<div class="card avviso-conferma">' +
+        '<div class="card-title">⏳ Da confermare</div>' +
+        '<div>Questa fattura è stata letta automaticamente e <strong>non entra ancora</strong> ' +
+          'nei totali, nelle scadenze e nell\'export.</div>' +
+        '<div class="form-hint" style="margin-top:8px">' +
+          'L\'AI sbaglia le date e legge male gli importi sulle foto storte. Controlla prima di confermare.' +
+        '</div>' +
+        '<div class="form-actions" style="margin-top:12px">' +
+          '<button type="button" class="btn-primary" onclick="confermaAcquisto(\'' + esc(a.id) + '\')">' +
+            '✅ Conferma la fattura</button>' +
+        '</div>' +
+      '</div>')
+  } else {
+    html('acquisti-detail-conferma', '')
+  }
+
   // Azioni: Modifica sempre consentita sugli acquisti
   html('acquisti-detail-actions',
     '<div class="form-actions" style="margin-top:0">' +
@@ -3567,12 +3587,13 @@ async function loadAcquistiList() {
   // Le chiavi dei doppioni: una query sua, tre colonne, cosi' la spia non
   // dipende da quali righe l'elenco ha caricato.
   try { await caricaChiaviDoppioni(true) } catch (_) {}
+  try { await refreshDaConfermareCount() } catch (_) {}
   if (!currentAziendaId) { html('acquisti-table', '<div class="dim">Accedi per vedere le fatture d\'acquisto.</div>'); return }
   html('acquisti-table', loadingRow('Caricamento…'))
   try {
     const { data, error } = await sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id, origine, stato_conferma')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -3595,7 +3616,11 @@ function statoAcquistoBadge(stato) {
 
 function acquistiRowActions(a) {
   var pagato = a.stato_pagamento === 'pagato'
-  return badgeAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-list-banner') +
+  return (daConfermare(a)
+      ? '<button class="icon-btn conferma" onclick="event.stopPropagation(); confermaAcquisto(\'' +
+        esc(a.id) + '\')" title="Controlla data e importo, poi conferma">✅ Conferma</button>'
+      : '') +
+    badgeAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-list-banner') +
     spiaDoppione(a) +
     '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
     (pagato
@@ -3694,8 +3719,9 @@ function renderAcquistiTable() {
     var paySub = (a.stato_pagamento === 'pagato' && a.data_pagamento)
       ? '<span class="cell-sub">il ' + esc(fmtDate(a.data_pagamento)) + '</span>'
       : ''
-    return '<tr class="row-clickable" onclick="viewAcquisto(\'' + a.id + '\')">' +
-      '<td>' + esc(a.fornitore || '') + '</td>' +
+    return '<tr class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') +
+      '" onclick="viewAcquisto(\'' + a.id + '\')">' +
+      '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + '</td>' +
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
@@ -3900,6 +3926,7 @@ function renderAcquistoAllegatoCorrente() {
 
 async function newAcquisto() {
   doppioneAccettato = false
+  lettaDaAI = false
   editingAcquistoId = null
   acquistoOriginal = null
   acquistoDocPath = null
@@ -3912,6 +3939,10 @@ async function newAcquisto() {
   await loadAziendaInfo()     // per la nota "non soggetto IVA"
   fillAcquistoForm({ data: oggiISO(), valuta: 'CHF', stato_pagamento: 'aperto' })
   await aggiornaGiaPagata(null, null)  // nuovo: la spunta e' disponibile
+  // La lettura automatica vale solo su un documento nuovo: rileggere una
+  // fattura gia' corretta a mano sovrascriverebbe il lavoro fatto, e non si
+  // saprebbe piu' quali campi erano stati sistemati.
+  mostraBottoneLettura(true)
   html('a-classificazione-riga', '')   // documento nuovo: niente da classificare
   // FASE 2: nessun contatto collegato su un documento nuovo
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
@@ -3926,6 +3957,7 @@ async function newAcquisto() {
 async function editAcquisto(id) {
   if (!currentAziendaId) return
   doppioneAccettato = false
+  lettaDaAI = false
   html('acquisti-edit-banner', '')
   try {
     const { data, error } = await sb.from('tm_conta_fatture_acquisto').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
@@ -3943,6 +3975,7 @@ async function editAcquisto(id) {
     acquistoOriginal = vals
     clearAcquistoFileInput()   // PRIMA di mostrare il form: mai dopo
     if (el('acquisti-edit-title')) el('acquisti-edit-title').textContent = 'Modifica fattura d\'acquisto'
+    mostraBottoneLettura(false)      // in modifica no: vedi newAcquisto()
     showAcquistiView('edit')
     await ensureContiIva()
     await loadAziendaInfo()
@@ -4004,6 +4037,15 @@ async function saveAcquisto() {
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
     var payload = collectAcquisto()
+
+    // FASE 10B.4 — da dove viene il documento, e se qualcuno l'ha guardato.
+    // Si scrivono SOLO alla creazione: in modifica lo stato di conferma non si
+    // tocca, altrimenti correggere una virgola rimetterebbe in dubbio una
+    // fattura gia' controllata — o, peggio, confermerebbe senza guardare.
+    if (!editingAcquistoId) {
+      payload.origine        = lettaDaAI ? 'import_ai' : 'manuale'
+      payload.stato_conferma = lettaDaAI ? 'da_confermare' : 'confermato'
+    }
 
     // FASE 9B — il doppione. Si controlla PRIMA di scrivere, e non blocca:
     // avvisa, dice quale fattura, e lascia decidere. Chi ha gia' deciso
@@ -4079,7 +4121,9 @@ async function saveAcquisto() {
     }
 
     doppioneAccettato = false      // vale una volta sola
+    lettaDaAI = false              // idem: vale per il documento appena salvato
     invalidaChiaviDoppioni()
+    try { await refreshDaConfermareCount() } catch (_) {}
     await loadAcquistiList()
     try { await refreshDaClassificareCount() } catch (_) {}
     acquistiBackToList()
@@ -4207,6 +4251,9 @@ async function initImpostazioniPage() {
     if (el('imp-costo-orario')) el('imp-costo-orario').value = (co == null ? '' : co)
     if (el('imp-costo-verificato')) el('imp-costo-verificato').checked = costoOrarioVerificato()
     renderStatoCostoOrario(false)
+    // FASE 10B.1 — l'indirizzo del Worker e lo stato della lettura automatica.
+    setVal('imp-lettura-url', impostazione('worker_lettura_url', ''))
+    aggiornaStatoLettura()
   } catch (_) { /* i dati della ditta si caricano lo stesso */ }
   html('impostazioni-banner', loadingRow('Caricamento dati azienda…'))
   try {
@@ -4322,6 +4369,16 @@ async function saveImpostazioni() {
     showFattureBanner('impostazioni-banner', 'err', 'Azienda non trovata: rieffettua il login.')
     return
   }
+  // FASE 10B.1 — l'indirizzo del Worker. Si salva con le altre impostazioni:
+  // e' una preferenza della ditta, non un dato dell'anagrafica.
+  try {
+    await salvaImpostazioneConta('worker_lettura_url', String(getVal('imp-lettura-url') || '').trim(),
+                                 'Indirizzo del Worker Cloudflare per la lettura automatica')
+    aggiornaStatoLettura()
+  } catch (eW) {
+    console.warn('Indirizzo del Worker non salvato:', eW.message || eW)
+  }
+
   var termini = getVal('imp-termini')
   var soggettoIva = el('imp-soggetto-iva') ? el('imp-soggetto-iva').checked : false
   var payload = {
@@ -6885,7 +6942,7 @@ async function copiaPromptFattura() {
 }
 
 function showPonteBanner(tipo, msg) {
-  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : tipo === 'info' ? '⏳' : '❌'
   html('ponte-ai-banner',
     '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
       '<span class="icon" aria-hidden="true">' + icona + '</span>' +
@@ -6979,6 +7036,8 @@ function codiceIvaPerAliquota(aliquota) {
 
 // ── Applicazione al modulo ───────────────────────────────────────────────────
 
+// La porta del ponte manuale: legge la casella e passa il testo alla
+// validazione, che e' una sola per tutti.
 async function applicaRispostaAI() {
   html('ponte-ai-note', '')
   var testo = el('ponte-ai-testo') ? el('ponte-ai-testo').value : ''
@@ -6986,7 +7045,16 @@ async function applicaRispostaAI() {
     showPonteBanner('err', 'La casella è vuota: incolla la risposta di Claude prima di premere «Compila il modulo».')
     return
   }
+  var esito = await applicaTestoLettura(testo)
+  if (esito.ok) {
+    chiudiIncollaRisposta()
+    showPonteBanner('ok', 'Modulo compilato dalla lettura. Controlla i campi prima di salvare.')
+  }
+}
 
+// LA validazione. Prende un testo — da dovunque venga — e o compila un modulo
+// coerente, o non tocca niente. Restituisce { ok: true/false }.
+async function applicaTestoLettura(testo) {
   var dati
   try {
     dati = estraiJson(testo)
@@ -6994,7 +7062,7 @@ async function applicaRispostaAI() {
     // Regola non negoziabile: se il JSON e' rotto NON si compila niente.
     // Mezzo modulo riempito e' peggio di un modulo vuoto, perche' sembra a posto.
     showPonteBanner('err', e.message)
-    return
+    return { ok: false }
   }
 
   try {
@@ -7076,9 +7144,8 @@ async function applicaRispostaAI() {
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
   html('a-contatto-legato', '')
 
-  chiudiIncollaRisposta()
-  showPonteBanner('ok', 'Modulo compilato dalla lettura. Controlla i campi prima di salvare.')
   renderNoteLettura(dati.note_lettura, scartati, avvisoScarto, conto)
+  return { ok: true }
 }
 
 // Riquadro sopra il modulo: cosa ha segnalato la lettura, cosa e' stato scartato
@@ -9878,7 +9945,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '34'
+var VERSIONE = '35'
 
 function controllaVersionePagina() {
   try {
@@ -9911,6 +9978,336 @@ function ricaricaPagina() {
   } catch (_) {
     window.location.reload()
   }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 10 — LETTURA AUTOMATICA DELLE FATTURE
+//
+// Il programma manda la fattura (PDF o foto) a un Worker su Cloudflare, che
+// custodisce la chiave API e parla con l'AI al posto suo. Qui dentro NON c'e'
+// nessuna chiave, e non ci deve mai finire: questo file e' pubblico su GitHub.
+//
+// La risposta passa dalla STESSA validazione del ponte copia/incolla della
+// FASE 5A. Due strade di validazione, un giorno, divergerebbero: una vale i
+// centesimi risparmiati, l'altra no.
+//
+// Il ponte manuale resta sempre lì. Se il Worker non risponde, non si e' mai
+// bloccati: si copia il prompt e si legge la fattura a mano, come prima.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Il costo ─────────────────────────────────────────────────────────────────
+// Prezzi di Anthropic per claude-sonnet-5, in dollari per MILIONE di token.
+// Verificati il 31 agosto 2026 su anthropic.com/pricing.
+//
+// I prezzi cambiano: sono qui, in un punto solo, e la data dice quando erano
+// veri. Se il conto a schermo smette di somigliare a quello che arriva
+// davvero, e' questa riga che va aggiornata.
+var PREZZO_INPUT_MTOK  = 3.00
+var PREZZO_OUTPUT_MTOK = 15.00
+
+// Da dollari a franchi. Anche questo cambia, ed e' una stima: serve l'ordine di
+// grandezza, non il centesimo esatto.
+var CAMBIO_USD_CHF = 0.80
+
+// Quanto si aspetta il Worker prima di arrendersi. Una fattura fotografata ci
+// mette qualche secondo; un minuto e' largo abbastanza da non tagliare una
+// lettura lenta, e corto abbastanza da non lasciare l'utente a fissare la
+// rotella senza sapere se sta succedendo qualcosa.
+var TIMEOUT_LETTURA_MS = 60000
+
+var LIMITE_LETTURA_MB = 10
+
+function costoStimatoChf(inputTokens, outputTokens) {
+  var usd = (safeNum(inputTokens) || 0) / 1000000 * PREZZO_INPUT_MTOK +
+            (safeNum(outputTokens) || 0) / 1000000 * PREZZO_OUTPUT_MTOK
+  return usd * CAMBIO_USD_CHF
+}
+
+// ── L'indirizzo del Worker ───────────────────────────────────────────────────
+// Sta in tm_conta_impostazioni, non nel codice: cosi' si cambia senza
+// ripubblicare il programma, ed e' per azienda — un Worker condiviso vorrebbe
+// dire la chiave di una ditta usata da un'altra.
+function urlWorkerLettura() {
+  return String(impostazione('worker_lettura_url', '') || '').trim()
+}
+
+function letturaAutomaticaAttiva() { return !!urlWorkerLettura() }
+
+// ── Il file, in base64 ───────────────────────────────────────────────────────
+// Si legge come data URL e si toglie il prefisso «data:...;base64,»: il Worker
+// vuole i soli caratteri, non l'intestazione.
+function fileInBase64(file) {
+  return new Promise(function (risolvi, rifiuta) {
+    var lettore = new FileReader()
+    lettore.onload = function () {
+      var s = String(lettore.result || '')
+      var virgola = s.indexOf(',')
+      risolvi(virgola === -1 ? s : s.slice(virgola + 1))
+    }
+    lettore.onerror = function () { rifiuta(new Error('Il file non si riesce a leggere.')) }
+    lettore.readAsDataURL(file)
+  })
+}
+
+// ── La chiamata al Worker ────────────────────────────────────────────────────
+// Restituisce { testo, input_tokens, output_tokens } oppure lancia con un
+// messaggio gia' leggibile: chi la chiama non deve tradurre niente.
+async function chiediLetturaAlWorker(file, prompt) {
+  var url = urlWorkerLettura()
+  if (!url) throw new Error('L\'indirizzo del Worker non è configurato. Vai in «Impostazioni ditta» → «Lettura automatica delle fatture».')
+
+  var base64 = await fileInBase64(file)
+
+  // Il timeout va gestito qui: fetch da solo aspetta all'infinito, e una
+  // richiesta che non torna piu' lascia il bottone spento per sempre.
+  var controllo = new AbortController()
+  var scaduto = false
+  var orologio = setTimeout(function () { scaduto = true; controllo.abort() }, TIMEOUT_LETTURA_MS)
+
+  var risposta
+  try {
+    risposta = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file_base64: base64,
+        media_type: file.type || 'application/pdf',
+        prompt: prompt
+      }),
+      signal: controllo.signal
+    })
+  } catch (e) {
+    if (scaduto) {
+      throw new Error('La lettura ha superato il minuto di attesa e si è fermata. Riprova, oppure usa «Copia prompt».')
+    }
+    // Qui finiscono anche i rifiuti CORS, che il browser non lascia distinguere
+    // da un errore di rete: si dicono tutti e due i motivi possibili.
+    throw new Error('Non sono riuscito a contattare il Worker. Controlla l\'indirizzo in «Impostazioni ditta», oppure usa «Copia prompt».')
+  } finally {
+    clearTimeout(orologio)
+  }
+
+  var dati = null
+  try { dati = await risposta.json() } catch (_) { /* gestito sotto */ }
+
+  if (!dati) throw new Error('Il Worker ha risposto in un formato che non riesco a leggere. Usa «Copia prompt».')
+  if (!dati.ok) throw new Error(dati.errore || 'Il Worker ha rifiutato la richiesta.')
+  if (!String(dati.testo || '').trim()) throw new Error('Il Worker non ha restituito nessun testo. Riprova, oppure usa «Copia prompt».')
+
+  return dati
+}
+
+// ── Il bottone «Leggi da PDF o foto» ─────────────────────────────────────────
+var letturaInCorso = false
+
+function apriSceltaFileLettura() {
+  if (letturaInCorso) return          // due clic non devono fare due chiamate
+  var inp = el('lettura-file')
+  if (inp) { inp.value = ''; inp.click() }
+}
+
+async function leggiFatturaDaFile(input) {
+  if (!input || !input.files || !input.files.length) return
+  if (letturaInCorso) return
+  var file = input.files[0]
+
+  var btn = el('btn-lettura-ai')
+  html('ponte-ai-note', '')
+  html('lettura-costo', '')
+
+  try {
+    // Il limite si controlla PRIMA di leggere e mandare: caricare 30 MB per
+    // sentirsi dire di no e' il modo peggiore di dirlo, e la chiamata si
+    // pagherebbe lo stesso.
+    var mb = file.size / (1024 * 1024)
+    if (mb > LIMITE_LETTURA_MB) {
+      throw new Error('Il file pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' +
+        LIMITE_LETTURA_MB + ' MB. Rifallo con una risoluzione più bassa.')
+    }
+
+    letturaInCorso = true
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Lettura in corso…' }
+    showPonteBanner('info', 'Lettura di «' + file.name + '» in corso… può volerci qualche secondo.')
+
+    // Il prompt esce dal database, con l'elenco dei conti aggiornato: e' lo
+    // stesso del ponte manuale, e come lì i conti vanno caricati prima.
+    await ensureContiIva()
+    var prompt = testoPromptFattura()
+
+    var risposta = await chiediLetturaAlWorker(file, prompt)
+
+    // UNA SOLA strada di validazione: la stessa del ponte copia/incolla.
+    var esito = await applicaTestoLettura(risposta.testo)
+
+    if (esito.ok) {
+      lettaDaAI = true          // il documento entrera' come «da confermare»
+      mostraCostoLettura(risposta.input_tokens, risposta.output_tokens)
+      showPonteBanner('ok', 'Fattura letta. Controlla i campi prima di salvare: entrerà come «da confermare».')
+    }
+    // Se la validazione ha rifiutato, il messaggio l'ha gia' scritto lei.
+  } catch (e) {
+    showPonteBanner('err', (e.message || String(e)) +
+      ' — puoi sempre usare 📋 Copia prompt e leggerla a mano.')
+  } finally {
+    letturaInCorso = false
+    if (btn) { btn.disabled = false; btn.textContent = '📄 Leggi da PDF o foto' }
+    if (input) input.value = ''       // così lo stesso file si può riprovare
+  }
+}
+
+// Il bottone c'e' solo dove serve: su un documento nuovo, e solo se
+// l'indirizzo del Worker e' stato configurato. Senza indirizzo non comparirebbe
+// altro che un errore, e il ponte manuale funziona lo stesso.
+function mostraBottoneLettura(nuovo) {
+  var btn = el('btn-lettura-ai')
+  if (btn) btn.style.display = (nuovo && letturaAutomaticaAttiva()) ? '' : 'none'
+  html('lettura-costo', '')
+}
+
+// ── Il costo, dopo ogni lettura ──────────────────────────────────────────────
+// Niente contatore mensile e niente storico: sarebbero una tabella nuova per un
+// dato che Cloudflare e Anthropic tengono gia'. Serve l'ordine di grandezza,
+// qui e adesso.
+// Sotto il centesimo «0,00 CHF» non dice niente: si scrive che e' meno di
+// un centesimo, che e' l'informazione vera.
+function costoLeggibile(chf) {
+  return (chf > 0 && chf < 0.005) ? 'meno di 0,01 CHF' : fmtNumIt(chf) + ' CHF'
+}
+
+function mostraCostoLettura(inputTokens, outputTokens) {
+  var chf = costoStimatoChf(inputTokens, outputTokens)
+  html('lettura-costo',
+    '<div class="lettura-costo">ℹ️ Lettura completata · costo stimato <strong>' +
+      esc(costoLeggibile(chf)) + '</strong>' +
+      '<span class="dim"> (' + esc(String(inputTokens || 0)) + ' token letti, ' +
+        esc(String(outputTokens || 0)) + ' scritti)</span>' +
+    '</div>')
+}
+
+// ── Impostazioni: l'indirizzo e la prova ─────────────────────────────────────
+function statoLetturaHtml(stato, dettaglio) {
+  var m = {
+    ok:    { ic: '✅', txt: 'funziona',        cls: 'ok' },
+    ko:    { ic: '⚠️', txt: 'non risponde',    cls: 'warn' },
+    vuoto: { ic: '—',  txt: 'non configurato', cls: 'dim' }
+  }[stato] || { ic: '—', txt: 'non configurato', cls: 'dim' }
+  return '<span class="lettura-stato ' + m.cls + '">' + m.ic + ' ' + esc(m.txt) + '</span>' +
+         (dettaglio ? '<div class="form-hint" style="margin-top:6px">' + esc(dettaglio) + '</div>' : '')
+}
+
+function aggiornaStatoLettura() {
+  html('imp-lettura-stato', statoLetturaHtml(letturaAutomaticaAttiva() ? 'ok' : 'vuoto',
+    letturaAutomaticaAttiva() ? 'Indirizzo salvato. Premi «Prova la connessione» per verificarlo davvero.' : null))
+}
+
+// La prova manda una richiesta vera, con un file finto minuscolo: e' l'unico
+// modo di sapere se il Worker risponde, se la chiave c'e' e se l'origine e'
+// ammessa. Un semplice «l'indirizzo sembra giusto» non direbbe niente.
+async function provaConnessioneWorker() {
+  var btn = el('imp-lettura-prova-btn')
+  var url = String(getVal('imp-lettura-url') || '').trim()
+  if (!url) {
+    html('imp-lettura-stato', statoLetturaHtml('vuoto', 'Incolla prima l\'indirizzo del Worker.'))
+    return
+  }
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Prova in corso…' }
+    html('imp-lettura-stato', statoLetturaHtml('vuoto', 'Prova in corso…'))
+
+    // Un PNG trasparente di 1×1 pixel: il file piu' piccolo che l'API accetti.
+    var PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk' +
+                'YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    var controllo = new AbortController()
+    var orologio = setTimeout(function () { controllo.abort() }, 30000)
+    var risposta
+    try {
+      risposta = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_base64: PIXEL, media_type: 'image/png',
+          prompt: 'Rispondi solo con la parola PROVA.'
+        }),
+        signal: controllo.signal
+      })
+    } finally { clearTimeout(orologio) }
+
+    var dati = null
+    try { dati = await risposta.json() } catch (_) {}
+
+    if (dati && dati.ok) {
+      html('imp-lettura-stato', statoLetturaHtml('ok',
+        'Il Worker ha risposto e la chiave funziona. Costo della prova: ' +
+        costoLeggibile(costoStimatoChf(dati.input_tokens, dati.output_tokens)) + '.'))
+    } else {
+      html('imp-lettura-stato', statoLetturaHtml('ko',
+        (dati && dati.errore) ? dati.errore : 'Il Worker ha risposto in modo inatteso (codice ' + risposta.status + ').'))
+    }
+  } catch (e) {
+    html('imp-lettura-stato', statoLetturaHtml('ko',
+      'Non ho ricevuto risposta. Controlla che l\'indirizzo sia giusto e che il Worker risulti pubblicato su Cloudflare.'))
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔌 Prova la connessione' }
+  }
+}
+
+// ── «Da confermare» ──────────────────────────────────────────────────────────
+// Quello che ha letto una macchina non entra nei conti finche' una persona non
+// l'ha guardato. L'infrastruttura c'era gia' dalla FASE 5C: qui si aggiunge il
+// gesto per confermare, che deve restare un gesto — non l'effetto collaterale
+// di un salvataggio.
+var lettaDaAI = false
+
+function daConfermare(a) { return a && a.stato_conferma === 'da_confermare' }
+
+function spiaDaConfermare(a) {
+  if (!daConfermare(a)) return ''
+  return ' <span class="spia-conferma">⏳ Da confermare</span>'
+}
+
+async function confermaAcquisto(id) {
+  if (!window.confirm('Confermare questa fattura?\n\n' +
+      'Da adesso entra nei totali, nelle scadenze e nell\'export per il commercialista.\n' +
+      'Controlla che data e importo siano giusti: l\'AI sbaglia le date e legge male gli importi sulle foto storte.')) return
+  try {
+    const { error } = await sb.from('tm_conta_fatture_acquisto')
+      .update({ stato_conferma: 'confermato' })
+      .eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    scadeCache('flussi')
+    exportDataset = null
+    await loadAcquistiList()
+    await refreshDaConfermareCount()
+    // Se si stava guardando proprio quella scheda, si ridisegna: altrimenti
+    // resterebbe il bottone «Conferma» su una fattura gia' confermata.
+    try {
+      var ap = el('acquisti-detail-view')
+      if (ap && ap.style.display !== 'none') await viewAcquisto(id)
+    } catch (_) {}
+    showFattureBanner('acquisti-list-banner', 'ok', 'Fattura confermata: da adesso entra nei totali.')
+  } catch (e) {
+    showFattureBanner('acquisti-list-banner', 'err', 'Non confermata: ' + (e.message || e))
+  }
+}
+
+// Il badge nel menu, con lo stesso schema di «Da classificare».
+async function refreshDaConfermareCount() {
+  if (!currentUser || !currentAziendaId) return
+  try {
+    const { data, error } = await sb.from('tm_conta_fatture_acquisto')
+      .select('id')
+      .eq('azienda_id', currentAziendaId)
+      .eq('stato_conferma', 'da_confermare')
+    if (error) throw error
+    var n = (data || []).length
+    var badge = el('nav-badge-acquisti')
+    if (badge) {
+      badge.textContent = String(n)
+      badge.style.display = n ? '' : 'none'
+      badge.setAttribute('aria-label', n + ' fatture da confermare')
+    }
+  } catch (_) { /* non bloccante */ }
 }
 
 
@@ -9964,6 +10361,7 @@ document.addEventListener('DOMContentLoaded', function () {
       loadAziendaId().then(function () {
         updateSidebarAuth()
         refreshDaClassificareCount()
+        refreshDaConfermareCount()
         refreshScadenzeCount()
         if (currentPage === 'login') {
           showPage('setup')
@@ -9995,6 +10393,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // si parte dal setup come sempre.
         if (!apriDaIndirizzo()) { showPage('setup'); runSetupCheck() }
         refreshDaClassificareCount()
+        refreshDaConfermareCount()
         // FASE 4 — all'avvio: badge, e la finestrella se c'e' qualcosa in sospeso
         refreshScadenzeCount().then(function () { forseMostraFinestraScadenze() })
       })
