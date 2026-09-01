@@ -2538,6 +2538,11 @@ async function newFattura(tipo) {
   fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' }]
   el('fatture-edit-title').textContent = editorTipo === 'nota_credito' ? 'Nuova nota di credito' : 'Nuova fattura'
   el('f-cli-nome').value = ''
+  // FASE 17 — collegamento alla rubrica: si azzera con il resto dell'intestazione,
+  // altrimenti la fattura nuova nascerebbe legata al cliente di quella prima.
+  if (el('f-cli-contatto-id')) el('f-cli-contatto-id').value = ''
+  html('f-cli-contatto-legato', '')
+  html('f-cli-nome-suggest', '')
   el('f-cli-indirizzo').value = ''
   el('f-cli-paese').value = 'CH'
   el('f-cli-iva').value = ''
@@ -2591,6 +2596,11 @@ async function editFattura(id) {
 
     el('fatture-edit-title').textContent = (f.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura') + ' (bozza)'
     el('f-cli-nome').value = f.cliente_nome || ''
+    // FASE 17 — si ricostruisce il riquadro «collegato in rubrica» dal solo id
+    // salvato: riaprendo una bozza il collegamento deve essere ancora li'.
+    if (el('f-cli-contatto-id')) el('f-cli-contatto-id').value = f.contatto_id || ''
+    html('f-cli-nome-suggest', '')
+    aggiornaLegatoDaId('v', f.contatto_id)
     el('f-cli-indirizzo').value = f.cliente_indirizzo || ''
     el('f-cli-paese').value = f.cliente_paese || 'CH'
     el('f-cli-iva').value = f.cliente_iva || ''
@@ -2720,6 +2730,10 @@ function collectFatturaHeader() {
   return {
     azienda_id:        currentAziendaId,
     cliente_nome:      nome,
+    // FASE 17 — il cliente e' collegato alla rubrica come il fornitore della
+    // fattura d'acquisto. Resta facoltativo: un nome scritto a mano si salva
+    // lo stesso, con contatto_id nullo.
+    contatto_id:       (el('f-cli-contatto-id') && el('f-cli-contatto-id').value) || null,
     cliente_indirizzo: el('f-cli-indirizzo') ? (el('f-cli-indirizzo').value.trim() || null) : null,
     cliente_paese:     (el('f-cli-paese') && el('f-cli-paese').value.trim()) ? el('f-cli-paese').value.trim().toUpperCase().slice(0, 2) : 'CH',
     cliente_iva:       el('f-cli-iva') ? (el('f-cli-iva').value.trim() || null) : null,
@@ -5071,6 +5085,13 @@ let rubricaTab      = 'cliente'
 let editingContattoId = null
 let rubricaSuggest  = { prefix: null, list: [], hi: -1 }   // stato del menu a tendina
 
+// FASE 17 — le colonne e_cliente / e_fornitore arrivano con SQL_FASE17.sql.
+// Se il programma viene aperto prima che la migrazione sia stata lanciata,
+// leggerle farebbe fallire l'intera lettura della rubrica. Qui si tiene traccia
+// se ci sono: quando mancano, il doppio uso semplicemente non esiste e tutto
+// funziona come prima, a categoria singola.
+let contattiDoppiaCategoria = true
+
 // ── Caricamento dati di base ─────────────────────────────────────────────────
 
 // I 9 gruppi di costo/ricavo. Tabella condivisa, si carica una volta sola.
@@ -5135,13 +5156,24 @@ async function loadContatti(force) {
   // Senza sessione non si legge niente, ma non e' una lettura riuscita:
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
   if (!currentAziendaId) { contattiCache = []; return contattiCache }
-  const { data, error } = await sb
-    .from('tm_contatti')
-    .select('id, categoria, ragione_sociale, nome, cognome, indirizzo, cap, citta, paese,' +
-            ' telefono, email, sito_web, uid_partita_iva, iban, gruppo_default,' +
-            ' giorni_pagamento, note, attivo')
-    .eq('azienda_id', currentAziendaId)
-    .order('ragione_sociale', { nullsFirst: false })
+  var campiBase = 'id, categoria, ragione_sociale, nome, cognome, indirizzo, cap, citta, paese,' +
+                  ' telefono, email, sito_web, uid_partita_iva, iban, gruppo_default,' +
+                  ' giorni_pagamento, note, attivo'
+  async function leggi(campi) {
+    return await sb
+      .from('tm_contatti')
+      .select(campi)
+      .eq('azienda_id', currentAziendaId)
+      .order('ragione_sociale', { nullsFirst: false })
+  }
+  var res = await leggi(campiBase + ', e_cliente, e_fornitore')
+  // Migrazione FASE 17 non ancora lanciata: si rilegge senza le due colonne
+  // invece di lasciare la rubrica vuota con un errore incomprensibile.
+  if (res.error && /e_cliente|e_fornitore/.test(String(res.error.message || ''))) {
+    contattiDoppiaCategoria = false
+    res = await leggi(campiBase)
+  }
+  const { data, error } = res
   if (error) throw error
   contattiCache = data || []
   segnaCacheOk('contatti')
@@ -5165,6 +5197,18 @@ function contattoSub(c) {
   if (c.gruppo_default) parti.push('gruppo ' + c.gruppo_default)
   if (c.giorni_pagamento != null) parti.push(c.giorni_pagamento + ' giorni')
   return parti.join(' · ')
+}
+
+// FASE 17 — un contatto appartiene a una scheda o per la sua categoria, oppure
+// per una delle due spunte di doppio uso. Il doppio uso vale solo per clienti e
+// fornitori: e' li' che capita davvero (il fornitore che ogni tanto compra una
+// prestazione). Collaboratori e generici restano a categoria singola.
+function contattoInCategoria(c, cat) {
+  if (!c) return false
+  if (c.categoria === cat) return true
+  if (cat === 'cliente'   && c.e_cliente   === true) return true
+  if (cat === 'fornitore' && c.e_fornitore === true) return true
+  return false
 }
 
 // ── Pagina Rubrica ───────────────────────────────────────────────────────────
@@ -5220,13 +5264,13 @@ function renderContattiList() {
   // I contatori sulle schede contano SEMPRE i soli contatti attivi: servono a
   // dire quanti contatti utilizzabili ci sono, non quanti ne esistono in tutto.
   ;['cliente', 'fornitore', 'collaboratore', 'generico'].forEach(function (c) {
-    var n = tutti.filter(function (x) { return x.categoria === c && x.attivo !== false }).length
+    var n = tutti.filter(function (x) { return contattoInCategoria(x, c) && x.attivo !== false }).length
     var b = el('cnt-' + c)
     if (b) b.textContent = String(n)
   })
 
   var list = tutti.filter(function (c) {
-    if (c.categoria !== rubricaTab) return false
+    if (!contattoInCategoria(c, rubricaTab)) return false
     if (!mostraInattivi && c.attivo === false) return false
     return true
   })
@@ -5297,6 +5341,9 @@ async function nuovoContatto(categoriaIniziale) {
   if (el('c-categoria')) el('c-categoria').value = categoriaIniziale || rubricaTab
   if (el('c-paese'))     el('c-paese').value = 'CH'
   if (el('c-attivo'))    el('c-attivo').checked = true
+  if (el('c-anche-cliente'))   el('c-anche-cliente').checked = false
+  if (el('c-anche-fornitore')) el('c-anche-fornitore').checked = false
+  onCategoriaContattoChange()
   if (el('contatto-card-title')) el('contatto-card-title').textContent = '➕ Nuovo contatto'
   if (el('contatto-submit-btn')) el('contatto-submit-btn').textContent = '💾 Salva contatto'
   html('contatto-banner', '')
@@ -5326,6 +5373,9 @@ async function apriContatto(id) {
   if (el('c-giorni'))    el('c-giorni').value    = c.giorni_pagamento == null ? '' : c.giorni_pagamento
   if (el('c-note'))      el('c-note').value      = c.note || ''
   if (el('c-attivo'))    el('c-attivo').checked  = c.attivo !== false
+  if (el('c-anche-cliente'))   el('c-anche-cliente').checked   = c.e_cliente   === true
+  if (el('c-anche-fornitore')) el('c-anche-fornitore').checked = c.e_fornitore === true
+  onCategoriaContattoChange()
   if (el('contatto-card-title')) el('contatto-card-title').textContent = '👤 ' + contattoNome(c)
   if (el('contatto-submit-btn')) el('contatto-submit-btn').textContent = '💾 Salva modifiche'
   html('contatto-banner', '')
@@ -5366,6 +5416,21 @@ function renderAzioniRapide() {
   html('contatto-azioni-rapide', out)
 }
 
+// FASE 17 — la spunta che ripete la categoria gia' scelta non ha senso e
+// confonde: un contatto di categoria «cliente» non ha bisogno di dichiarare che
+// compare anche fra i clienti. Si nasconde e si toglie la spunta, cosi' non
+// resta una scelta invisibile che poi finisce salvata.
+function onCategoriaContattoChange() {
+  var cat = getVal('c-categoria') || 'generico'
+  ;[['cliente', 'c-anche-cliente'], ['fornitore', 'c-anche-fornitore']].forEach(function (p) {
+    var ridondante = (cat === p[0]) || !contattiDoppiaCategoria
+    var box = el(p[1])
+    var riga = el(p[1] + '-riga')
+    if (ridondante && box) box.checked = false
+    if (riga) riga.style.display = ridondante ? 'none' : ''
+  })
+}
+
 function raccogliContatto() {
   var ragione = getVal('c-ragione')
   var cognome = getVal('c-cognome')
@@ -5377,9 +5442,10 @@ function raccogliContatto() {
   if (giorniNum != null && (isNaN(giorniNum) || giorniNum < 0 || giorniNum > 365)) {
     throw new Error('I giorni di pagamento devono essere un numero fra 0 e 365.')
   }
-  return {
+  var categoria = getVal('c-categoria') || 'generico'
+  var payload = {
     azienda_id:      currentAziendaId,
-    categoria:       getVal('c-categoria') || 'generico',
+    categoria:       categoria,
     ragione_sociale: ragione || null,
     nome:            getVal('c-nome') || null,
     cognome:         cognome || null,
@@ -5397,6 +5463,18 @@ function raccogliContatto() {
     note:            getVal('c-note') || null,
     attivo:          el('c-attivo') ? el('c-attivo').checked : true
   }
+
+  // FASE 17 — doppio uso. La spunta vale solo se NON ripete la categoria gia'
+  // scelta: altrimenti si forza false, cosi' una spunta rimasta nascosta da un
+  // cambio di categoria non finisce salvata. Se la migrazione non e' stata
+  // lanciata le due colonne non esistono e non si scrivono affatto.
+  if (contattiDoppiaCategoria) {
+    payload.e_cliente = (categoria !== 'cliente') &&
+      !!(el('c-anche-cliente') && el('c-anche-cliente').checked)
+    payload.e_fornitore = (categoria !== 'fornitore') &&
+      !!(el('c-anche-fornitore') && el('c-anche-fornitore').checked)
+  }
+  return payload
 }
 
 async function salvaContatto(event) {
@@ -5479,13 +5557,22 @@ function friendlyContattoError(e) {
 // Mappa prefisso -> id dei campi coinvolti. Tenerla qui evita di sparpagliare
 // i nomi degli elementi in dieci funzioni diverse.
 function rubricaCampi(prefix) {
-  return (prefix === 'a')
-    ? { testo: 'a-fornitore', hidden: 'a-contatto-id', suggest: 'a-fornitore-suggest',
-        legato: 'a-contatto-legato', gruppo: 'a-gruppo', scadenza: 'a-scadenza',
-        data: 'a-data', categoria: 'fornitore' }
-    : { testo: 'f-ente', hidden: 'f-contatto-id', suggest: 'f-ente-suggest',
-        legato: 'f-contatto-legato', gruppo: 'f-gruppo', scadenza: 'f-scadenza',
-        data: 'f-data', categoria: 'fornitore' }
+  if (prefix === 'a') {
+    return { testo: 'a-fornitore', hidden: 'a-contatto-id', suggest: 'a-fornitore-suggest',
+             legato: 'a-contatto-legato', gruppo: 'a-gruppo', scadenza: 'a-scadenza',
+             data: 'a-data', categoria: 'fornitore' }
+  }
+  // FASE 17 — 'v' e' la fattura di VENDITA. Gruppo e scadenza restano nulli:
+  // la vendita non e' un nostro debito, non c'e' niente da proporre li'. Il
+  // motore li salta da solo, controlla sempre el(c.gruppo) prima di usarli.
+  if (prefix === 'v') {
+    return { testo: 'f-cli-nome', hidden: 'f-cli-contatto-id', suggest: 'f-cli-nome-suggest',
+             legato: 'f-cli-contatto-legato', gruppo: null, scadenza: null,
+             data: 'f-fat-data', categoria: 'cliente' }
+  }
+  return { testo: 'f-ente', hidden: 'f-contatto-id', suggest: 'f-ente-suggest',
+           legato: 'f-contatto-legato', gruppo: 'f-gruppo', scadenza: 'f-scadenza',
+           data: 'f-data', categoria: 'fornitore' }
 }
 
 function chiudiSuggerimenti(prefix) {
@@ -9945,7 +10032,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '35'
+var VERSIONE = '37'
 
 function controllaVersionePagina() {
   try {
@@ -10187,10 +10274,14 @@ function mostraCostoLettura(inputTokens, outputTokens) {
 
 // ── Impostazioni: l'indirizzo e la prova ─────────────────────────────────────
 function statoLetturaHtml(stato, dettaglio) {
+  // La specifica ne chiedeva tre. Ne servono quattro: dire «non risponde» a
+  // un Worker che ha risposto «credito esaurito» manda a cercare il guasto
+  // nel posto sbagliato.
   var m = {
-    ok:    { ic: '✅', txt: 'funziona',        cls: 'ok' },
-    ko:    { ic: '⚠️', txt: 'non risponde',    cls: 'warn' },
-    vuoto: { ic: '—',  txt: 'non configurato', cls: 'dim' }
+    ok:     { ic: '✅', txt: 'funziona',            cls: 'ok' },
+    guasto: { ic: '⚠️', txt: 'risponde, ma non funziona', cls: 'warn' },
+    ko:     { ic: '⚠️', txt: 'non risponde',        cls: 'warn' },
+    vuoto:  { ic: '—',  txt: 'non configurato',     cls: 'dim' }
   }[stato] || { ic: '—', txt: 'non configurato', cls: 'dim' }
   return '<span class="lettura-stato ' + m.cls + '">' + m.ic + ' ' + esc(m.txt) + '</span>' +
          (dettaglio ? '<div class="form-hint" style="margin-top:6px">' + esc(dettaglio) + '</div>' : '')
@@ -10215,9 +10306,6 @@ async function provaConnessioneWorker() {
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Prova in corso…' }
     html('imp-lettura-stato', statoLetturaHtml('vuoto', 'Prova in corso…'))
 
-    // Un PNG trasparente di 1×1 pixel: il file piu' piccolo che l'API accetti.
-    var PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk' +
-                'YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
     var controllo = new AbortController()
     var orologio = setTimeout(function () { controllo.abort() }, 30000)
     var risposta
@@ -10225,10 +10313,11 @@ async function provaConnessioneWorker() {
       risposta = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          file_base64: PIXEL, media_type: 'image/png',
-          prompt: 'Rispondi solo con la parola PROVA.'
-        }),
+        // Modalita di prova: nessuna immagine. Mandarne una finta aggiungeva
+        // un motivo di fallimento che non c'entrava niente con quello che la
+        // prova deve verificare — ed e' quello che succedeva col pixel 1x1,
+        // che l'API rifiutava perche' troppo piccolo.
+        body: JSON.stringify({ prova: true }),
         signal: controllo.signal
       })
     } finally { clearTimeout(orologio) }
@@ -10241,8 +10330,14 @@ async function provaConnessioneWorker() {
         'Il Worker ha risposto e la chiave funziona. Costo della prova: ' +
         costoLeggibile(costoStimatoChf(dati.input_tokens, dati.output_tokens)) + '.'))
     } else {
-      html('imp-lettura-stato', statoLetturaHtml('ko',
-        (dati && dati.errore) ? dati.errore : 'Il Worker ha risposto in modo inatteso (codice ' + risposta.status + ').'))
+      // Il motivo lo scrive gia' il Worker, in italiano: si mostra quello.
+      // Il codice HTTP da solo non dice a nessuno che cosa aggiustare, e si
+      // aggiunge solo quando non c'e' proprio nient'altro da dire.
+      // Se il Worker ha dato un motivo, ha risposto: il guasto e' a valle.
+      html('imp-lettura-stato', (dati && dati.errore)
+        ? statoLetturaHtml('guasto', dati.errore)
+        : statoLetturaHtml('ko', 'Il Worker ha risposto in modo inatteso (codice ' + risposta.status +
+            '). Se hai appena incollato il codice su Cloudflare, controlla di aver premuto Deploy.'))
     }
   } catch (e) {
     html('imp-lettura-stato', statoLetturaHtml('ko',
@@ -10431,7 +10526,7 @@ function closeSidebar() {
 // FASE 2 — il menu dei suggerimenti della rubrica si chiude cliccando altrove.
 // Senza questo resterebbe aperto sopra il resto del modulo.
 document.addEventListener('click', function (ev) {
-  ['f', 'a'].forEach(function (prefix) {
+  ['f', 'a', 'v'].forEach(function (prefix) {
     var c = rubricaCampi(prefix)
     var box = el(c.suggest)
     if (!box || !box.innerHTML) return
