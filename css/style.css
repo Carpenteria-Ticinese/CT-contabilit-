@@ -1252,6 +1252,77 @@ tbody tr.row-clickable { cursor: pointer; }
 }
 .contatto-azioni { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* FASE 18 — avviso doppione al salvataggio di un contatto nuovo.
+   E' un avviso: le tre strade stanno tutte dentro, nessuna è nascosta. */
+.dop-lista { margin: 10px 0 4px; }
+.dop-riga {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin-bottom: 6px;
+}
+.dop-chi { flex: 1; min-width: 160px; }
+.dop-chi .dim { font-size: 12px; margin-top: 2px; }
+.dop-azioni { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+@media (max-width: 560px) {
+  .dop-riga > .btn-secondary,
+  .dop-azioni > .btn-primary,
+  .dop-azioni > .btn-secondary { flex: 1 1 100%; min-height: 44px; }
+}
+
+/* FASE 18 — riquadro dentro la scheda contatto (le sue fatture di vendita) */
+.card-sub {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: var(--bg);
+}
+.card-sub .card-title { margin-bottom: 10px; }
+.contatto-fatt-testa {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text2);
+  margin-bottom: 10px;
+}
+.contatto-fatt-somma { color: var(--text); }
+.contatto-fatt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.contatto-fatt-row:hover { border-color: var(--primary); background: var(--primary-lt); }
+.contatto-fatt-main { flex: 1; min-width: 0; }
+.contatto-fatt-num { font-weight: 600; color: var(--text); }
+.contatto-fatt-sub { font-size: 12px; color: var(--text2); margin-top: 3px; }
+.contatto-fatt-tot { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.contatto-fatt-tot.nc { color: var(--text2); }
+.card-sub .form-hint { margin-top: 10px; }
+
+/* FASE 18 — in quale scheda sta il contatto. Si vede solo nella vista «Tutti»,
+   dove clienti e fornitori stanno mescolati e il nome da solo non basta. */
+.contatto-cat {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--primary);
+  margin-top: 3px;
+}
+
 /* Azioni rapide: icona SEMPRE con etichetta testuale accanto */
 .azione-rapida {
   display: inline-flex;
@@ -1272,6 +1343,23 @@ tbody tr.row-clickable { cursor: pointer; }
 
 /* ── Campo con ricerca in rubrica (form movimento e acquisto) ────────── */
 .rubrica-pick { position: relative; }
+
+/* FASE 18 — campo di ricerca + bottone «Scegli dalla rubrica» sulla stessa
+   riga. Su schermo stretto il bottone va a capo e resta largo quanto il campo:
+   sul telefono un bottone stretto accanto a un campo largo non si centra. */
+.campo-con-bottone {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.campo-con-bottone > .form-input { flex: 1 1 220px; margin: 0; }
+.campo-con-bottone > .btn-secondary { flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 560px) {
+  .campo-con-bottone > .btn-secondary { flex: 1 1 100%; min-height: 44px; }
+}
+/* Riga di cortesia quando la rubrica è vuota: non è una voce cliccabile. */
+.suggest-vuoto { padding: 10px 12px; font-size: 13px; }
 .rubrica-suggest {
   position: absolute;
   z-index: 60;
