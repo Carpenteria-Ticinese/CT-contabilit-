@@ -58,6 +58,12 @@ let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezz
 let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
 let currentDetailFattura = null
 
+// FASE 19 — il paese che il programma mette da solo in una fattura nuova.
+// Serve saperlo per distinguerlo da un paese scelto da chi scrive: il primo si
+// puo' rimpiazzare col paese del cliente, il secondo no.
+var PAESE_PREDEFINITO = 'CH'
+var paeseFatturaToccato = false   // true = il campo Paese l'ha scritto l'utente
+
 // Fase 3 — modifica Canale B
 let editingMovimentoId = null
 let originalEditValues = null
@@ -2544,7 +2550,8 @@ async function newFattura(tipo) {
   html('f-cli-contatto-legato', '')
   html('f-cli-nome-suggest', '')
   el('f-cli-indirizzo').value = ''
-  el('f-cli-paese').value = 'CH'
+  el('f-cli-paese').value = PAESE_PREDEFINITO
+  paeseFatturaToccato = false   // e' il predefinito, non una scelta
   el('f-cli-iva').value = ''
   el('f-fat-data').value = oggiISO()
   el('f-fat-valuta').value = 'CHF'
@@ -2602,7 +2609,11 @@ async function editFattura(id) {
     html('f-cli-nome-suggest', '')
     aggiornaLegatoDaId('v', f.contatto_id)
     el('f-cli-indirizzo').value = f.cliente_indirizzo || ''
-    el('f-cli-paese').value = f.cliente_paese || 'CH'
+    el('f-cli-paese').value = f.cliente_paese || PAESE_PREDEFINITO
+    // Un paese gia' salvato sulla bozza e' una decisione presa: scegliendo un
+    // contatto non va sovrascritto. Se invece era vuoto, il CH qui sopra e'
+    // solo il predefinito e puo' cedere il posto al paese del cliente.
+    paeseFatturaToccato = !!f.cliente_paese
     el('f-cli-iva').value = f.cliente_iva || ''
     el('f-fat-data').value = f.data_emissione || oggiISO()
     el('f-fat-valuta').value = f.valuta || 'CHF'
@@ -2735,7 +2746,7 @@ function collectFatturaHeader() {
     // lo stesso, con contatto_id nullo.
     contatto_id:       (el('f-cli-contatto-id') && el('f-cli-contatto-id').value) || null,
     cliente_indirizzo: el('f-cli-indirizzo') ? (el('f-cli-indirizzo').value.trim() || null) : null,
-    cliente_paese:     (el('f-cli-paese') && el('f-cli-paese').value.trim()) ? el('f-cli-paese').value.trim().toUpperCase().slice(0, 2) : 'CH',
+    cliente_paese:     (el('f-cli-paese') && el('f-cli-paese').value.trim()) ? el('f-cli-paese').value.trim().toUpperCase().slice(0, 2) : PAESE_PREDEFINITO,
     cliente_iva:       el('f-cli-iva') ? (el('f-cli-iva').value.trim() || null) : null,
     valuta:            el('f-fat-valuta') ? el('f-fat-valuta').value : 'CHF',
     data_emissione:    dataVal || null,
@@ -3221,6 +3232,10 @@ async function viewFattura(id) {
     currentDetailFattura = f
     await ensureContiIva()
     await loadAziendaInfo()
+    // FASE 19 — servono i giorni di pagamento del contatto per l'anteprima
+    // della scadenza su una bozza. Cache condivisa: se e' gia' letta non costa
+    // niente, e se fallisce la fattura si vede lo stesso.
+    try { await loadContatti() } catch (_) { /* la scadenza ripiega sull'azienda */ }
     // Per la nota di credito: carica il riferimento alla fattura originale (per la stampa)
     var rifInfo = null
     if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
@@ -3252,6 +3267,22 @@ async function viewFattura(id) {
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
+}
+
+// FASE 19 — i giorni di pagamento da applicare a una fattura, cercati
+// nell'ordine in cui li cerca anche SQL_FASE18.sql: prima il contatto
+// collegato, poi i termini dell'azienda, in ultimo 30. Le due precedenze
+// devono restare identiche: se divergessero, il documento stampato e la
+// scadenza salvata nel database direbbero due date diverse.
+function giorniPagamentoFattura(f, a) {
+  if (f && f.contatto_id) {
+    var x = (contattiCache || []).filter(function (k) { return k.id === f.contatto_id })[0]
+    var gContatto = x ? safeNum(x.giorni_pagamento) : null
+    if (gContatto != null) return gContatto
+  }
+  var gAzienda = safeNum((a || {}).termini_pagamento_giorni)
+  if (gAzienda != null) return gAzienda
+  return 30
 }
 
 function renderFatturaPrint(f, righe, rifInfo) {
@@ -3333,10 +3364,23 @@ function renderFatturaPrint(f, righe, rifInfo) {
   if (ivaOn && a.numero_iva) addrLines.push('IVA ' + a.numero_iva)
   var addrText = addrLines.join('\n')
 
-  // Scadenza (solo fattura)
-  var giorni = safeNum(a.termini_pagamento_giorni)
-  if (giorni == null) giorni = 30
-  var scadenza = isNC ? null : addDays(f.data_emissione, giorni)
+  // FASE 19 — Scadenza (solo fattura). La data SALVATA e' l'unica verita': se
+  // c'e', si stampa quella e non si ricalcola niente. Il calcolo resta solo per
+  // l'anteprima di una bozza non ancora emessa, e usa la stessa precedenza di
+  // SQL_FASE18.sql. Prima questa riga leggeva solo i termini dell'azienda: con
+  // la scadenza calcolata sui giorni del cliente, il documento in mano al
+  // cliente e lo scadenzario avrebbero detto due date diverse.
+  var giorni = giorniPagamentoFattura(f, a)
+  var scadenza = null
+  if (!isNC) {
+    scadenza = f.data_scadenza || addDays(f.data_emissione, giorni)
+    // Il «termine di pagamento» scritto sotto deve concordare con la data qui
+    // sopra: su una scadenza salvata si ricava da quella, non dalla catena.
+    if (f.data_scadenza) {
+      var gSalvati = diffGiorni(f.data_scadenza, f.data_emissione)
+      if (gSalvati != null) giorni = gSalvati
+    }
+  }
 
   // Meta a destra: numero, data, scadenza (fattura) / riferimento (NC), stato
   var metaRows =
@@ -5940,7 +5984,8 @@ function rubricaCampi(prefix) {
   if (prefix === 'a') {
     return { testo: 'a-fornitore', hidden: 'a-contatto-id', suggest: 'a-fornitore-suggest',
              legato: 'a-contatto-legato', gruppo: 'a-gruppo', scadenza: 'a-scadenza',
-             data: 'a-data', categoria: 'fornitore' }
+             data: 'a-data', categoria: 'fornitore',
+             btnSfoglia: 'a-fornitore-sfoglia' }   // FASE 19
   }
   // FASE 17 — 'v' e' la fattura di VENDITA. Gruppo e scadenza restano nulli:
   // la vendita non e' un nostro debito, non c'e' niente da proporre li'. Il
@@ -5956,7 +6001,8 @@ function rubricaCampi(prefix) {
   }
   return { testo: 'f-ente', hidden: 'f-contatto-id', suggest: 'f-ente-suggest',
            legato: 'f-contatto-legato', gruppo: 'f-gruppo', scadenza: 'f-scadenza',
-           data: 'f-data', categoria: 'fornitore' }
+           data: 'f-data', categoria: 'fornitore',
+           btnSfoglia: 'f-ente-sfoglia' }   // FASE 19
 }
 
 function chiudiSuggerimenti(prefix) {
@@ -6108,9 +6154,22 @@ async function scegliContatto(prefix, id) {
     el(c.indirizzo).value = indirizzoFatt
     compilati.push('indirizzo')
   }
-  if (x.paese && el(c.paese) && !el(c.paese).value.trim()) {
-    el(c.paese).value = String(x.paese).toUpperCase().slice(0, 2)
-    compilati.push('paese')
+  // FASE 19 — il Paese fa eccezione alla regola «solo se vuoto», e la fa per un
+  // motivo preciso: newFattura() ci mette gia' CH, quindi vuoto non e' mai, e
+  // con la regola vecchia un cliente estero restava CH da correggere a mano
+  // ogni volta. Qui vale «vuoto OPPURE ancora il predefinito e mai toccato».
+  // Quello che ha scritto l'utente resta intoccabile come tutto il resto.
+  if (x.paese && el(c.paese)) {
+    var paeseOra = el(c.paese).value.trim()
+    var cede = !paeseOra ||
+               (!paeseFatturaToccato && paeseOra.toUpperCase() === PAESE_PREDEFINITO)
+    var paeseNuovo = String(x.paese).toUpperCase().slice(0, 2)
+    // Si annuncia solo un cambiamento vero: scrivere CH sopra CH non e'
+    // «compilato in automatico», e dirlo sarebbe rumore.
+    if (cede && paeseNuovo !== paeseOra.toUpperCase()) {
+      el(c.paese).value = paeseNuovo
+      compilati.push('paese')
+    }
   }
   if (x.uid_partita_iva && el(c.uid) && !el(c.uid).value.trim()) {
     el(c.uid).value = x.uid_partita_iva
@@ -6118,6 +6177,12 @@ async function scegliContatto(prefix, id) {
   }
 
   renderContattoLegato(prefix, x, compilati)
+}
+
+// FASE 19 — da qui in avanti il Paese lo ha scelto chi scrive, e nessuna
+// scelta di contatto lo tocca piu'. Chiamata dall'oninput del campo.
+function paeseFatturaModificato() {
+  paeseFatturaToccato = true
 }
 
 // L'indirizzo come si stampa in fattura: la via su una riga, NPA e localita'
@@ -10482,7 +10547,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '38'
+var VERSIONE = '39'
 
 function controllaVersionePagina() {
   try {
