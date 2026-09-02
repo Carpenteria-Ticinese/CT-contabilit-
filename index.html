@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=38" />
+  <link rel="stylesheet" href="css/style.css?v=39" />
 </head>
-<body data-versione="38">
+<body data-versione="39">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -457,22 +457,30 @@
 
             <div class="form-group rubrica-pick">
               <label for="f-ente" class="form-label">Ente / Fornitore</label>
-              <input
-                type="text" id="f-ente" class="form-input"
-                maxlength="200" autocomplete="off"
-                placeholder="Scrivi per cercare in rubrica…"
-                oninput="rubricaSuggerisci('f')"
-                onkeydown="rubricaTasti(event, 'f')"
-                aria-describedby="f-ente-hint"
-                aria-autocomplete="list" aria-controls="f-ente-suggest" />
+              <div class="campo-con-bottone">
+                <input
+                  type="text" id="f-ente" class="form-input"
+                  maxlength="200" autocomplete="off"
+                  placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
+                  oninput="rubricaSuggerisci('f')"
+                  onkeydown="rubricaTasti(event, 'f')"
+                  aria-describedby="f-ente-hint"
+                  aria-autocomplete="list" aria-controls="f-ente-suggest" />
+                <button type="button" class="btn-secondary" id="f-ente-sfoglia"
+                        onclick="rubricaSfoglia('f')"
+                        aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
+                  📇 Scegli dalla rubrica
+                </button>
+              </div>
               <input type="hidden" id="f-contatto-id" />
               <div id="f-ente-suggest" class="rubrica-suggest" role="listbox"
                    aria-label="Contatti trovati in rubrica"></div>
               <div id="f-contatto-legato"></div>
               <div class="form-hint" id="f-ente-hint">
-                Scrivi almeno due lettere: cerca fra i contatti in rubrica. Se non c’&egrave;,
-                puoi crearlo al volo senza uscire da questo modulo. Va bene anche lasciare
-                solo il testo, senza collegare nessun contatto.
+                Scrivi almeno due lettere per cercare in rubrica, oppure premi
+                &laquo;Scegli dalla rubrica&raquo; per vedere l’elenco completo. Se il
+                contatto non c’&egrave;, puoi crearlo al volo senza uscire da questo modulo.
+                Va bene anche lasciare solo il testo, senza collegare nessun contatto.
               </div>
             </div>
 
@@ -1106,7 +1114,8 @@
           <div class="form-row">
             <div class="form-group" style="flex:1">
               <label for="f-cli-paese" class="form-label">Paese</label>
-              <input type="text" id="f-cli-paese" class="form-input" maxlength="2" value="CH" />
+              <input type="text" id="f-cli-paese" class="form-input" maxlength="2" value="CH"
+                     oninput="paeseFatturaModificato()" />
             </div>
             <div class="form-group" style="flex:2">
               <label for="f-cli-iva" class="form-label">N. IVA cliente <span class="dim">(facoltativo)</span></label>
@@ -1355,11 +1364,18 @@
           <div class="card-title">🏢 Fornitore e documento</div>
           <div class="form-group rubrica-pick">
             <label for="a-fornitore" class="form-label">Fornitore <span class="req" aria-hidden="true">*</span></label>
-            <input type="text" id="a-fornitore" class="form-input" maxlength="200"
-                   autocomplete="off" placeholder="Scrivi per cercare in rubrica…"
-                   oninput="rubricaSuggerisci('a')"
-                   onkeydown="rubricaTasti(event, 'a')"
-                   aria-autocomplete="list" aria-controls="a-fornitore-suggest" />
+            <div class="campo-con-bottone">
+              <input type="text" id="a-fornitore" class="form-input" maxlength="200"
+                     autocomplete="off" placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
+                     oninput="rubricaSuggerisci('a')"
+                     onkeydown="rubricaTasti(event, 'a')"
+                     aria-autocomplete="list" aria-controls="a-fornitore-suggest" />
+              <button type="button" class="btn-secondary" id="a-fornitore-sfoglia"
+                      onclick="rubricaSfoglia('a')"
+                      aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
+                📇 Scegli dalla rubrica
+              </button>
+            </div>
             <input type="hidden" id="a-contatto-id" />
             <div id="a-fornitore-suggest" class="rubrica-suggest" role="listbox"
                  aria-label="Contatti trovati in rubrica"></div>
@@ -2067,7 +2083,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=38"></script>
+<script src="js/app.js?v=39"></script>
 
 </body>
 </html>
