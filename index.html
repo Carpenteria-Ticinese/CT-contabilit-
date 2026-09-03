@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=39" />
+  <link rel="stylesheet" href="css/style.css?v=40" />
 </head>
-<body data-versione="39">
+<body data-versione="40">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -84,6 +84,16 @@
     <button class="nav-item auth-only" data-page="export">
       <span aria-hidden="true">📤</span>
       <span>Export &amp; consegna</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="busta">
+      <span aria-hidden="true">✉️</span>
+      <span>Busta</span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="codici">
+      <span aria-hidden="true">📖</span>
+      <span>Elenco codici</span>
     </button>
 
     <button class="nav-item auth-only nav-settings" data-page="impostazioni">
@@ -502,6 +512,7 @@
                   type="number" id="f-importo" class="form-input"
                   required min="0.01" step="0.01"
                   placeholder="0.00"
+                  onfocus="this.select()"
                 />
               </div>
               <div class="form-group" style="flex:1">
@@ -622,6 +633,178 @@
     </div>
 
     <!-- ══ PAGINA: Rubrica contatti (Fase 2) ════════════════ -->
+    <!-- FASE 21 — LA BUSTA
+         Le zone rispettano le «Spezifikationen Briefgestaltung von A-Z» della
+         Posta (edizione luglio 2026): zona di affrancatura 74 x 38 mm in alto
+         a destra, zona di codifica da lasciare libera 140 x 15 mm fino al
+         formato B5 e 140 x 35 mm da B5 a B4, in basso a destra. -->
+    <div id="page-busta" class="page">
+
+      <div class="page-header no-print">
+        <div>
+          <div class="page-title">Busta</div>
+          <div class="page-subtitle">
+            Stampa l&rsquo;indirizzo sulla busta invece di scriverlo a mano.
+            Quello che vedi nell&rsquo;anteprima &egrave; quello che esce dalla stampante.
+          </div>
+        </div>
+      </div>
+
+      <div id="busta-banner" role="status" aria-live="polite" class="no-print" style="margin-bottom:16px"></div>
+
+      <div class="card no-print">
+        <div class="card-title">📬 Destinatario</div>
+
+        <div class="form-group rubrica-pick">
+          <label for="busta-nome" class="form-label">Nome / Ragione sociale</label>
+          <div class="campo-con-bottone">
+            <input type="text" id="busta-nome" class="form-input" maxlength="200"
+                   autocomplete="off" placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
+                   oninput="rubricaSuggerisci('b'); disegnaBusta()"
+                   onkeydown="rubricaTasti(event, 'b')"
+                   aria-autocomplete="list" aria-controls="busta-nome-suggest" />
+            <button type="button" class="btn-secondary" id="busta-sfoglia"
+                    onclick="rubricaSfoglia('b')"
+                    aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
+              📇 Scegli dalla rubrica
+            </button>
+          </div>
+          <input type="hidden" id="busta-contatto-id" />
+          <div id="busta-nome-suggest" class="rubrica-suggest" role="listbox"
+               aria-label="Contatti trovati in rubrica"></div>
+          <div id="busta-contatto-legato"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="busta-indirizzo" class="form-label">
+            Indirizzo <span class="dim">(via, NPA e localit&agrave;, e il paese se &egrave; all&rsquo;estero)</span>
+          </label>
+          <textarea id="busta-indirizzo" class="form-input" rows="4" maxlength="400"
+                    oninput="disegnaBusta()"
+                    placeholder="Via Cantonale 12&#10;6710 Biasca"></textarea>
+          <div class="form-hint">
+            Correggi pure qui: si stampa esattamente quello che c&rsquo;&egrave; scritto.
+          </div>
+        </div>
+      </div>
+
+      <div class="card no-print">
+        <div class="card-title">⚙️ Formato e affrancatura</div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="busta-formato" class="form-label">Formato busta</label>
+            <select id="busta-formato" class="form-input" onchange="onFormatoBustaChange()">
+              <option value="c56">C5/6 (DL) &mdash; 220 &times; 110 mm &mdash; per l&rsquo;A4 piegato</option>
+              <option value="c4">C4 &mdash; 324 &times; 229 mm &mdash; per l&rsquo;A4 non piegato</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="busta-affrancatura" class="form-label">Affrancatura</label>
+            <select id="busta-affrancatura" class="form-input" onchange="onAffrancaturaChange()">
+              <option value="francobollo">Francobollo fisico &mdash; lascia lo spazio vuoto</option>
+              <option value="digital">Codice DigitalStamp &mdash; lo stampo io</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group" id="busta-digital-group" style="display:none">
+          <label for="busta-digital" class="form-label">Codice DigitalStamp</label>
+          <input type="text" id="busta-digital" class="form-input" maxlength="40"
+                 placeholder="Incolla qui il codice della Post-App" oninput="disegnaBusta()" />
+          <div class="form-hint">
+            ⚠️ <strong>Provalo una volta prima di fidartene.</strong> La Posta dice di
+            <em>scrivere</em> il codice sulla busta: che accetti anche un codice stampato non
+            risulta dichiarato da nessuna parte. Manda una lettera di prova a te stesso.
+          </div>
+        </div>
+      </div>
+
+      <div class="card no-print">
+        <div class="card-title">📐 Taratura della stampante</div>
+        <div class="form-hint" style="margin-top:0;margin-bottom:12px">
+          Nessuna stampante stampa esattamente dove dice. Stampa la prova su un A4 normale,
+          appoggiala sopra la busta in controluce e correggi di quanti millimetri serve.
+          Valori positivi spostano a destra e verso il basso. La taratura si ricorda,
+          ed &egrave; separata per ogni formato.
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="busta-off-x" class="form-label">Scostamento orizzontale (mm)</label>
+            <input type="number" id="busta-off-x" class="form-input" step="0.5" value="0"
+                   onfocus="this.select()" oninput="disegnaBusta()" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="busta-off-y" class="form-label">Scostamento verticale (mm)</label>
+            <input type="number" id="busta-off-y" class="form-input" step="0.5" value="0"
+                   onfocus="this.select()" oninput="disegnaBusta()" />
+          </div>
+        </div>
+        <div class="form-actions" style="margin-top:0">
+          <button type="button" class="btn-secondary" onclick="salvaTaraturaBusta()">
+            💾 Salva la taratura</button>
+          <button type="button" class="btn-secondary" onclick="stampaProvaBusta()">
+            📄 Stampa di prova su A4</button>
+        </div>
+      </div>
+
+      <div class="card no-print">
+        <div class="card-title">🖨️ Stampa</div>
+        <div class="fase-banner warn" role="status" style="margin-bottom:12px">
+          <span class="icon" aria-hidden="true">⚠️</span>
+          <div class="msg">
+            Nella finestra di stampa del browser scegli <strong>il formato busta</strong>
+            (o &laquo;Personalizzato&raquo; con le misure giuste) e metti i
+            <strong>margini a zero</strong>, senza &laquo;adatta alla pagina&raquo;:
+            se il browser rimpicciolisce, l&rsquo;indirizzo finisce fuori posto.
+          </div>
+        </div>
+        <div class="form-actions" style="margin-top:0">
+          <button type="button" class="btn-primary" onclick="stampaBusta()">
+            🖨️ Stampa la busta</button>
+        </div>
+      </div>
+
+      <div class="card no-print">
+        <div class="card-title">👁️ Anteprima <span class="dim">(in scala)</span></div>
+        <div id="busta-anteprima-wrap"></div>
+      </div>
+
+      <!-- Il foglio vero, in millimetri: quello che va in stampa. -->
+      <div id="busta-foglio"></div>
+      <style id="busta-page-style"></style>
+    </div>
+
+    <!-- FASE 21 — Elenco codici: un foglio da stampare e tenere sul tavolo
+         mentre si classifica. Si legge dai dati veri (piano dei conti e
+         gruppi): se domani cambia un conto, il foglio cambia da solo. -->
+    <div id="page-codici" class="page">
+
+      <div class="page-header no-print">
+        <div>
+          <div class="page-title">Elenco codici</div>
+          <div class="page-subtitle">
+            Il piano dei conti e i nove gruppi, come compaiono quando classifichi.
+            Da stampare e tenere sotto mano, o da copiare e incollare in Word.
+          </div>
+        </div>
+      </div>
+
+      <div class="card no-print" style="margin-bottom:16px">
+        <div class="form-actions" style="margin-top:0">
+          <button class="btn-primary" onclick="stampaElencoCodici()">🖨️ Stampa elenco</button>
+          <button class="btn-secondary" onclick="initCodiciPage(true)">🔄 Rileggi dal database</button>
+        </div>
+        <div class="form-hint">
+          Per incollarlo in Word: seleziona tutto il foglio qui sotto (Ctrl+A dentro la pagina
+          non basta, trascina con il mouse dall&rsquo;inizio alla fine), copia e incolla.
+          Le due tabelle arrivano in Word come tabelle.
+        </div>
+      </div>
+
+      <div id="codici-foglio"></div>
+    </div>
+
     <div id="page-rubrica" class="page">
 
       <div class="page-header">
@@ -698,6 +881,8 @@
         <div class="card">
           <div class="card-title" id="contatto-lettura-titolo">👤 Scheda contatto</div>
 
+          <div id="contatto-lettura-banner" role="alert" aria-live="assertive" style="margin-bottom:12px"></div>
+
           <div id="contatto-lettura-azioni" style="margin-bottom:14px"></div>
 
           <div id="contatto-lettura-dati"></div>
@@ -708,8 +893,13 @@
           <div class="form-actions">
             <button type="button" class="btn-primary" id="contatto-lettura-modifica"
                     onclick="modificaContattoCorrente()">✏️ Modifica</button>
+            <!-- FASE 21 — la busta con l'indirizzo di questo contatto. -->
+            <button type="button" class="btn-secondary"
+                    onclick="apriBustaDaContatto(contattoLetturaId)">✉️ Stampa busta</button>
             <button type="button" class="btn-secondary"
                     onclick="chiudiSchedaContatto()">&larr; Torna all&rsquo;elenco</button>
+            <button type="button" class="btn-danger" id="contatto-elimina-btn"
+                    onclick="chiediEliminaContatto()">🗑️ Elimina contatto</button>
           </div>
         </div>
       </div>
@@ -798,7 +988,7 @@
               </div>
               <div class="form-group" style="flex:1">
                 <label for="c-paese" class="form-label">Paese</label>
-                <input type="text" id="c-paese" class="form-input" maxlength="2" value="CH" placeholder="CH" / autocomplete="off">
+                <select id="c-paese" class="form-input" autocomplete="off"></select>
               </div>
             </div>
 
@@ -1114,8 +1304,8 @@
           <div class="form-row">
             <div class="form-group" style="flex:1">
               <label for="f-cli-paese" class="form-label">Paese</label>
-              <input type="text" id="f-cli-paese" class="form-input" maxlength="2" value="CH"
-                     oninput="paeseFatturaModificato()" />
+              <select id="f-cli-paese" class="form-input"
+                      onchange="paeseFatturaModificato()"></select>
             </div>
             <div class="form-group" style="flex:2">
               <label for="f-cli-iva" class="form-label">N. IVA cliente <span class="dim">(facoltativo)</span></label>
@@ -1139,11 +1329,30 @@
         </div>
 
         <div class="card">
-          <div class="card-title">📦 Righe <button type="button" class="link-btn" onclick="addRiga()">+ Aggiungi riga</button></div>
+          <div class="card-title">📦 Righe
+            <button type="button" class="link-btn" onclick="addRiga()">+ Aggiungi riga</button>
+            <!-- FASE 21 — una riga-titolo raggruppa le voci sotto di sé e non
+                 ha importi: come sulle fatture dei fornitori. -->
+            <button type="button" class="link-btn" onclick="addTitolo()">+ Aggiungi titolo</button>
+          </div>
+          <!-- Le unità più usate in carpenteria. È un elenco di SUGGERIMENTI:
+               il campo resta libero e accetta qualsiasi cosa. -->
+          <datalist id="unita-suggerite">
+            <option value="ml"></option>
+            <option value="m2"></option>
+            <option value="m3"></option>
+            <option value="kg"></option>
+            <option value="h"></option>
+            <option value="fr/h"></option>
+            <option value="ac."></option>
+            <option value="pz"></option>
+            <option value="forfait"></option>
+          </datalist>
           <div class="table-wrap">
             <table>
               <thead><tr>
                 <th>Descrizione</th>
+                <th style="width:80px">Un.</th>
                 <th style="width:90px;text-align:right">Quantità</th>
                 <th style="width:120px;text-align:right">Prezzo unit.</th>
                 <th style="width:160px" id="th-riga-codiva">Codice IVA</th>
@@ -1394,7 +1603,7 @@
           <div class="form-row">
             <div class="form-group" style="flex:2">
               <label for="a-importo" class="form-label">Importo <span class="req" aria-hidden="true">*</span></label>
-              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" oninput="onAcquistoImportoChange()" />
+              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" onfocus="this.select()" oninput="onAcquistoImportoChange()" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-valuta" class="form-label">Valuta</label>
@@ -1412,7 +1621,7 @@
           <div class="form-row">
             <div class="form-group" style="flex:1">
               <label for="a-imponibile" class="form-label">Imponibile</label>
-              <input type="number" id="a-imponibile" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoIvaManual()" />
+              <input type="number" id="a-imponibile" class="form-input" step="0.01" placeholder="—" onfocus="this.select()" oninput="onAcquistoIvaManual()" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-iva" class="form-label">IVA</label>
@@ -2023,6 +2232,9 @@
         <div class="form-group" id="cls-cantiere-group">
           <label for="cls-cantiere" class="form-label">Cantiere <span class="dim">(facoltativo)</span></label>
           <select id="cls-cantiere" class="form-input"></select>
+          <!-- FASE 20 — se l'elenco è vuoto qui compare il perché: un menu
+               vuoto e muto sembra un guasto del programma. -->
+          <div id="cls-cantiere-vuoto"></div>
           <div class="form-hint">Vuoto = «Ditta (generale)». Per le spese da App Cantieri è precompilato.</div>
         </div>
 
@@ -2033,6 +2245,7 @@
             <span>Applica un cantiere comune a tutti (altrimenti ognuno mantiene il suo)</span>
           </label>
           <select id="cls-cantiere-comune" class="form-input" style="margin-top:8px; display:none"></select>
+          <div id="cls-cantiere-bulk-vuoto"></div>
         </div>
 
         <!-- NOTE -->
@@ -2083,7 +2296,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=39"></script>
+<script src="js/app.js?v=40"></script>
 
 </body>
 </html>
