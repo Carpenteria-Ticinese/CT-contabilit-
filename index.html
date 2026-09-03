@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=40" />
+  <link rel="stylesheet" href="css/style.css?v=41" />
 </head>
-<body data-versione="40">
+<body data-versione="41">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -695,8 +695,12 @@
           <div class="form-group" style="flex:1">
             <label for="busta-formato" class="form-label">Formato busta</label>
             <select id="busta-formato" class="form-input" onchange="onFormatoBustaChange()">
-              <option value="c56">C5/6 (DL) &mdash; 220 &times; 110 mm &mdash; per l&rsquo;A4 piegato</option>
-              <option value="c4">C4 &mdash; 324 &times; 229 mm &mdash; per l&rsquo;A4 non piegato</option>
+              <option value="c6">C6 &mdash; 162 &times; 114 mm &mdash; A4 piegato in quattro</option>
+              <option value="c56">C5/6 (DL) &mdash; 220 &times; 110 mm &mdash; A4 piegato in tre</option>
+              <option value="c5">C5 &mdash; 229 &times; 162 mm &mdash; A4 piegato in due</option>
+              <option value="b5">B5 &mdash; 250 &times; 176 mm</option>
+              <option value="c4">C4 &mdash; 324 &times; 229 mm &mdash; A4 non piegato</option>
+              <option value="pers">Personalizzata &mdash; misure mie</option>
             </select>
           </div>
           <div class="form-group" style="flex:1">
@@ -705,6 +709,47 @@
               <option value="francobollo">Francobollo fisico &mdash; lascia lo spazio vuoto</option>
               <option value="digital">Codice DigitalStamp &mdash; lo stampo io</option>
             </select>
+          </div>
+        </div>
+
+        <!-- FASE 22 — le misure della busta personalizzata. -->
+        <div class="form-group" id="busta-pers-group" style="display:none">
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="busta-pers-l" class="form-label">Larghezza (mm)</label>
+              <input type="number" id="busta-pers-l" class="form-input" step="1" min="90" max="353"
+                     onfocus="this.select()" oninput="disegnaBusta()" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="busta-pers-h" class="form-label">Altezza (mm)</label>
+              <input type="number" id="busta-pers-h" class="form-input" step="1" min="90" max="353"
+                     onfocus="this.select()" oninput="disegnaBusta()" />
+            </div>
+          </div>
+          <div class="form-hint">
+            Misura la busta col righello, bordo a bordo. Si salva con &laquo;Salva la taratura&raquo;.
+          </div>
+        </div>
+
+        <!-- FASE 22 / P6c — la dimensione dei caratteri. -->
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="busta-font-dest" class="form-label">Caratteri del destinatario</label>
+            <select id="busta-font-dest" class="form-input" onchange="disegnaBusta()">
+              <option value="10">Piccolo (10 pt)</option>
+              <option value="12" selected>Normale (12 pt)</option>
+              <option value="14">Grande (14 pt)</option>
+              <option value="16">Molto grande (16 pt)</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="busta-font-mitt" class="form-label">Caratteri del mittente</label>
+            <select id="busta-font-mitt" class="form-input" onchange="disegnaBusta()">
+              <option value="7">Piccolo (7 pt)</option>
+              <option value="8" selected>Normale (8 pt)</option>
+              <option value="9">Grande (9 pt)</option>
+            </select>
+            <div class="form-hint">Il mittente resta sempre pi&ugrave; piccolo del destinatario.</div>
           </div>
         </div>
 
@@ -767,6 +812,9 @@
 
       <div class="card no-print">
         <div class="card-title">👁️ Anteprima <span class="dim">(in scala)</span></div>
+        <!-- FASE 22 — l'avviso di sbordo ha un posto suo: nel banner in alto
+             ci scrivono anche il logo e la taratura. -->
+        <div id="busta-avviso-indirizzo" role="status" aria-live="polite"></div>
         <div id="busta-anteprima-wrap"></div>
       </div>
 
@@ -1419,6 +1467,8 @@
         <!-- FASE 8: pagamenti e rate della fattura -->
         <div class="no-print" id="fatture-pagamenti"></div>
         <div class="no-print" id="fatture-classificazione"></div>
+        <!-- FASE 22 — la polizza QR della banca, allegata e stampata in coda -->
+        <div class="no-print" id="fatture-polizza"></div>
         <div class="no-print" id="fatture-allegati"></div>
 
         <div class="card">
@@ -1770,7 +1820,10 @@
           </div>
           <div class="form-group" style="flex:1">
             <label for="imp-paese" class="form-label">Paese</label>
-            <input type="text" id="imp-paese" class="form-input" maxlength="2" value="CH" />
+            <select id="imp-paese" class="form-input" autocomplete="off"></select>
+            <div class="form-hint">
+              &Egrave; il paese del beneficiario sulla polizza QR: un codice sbagliato la rende invalida.
+            </div>
           </div>
         </div>
       </div>
@@ -1805,6 +1858,43 @@
         <div class="form-group">
           <label for="imp-logo" class="form-label">Logo (URL) <span class="dim">(opzionale — se vuoto usa img/logo.png)</span></label>
           <input type="text" id="imp-logo" class="form-input" maxlength="300" placeholder="https://… oppure img/logo.png" />
+        </div>
+      </div>
+
+      <!-- FASE 22 / P2 — Cambia password. Prima si stava fuori dal programma
+           (Supabase) per una cosa che si fa da dentro. -->
+      <div class="card">
+        <div class="card-title">🔑 Cambia password</div>
+        <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
+          Serve la password di adesso: senza, chiunque si sedesse a questo computer mentre
+          il programma &egrave; aperto potrebbe cambiartela e chiuderti fuori.
+          Dopo il cambio resti dentro: non devi rientrare.
+        </p>
+
+        <div id="imp-pwd-banner"></div>
+
+        <div class="form-group">
+          <label for="imp-pwd-attuale" class="form-label">Password attuale</label>
+          <input type="password" id="imp-pwd-attuale" class="form-input"
+                 autocomplete="current-password" maxlength="200" />
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="imp-pwd-nuova" class="form-label">Nuova password</label>
+            <input type="password" id="imp-pwd-nuova" class="form-input"
+                   autocomplete="new-password" maxlength="200" />
+            <div class="form-hint">Almeno 8 caratteri.</div>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="imp-pwd-conferma" class="form-label">Ripeti la nuova password</label>
+            <input type="password" id="imp-pwd-conferma" class="form-input"
+                   autocomplete="new-password" maxlength="200" />
+          </div>
+        </div>
+
+        <div class="form-actions" style="margin-top:0">
+          <button type="button" class="btn-primary" id="imp-pwd-btn" onclick="cambiaPassword()">
+            🔑 Cambia la password</button>
         </div>
       </div>
 
@@ -2230,12 +2320,44 @@
 
         <!-- CANTIERE -->
         <div class="form-group" id="cls-cantiere-group">
-          <label for="cls-cantiere" class="form-label">Cantiere <span class="dim">(facoltativo)</span></label>
+          <label for="cls-cantiere" class="form-label">
+            Cantiere <span class="dim">(facoltativo)</span>
+            <button type="button" class="link-btn" onclick="toggleNuovoCantiere()" id="cls-nuovo-cantiere-toggle">➕ Nuovo cantiere</button>
+          </label>
           <select id="cls-cantiere" class="form-input"></select>
           <!-- FASE 20 — se l'elenco è vuoto qui compare il perché: un menu
                vuoto e muto sembra un guasto del programma. -->
           <div id="cls-cantiere-vuoto"></div>
           <div class="form-hint">Vuoto = «Ditta (generale)». Per le spese da App Cantieri è precompilato.</div>
+        </div>
+
+        <!-- FASE 22 / P4 — Mini-form nuovo cantiere. Solo i tre campi che
+             servono qui: le altre colonne della tabella appartengono all'App
+             Cantieri e si compilano da lì. -->
+        <div id="cls-nuovo-cantiere" class="nuovo-conto-box" style="display:none">
+          <div id="cls-nuovo-cantiere-banner"></div>
+          <div class="form-group">
+            <label for="ncant-nome" class="form-label">Nome del cantiere <span class="req" aria-hidden="true">*</span></label>
+            <input type="text" id="ncant-nome" class="form-input" maxlength="200" placeholder="es. Skinner" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="ncant-luogo" class="form-label">Luogo <span class="dim">(facoltativo)</span></label>
+              <input type="text" id="ncant-luogo" class="form-input" maxlength="200" placeholder="es. Cadenazzo" autocomplete="off" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="ncant-committente" class="form-label">Committente <span class="dim">(facoltativo)</span></label>
+              <input type="text" id="ncant-committente" class="form-input" maxlength="200" autocomplete="off" />
+            </div>
+          </div>
+          <div class="form-hint" style="margin-bottom:6px">
+            Nasce con stato <strong>Attivo</strong>. Il resto della scheda (indirizzo, contatti)
+            si compila nell&rsquo;App Cantieri: qui si crea solo per poterlo scegliere subito.
+          </div>
+          <div class="form-actions" style="margin-top:6px">
+            <button type="button" class="btn-primary" onclick="createCustomCantiere()" id="ncant-save-btn">Crea cantiere</button>
+            <button type="button" class="btn-secondary" onclick="toggleNuovoCantiere()">Annulla</button>
+          </div>
         </div>
 
         <!-- CANTIERE in blocco -->
@@ -2296,7 +2418,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=40"></script>
+<script src="js/app.js?v=41"></script>
 
 </body>
 </html>
