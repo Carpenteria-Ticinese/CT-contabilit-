@@ -58,6 +58,96 @@ let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezz
 let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
 let currentDetailFattura = null
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 21 — I PAESI
+//
+// Il campo Paese era un testo libero di due caratteri, e chi scriveva
+// «Svizzera» si ritrovava «SV» — che nello standard ISO 3166-1 e' El
+// Salvador, non la Svizzera. Quel codice finiva stampato sulla fattura e
+// renderebbe invalida la parte pagamento QR.
+//
+// Adesso si sceglie da un elenco: a schermo il nome, nel database il codice.
+// In cima i sei paesi che servono davvero qui, poi il resto in ordine.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var PAESI_FREQUENTI = [
+  { c: 'CH', n: 'Svizzera' },
+  { c: 'IT', n: 'Italia' },
+  { c: 'DE', n: 'Germania' },
+  { c: 'FR', n: 'Francia' },
+  { c: 'AT', n: 'Austria' },
+  { c: 'LI', n: 'Liechtenstein' }
+]
+
+var PAESI_ALTRI = [
+  { c: 'AL', n: 'Albania' }, { c: 'AD', n: 'Andorra' }, { c: 'SA', n: 'Arabia Saudita' },
+  { c: 'AR', n: 'Argentina' }, { c: 'AM', n: 'Armenia' }, { c: 'AU', n: 'Australia' },
+  { c: 'AZ', n: 'Azerbaigian' }, { c: 'BE', n: 'Belgio' }, { c: 'BY', n: 'Bielorussia' },
+  { c: 'BA', n: 'Bosnia ed Erzegovina' }, { c: 'BR', n: 'Brasile' }, { c: 'BG', n: 'Bulgaria' },
+  { c: 'CA', n: 'Canada' }, { c: 'CN', n: 'Cina' }, { c: 'CY', n: 'Cipro' },
+  { c: 'VA', n: 'Citt\u00e0 del Vaticano' }, { c: 'KR', n: 'Corea del Sud' },
+  { c: 'HR', n: 'Croazia' }, { c: 'DK', n: 'Danimarca' }, { c: 'EG', n: 'Egitto' },
+  { c: 'AE', n: 'Emirati Arabi Uniti' }, { c: 'EE', n: 'Estonia' }, { c: 'FI', n: 'Finlandia' },
+  { c: 'GE', n: 'Georgia' }, { c: 'JP', n: 'Giappone' }, { c: 'GI', n: 'Gibilterra' },
+  { c: 'GR', n: 'Grecia' }, { c: 'IN', n: 'India' }, { c: 'ID', n: 'Indonesia' },
+  { c: 'IE', n: 'Irlanda' }, { c: 'IS', n: 'Islanda' }, { c: 'IL', n: 'Israele' },
+  { c: 'LV', n: 'Lettonia' }, { c: 'LT', n: 'Lituania' }, { c: 'LU', n: 'Lussemburgo' },
+  { c: 'MK', n: 'Macedonia del Nord' }, { c: 'MT', n: 'Malta' }, { c: 'MA', n: 'Marocco' },
+  { c: 'MX', n: 'Messico' }, { c: 'MD', n: 'Moldova' }, { c: 'MC', n: 'Monaco' },
+  { c: 'ME', n: 'Montenegro' }, { c: 'NO', n: 'Norvegia' }, { c: 'NZ', n: 'Nuova Zelanda' },
+  { c: 'NL', n: 'Paesi Bassi' }, { c: 'PL', n: 'Polonia' }, { c: 'PT', n: 'Portogallo' },
+  { c: 'GB', n: 'Regno Unito' }, { c: 'CZ', n: 'Repubblica Ceca' }, { c: 'RO', n: 'Romania' },
+  { c: 'RU', n: 'Russia' }, { c: 'SM', n: 'San Marino' }, { c: 'RS', n: 'Serbia' },
+  { c: 'SG', n: 'Singapore' }, { c: 'SK', n: 'Slovacchia' }, { c: 'SI', n: 'Slovenia' },
+  { c: 'ES', n: 'Spagna' }, { c: 'US', n: 'Stati Uniti' }, { c: 'ZA', n: 'Sudafrica' },
+  { c: 'SE', n: 'Svezia' }, { c: 'TH', n: 'Thailandia' }, { c: 'TR', n: 'Turchia' },
+  { c: 'UA', n: 'Ucraina' }, { c: 'HU', n: 'Ungheria' }
+]
+
+// Il codice e' valido se sta in uno dei due elenchi.
+function paeseValido(codice) {
+  var c = String(codice == null ? '' : codice).trim().toUpperCase()
+  if (!c) return false
+  return PAESI_FREQUENTI.concat(PAESI_ALTRI).some(function (p) { return p.c === c })
+}
+
+function nomePaese(codice) {
+  var c = String(codice == null ? '' : codice).trim().toUpperCase()
+  var t = PAESI_FREQUENTI.concat(PAESI_ALTRI).filter(function (p) { return p.c === c })[0]
+  return t ? t.n : ''
+}
+
+// Le voci della tendina. Un codice che non sta in elenco NON viene cambiato in
+// silenzio: entra come voce «da correggere», cosi' si vede che c'e' e che va
+// sistemato. Indovinare al posto di chi ha scritto sarebbe peggio del difetto.
+function buildPaeseOptions(selected) {
+  var sel = String(selected == null ? '' : selected).trim().toUpperCase()
+  var out = '<option value="">— nessun paese —</option>'
+  function voce(p) {
+    return '<option value="' + esc(p.c) + '"' + (p.c === sel ? ' selected' : '') + '>' +
+           esc(p.n + ' (' + p.c + ')') + '</option>'
+  }
+  out += '<optgroup label="Pi\u00f9 usati">' + PAESI_FREQUENTI.map(voce).join('') + '</optgroup>'
+  out += '<optgroup label="Tutti gli altri">' + PAESI_ALTRI.map(voce).join('') + '</optgroup>'
+  if (sel && !paeseValido(sel)) {
+    out += '<optgroup label="Da correggere">' +
+             '<option value="' + esc(sel) + '" selected>' +
+             '\u26a0\ufe0f ' + esc(sel) + ' — codice non valido, da correggere' +
+             '</option></optgroup>'
+  }
+  return out
+}
+
+// Riempie una tendina paese e ci posiziona il codice indicato. Da usare sempre
+// al posto di `el(id).value = codice`: con una tendina, assegnare un valore che
+// non e' fra le opzioni lo lascerebbe vuoto in silenzio.
+function impostaPaese(id, codice) {
+  var e = el(id)
+  if (!e) return
+  e.innerHTML = buildPaeseOptions(codice)
+  e.value = String(codice == null ? '' : codice).trim().toUpperCase()
+}
+
 // FASE 19 — il paese che il programma mette da solo in una fattura nuova.
 // Serve saperlo per distinguerlo da un paese scelto da chi scrive: il primo si
 // puo' rimpiazzare col paese del cliente, il secondo no.
@@ -440,7 +530,7 @@ async function loadCanalA() {
     try {
       const { data, error } = await sb
         .from('tm_conta_fatture_acquisto')
-        .select('id, fornitore, numero_fornitore, data, importo, valuta')
+        .select('id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id')
         .eq('azienda_id', currentAziendaId)
         .order('data', { ascending: false })
       if (error) throw error
@@ -450,6 +540,9 @@ async function loadCanalA() {
         movimenti.push({
           origine_tipo: 'acquisto',
           origine_id:   acq.id,
+          // FASE 20 — il codice IVA e' gia' sul documento: si porta fin qui,
+          // cosi' la classificazione non lo richiede da capo.
+          codice_iva_id: acq.codice_iva_id || null,
           data:         acq.data,
           descrizione:  desc,
           importo:      safeNum(acq.importo),
@@ -856,6 +949,14 @@ function scadeCache(nome)     { cacheRiuscite[nome] = false }
 // Carica cantieri (sola lettura, con fallback progressivo). Mai bloccante.
 async function loadCantieri(force) {
   if (cacheOk('cantieri') && !force) return
+  // FASE 21 — LA CAUSA DELL'ELENCO SEMPRE VUOTO.
+  // `cantieri` e' protetta da RLS: senza sessione la lettura non da' errore,
+  // restituisce zero righe. Questa funzione la segnava come riuscita, e da
+  // quel momento la cache diceva «nessun cantiere» per tutta la sessione,
+  // anche dopo il login. E' lo stesso caso per cui loadContatti ha gia' la sua
+  // guardia, con lo stesso commento: senza sessione non si legge niente, ma
+  // non e' una lettura riuscita.
+  if (!currentAziendaId) { cantieriCache = cantieriCache || []; return }
   try {
     // FASE 6A — servono anche luogo e stato: il luogo distingue due cantieri
     // con lo stesso nome, lo stato decide l'ordine della tendina.
@@ -920,7 +1021,10 @@ function nomeCantiere(c, conStato) {
   if (!c) return ''
   var n = c.nome || String(c.id).slice(0, 8)
   if (c.luogo) n += ' — ' + c.luogo
-  if (conStato && c.stato && ordineStatoCantiere(c.stato) !== 0) n += ' (' + c.stato + ')'
+  // FASE 21 — lo stato si scrive SEMPRE, anche sugli attivi: nella
+  // classificazione compaiono anche i cantieri completati (si classificano
+  // documenti di lavori finiti) e il nome da solo non dice quale sia quale.
+  if (conStato && c.stato) n += ' (' + c.stato + ')'
   return n
 }
 
@@ -962,6 +1066,20 @@ function buildIvaOptions(selectedId) {
       esc(c.codice + ' · ' + c.descrizione + ' (' + alqLabel + ')') + '</option>'
   }).join('')
   return out
+}
+
+// FASE 20 — un menu con dentro solo «nessun cantiere» non dice se i cantieri
+// non ci sono o se il programma non riesce a leggerli. La tabella `cantieri`
+// e' di App Cantieri e si legge in sola lettura: se torna vuota, la causa piu'
+// probabile sono i permessi di lettura, non un errore di questo programma.
+function notaCantieriVuoti() {
+  if (cantieriCache && cantieriCache.length) return ''
+  return '<div class="form-hint" role="status">' +
+           '⚠️ <strong>Nessun cantiere disponibile.</strong> I cantieri arrivano da ' +
+           'App&nbsp;Cantieri e qui si leggono soltanto. Se in App&nbsp;Cantieri ce ne sono, ' +
+           'il permesso di lettura su questa tabella non è attivo per questo programma: ' +
+           'la classificazione funziona lo stesso, il documento resta «Ditta (generale)».' +
+         '</div>'
 }
 
 function buildCantiereOptions(selectedId, includeGenerale) {
@@ -1108,8 +1226,13 @@ async function openSingleClassify(m, prefill) {
   await loadCantieri()
   el('cls-conto').innerHTML = buildContoOptions('', prefill ? prefill.conto_id : null)
   preparaCampoGruppo()
-  el('cls-iva').innerHTML = buildIvaOptions(prefill ? prefill.codice_iva_id : null)
+  // FASE 20 — ordine delle fonti: una classificazione gia' fatta vince su
+  // tutto (e' una decisione presa), poi il codice IVA scritto sul documento.
+  // Resta modificabile: una spesa si puo' dividere su conti con IVA diversa.
+  el('cls-iva').innerHTML = buildIvaOptions(
+    prefill ? prefill.codice_iva_id : (m.codice_iva_id || null))
   el('cls-cantiere').innerHTML = buildCantiereOptions(prefill ? prefill.cantiere_id : m.cantiere_id, true)
+  html('cls-cantiere-vuoto', notaCantieriVuoti())
   setIvaInclusa(prefill ? (prefill.iva_inclusa !== false) : true)
 
   // Suggerimento solo per una classificazione nuova (non in riclassifica)
@@ -1168,6 +1291,7 @@ async function openBulkPanel() {
   preparaCampoGruppo()
   el('cls-iva').innerHTML = buildIvaOptions(null)
   el('cls-cantiere-comune').innerHTML = buildCantiereOptions(null, true)
+  html('cls-cantiere-bulk-vuoto', notaCantieriVuoti())
   setIvaInclusa(true)
 }
 
@@ -2511,7 +2635,70 @@ function ivaAliquotaById(id) {
 
 // Riga fattura: il prezzo è IVA ESCLUSA → riusa calcolaIva con ivaInclusa=false.
 // Se l'azienda NON è soggetta IVA: nessun calcolo IVA, totale = imponibile.
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 21 — UNITA' DI MISURA E RIGHE-TITOLO
+//
+// Due cose che sulle fatture dei fornitori di Umberto ci sono sempre e qui
+// mancavano: l'unita' accanto alla quantita', e le righe-titolo che
+// raggruppano le voci senza avere un importo proprio.
+//
+// La numerazione di posizione (a., a.1., b., b.1.) NON si salva: si calcola
+// alla stampa. Salvarla vorrebbe dire ritrovarsi numeri sbagliati la prima
+// volta che si toglie una riga in mezzo.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Le unita' che si usano davvero in carpenteria. Sono SUGGERIMENTI: il campo
+// resta libero, perche' prima o poi serve un'unita' che qui non c'e'.
+var UNITA_SUGGERITE = ['ml', 'm2', 'm3', 'kg', 'h', 'fr/h', 'ac.', 'pz', 'forfait']
+
+function isRigaTitolo(r) {
+  return !!r && r.tipo_riga === 'titolo'
+}
+
+// a, b, c … z, poi aa, ab. Oltre le ventisei lettere non ci si arriva su una
+// fattura, ma un titolo senza numero sarebbe peggio di un numero strano.
+function letteraPosizione(i) {
+  var s = ''
+  i = i + 1
+  while (i > 0) {
+    var resto = (i - 1) % 26
+    s = String.fromCharCode(97 + resto) + s
+    i = Math.floor((i - 1) / 26)
+  }
+  return s
+}
+
+// La numerazione, calcolata in un colpo solo su tutte le righe:
+//   titolo                  -> 'a.'   'b.'   'c.'
+//   voce sotto un titolo    -> 'a.1.' 'a.2.' 'b.1.'
+//   voce prima di ogni titolo (o fattura senza titoli, com'e' oggi) -> '1.' '2.'
+// Torna un array parallelo a `righe`.
+function posizioniRighe(righe) {
+  var out = []
+  var titoliVisti = -1     // -1 = nessun titolo ancora incontrato
+  var sotto = 0            // voci sotto il titolo corrente
+  var semplice = 0         // voci prima di qualsiasi titolo
+  for (var i = 0; i < (righe || []).length; i++) {
+    if (isRigaTitolo(righe[i])) {
+      titoliVisti++
+      sotto = 0
+      out.push(letteraPosizione(titoliVisti) + '.')
+    } else if (titoliVisti >= 0) {
+      sotto++
+      out.push(letteraPosizione(titoliVisti) + '.' + sotto + '.')
+    } else {
+      semplice++
+      out.push(semplice + '.')
+    }
+  }
+  return out
+}
+
 function calcolaRiga(r) {
+  // FASE 21 — una riga-titolo vale zero e resta fuori da ogni somma. Tornando
+  // null qui, recalcFatturaTotals e computeCurrentTotale la saltano da soli:
+  // saltano gia' tutto quello che non ha un imponibile.
+  if (isRigaTitolo(r)) return { imponibile: null, iva: null, totale: null }
   var qta = safeNum(r.quantita), prezzo = safeNum(r.prezzo_unitario)
   if (qta == null || prezzo == null) return { imponibile: null, iva: null, totale: null }
   var aliquota = isSoggettoIva() ? ivaAliquotaById(r.codice_iva_id) : 0
@@ -2541,7 +2728,7 @@ async function newFattura(tipo) {
   editorRifId = null
   editorRifTotale = null
   editorRifInfo = null
-  fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' }]
+  fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' }]
   el('fatture-edit-title').textContent = editorTipo === 'nota_credito' ? 'Nuova nota di credito' : 'Nuova fattura'
   el('f-cli-nome').value = ''
   // FASE 17 — collegamento alla rubrica: si azzera con il resto dell'intestazione,
@@ -2550,7 +2737,7 @@ async function newFattura(tipo) {
   html('f-cli-contatto-legato', '')
   html('f-cli-nome-suggest', '')
   el('f-cli-indirizzo').value = ''
-  el('f-cli-paese').value = PAESE_PREDEFINITO
+  impostaPaese('f-cli-paese', PAESE_PREDEFINITO)
   paeseFatturaToccato = false   // e' il predefinito, non una scelta
   el('f-cli-iva').value = ''
   el('f-fat-data').value = oggiISO()
@@ -2597,9 +2784,14 @@ async function editFattura(id) {
       } catch (_) { /* riferimento non disponibile: nessun limite mostrato */ }
     }
     fatturaRighe = (righe || []).map(function (r) {
-      return { descrizione: r.descrizione || '', quantita: r.quantita, prezzo_unitario: r.prezzo_unitario, codice_iva_id: r.codice_iva_id || '' }
+      return { descrizione: r.descrizione || '', quantita: r.quantita,
+               prezzo_unitario: r.prezzo_unitario, codice_iva_id: r.codice_iva_id || '',
+               // FASE 21 — le righe salvate prima della migrazione non hanno
+               // le due colonne: unita vuota e tipo 'voce', che e' quello che
+               // sono sempre state.
+               unita: r.unita || '', tipo_riga: r.tipo_riga || 'voce' }
     })
-    if (!fatturaRighe.length) fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' }]
+    if (!fatturaRighe.length) fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' }]
 
     el('fatture-edit-title').textContent = (f.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura') + ' (bozza)'
     el('f-cli-nome').value = f.cliente_nome || ''
@@ -2609,7 +2801,7 @@ async function editFattura(id) {
     html('f-cli-nome-suggest', '')
     aggiornaLegatoDaId('v', f.contatto_id)
     el('f-cli-indirizzo').value = f.cliente_indirizzo || ''
-    el('f-cli-paese').value = f.cliente_paese || PAESE_PREDEFINITO
+    impostaPaese('f-cli-paese', f.cliente_paese || PAESE_PREDEFINITO)
     // Un paese gia' salvato sulla bozza e' una decisione presa: scegliendo un
     // contatto non va sovrascritto. Se invece era vuoto, il CH qui sopra e'
     // solo il predefinito e puo' cedere il posto al paese del cliente.
@@ -2639,19 +2831,65 @@ function renderRigheEditor() {
   for (var i = 0; i < fatturaRighe.length; i++) {
     var r = fatturaRighe[i]
     var calc = calcolaRiga(r)
+    var titolo = isRigaTitolo(r)
+    // FASE 21 — su una riga-titolo i campi numerici non ci sono proprio: non
+    // devono essere «disattivati ma presenti», perche' un campo grigio invita
+    // comunque a provarci. Al loro posto una cella vuota.
+    // unita, quantita, prezzo, [codice IVA], imponibile, [importo IVA]
+    var celleVuote = '<td></td><td></td><td></td>' + (ivaOn ? '<td></td>' : '') +
+                     '<td></td>' + (ivaOn ? '<td></td>' : '')
     rows +=
-      '<tr>' +
-        '<td><input class="cell-input" value="' + esc(r.descrizione || '') + '" oninput="onRigaInput(' + i + ',\'descrizione\',this.value)" placeholder="Descrizione"></td>' +
-        '<td><input class="cell-input num" type="number" step="0.001" value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '" oninput="onRigaInput(' + i + ',\'quantita\',this.value)"></td>' +
-        '<td><input class="cell-input num" type="number" step="0.01" value="' + esc(r.prezzo_unitario == null ? '' : String(r.prezzo_unitario)) + '" oninput="onRigaInput(' + i + ',\'prezzo_unitario\',this.value)"></td>' +
-        (ivaOn ? '<td><select class="cell-input" onchange="onRigaInput(' + i + ',\'codice_iva_id\',this.value)">' + buildIvaOptions(r.codice_iva_id) + '</select></td>' : '') +
-        '<td class="num" id="imp-cell-' + i + '">' + fmtNum2(calc.imponibile) + '</td>' +
-        (ivaOn ? '<td class="num" id="iva-cell-' + i + '">' + fmtNum2(calc.iva) + '</td>' : '') +
+      '<tr' + (titolo ? ' class="riga-titolo"' : '') + '>' +
+        // FASE 20 — descrizione su piu' righe: e' la parte che legge il
+        // cliente, e su una riga sola il testo lungo spariva a destra. Il
+        // «\n» dopo il tag e' voluto: l'HTML scarta il primo a capo dentro un
+        // textarea, e senza di quello una descrizione che comincia con un a
+        // capo lo perderebbe al primo salvataggio.
+        '<td><textarea class="cell-input cell-desc' + (titolo ? ' cell-titolo' : '') + '" rows="1"' +
+          ' placeholder="' + (titolo ? 'Titolo del gruppo (senza importi)' : 'Descrizione') + '"' +
+          ' oninput="onRigaInput(' + i + ',\'descrizione\',this.value); autoGrowRiga(this)">' +
+          '\n' + esc(r.descrizione || '') + '</textarea></td>' +
+        (titolo ? celleVuote :
+          // FASE 21 — l'unita': campo libero con i suggerimenti piu' usati.
+          // Una tendina chiusa prima o poi non ha l'unita' che serve.
+          '<td><input class="cell-input cell-unita" list="unita-suggerite" maxlength="16"' +
+            ' value="' + esc(r.unita || '') + '" placeholder="—"' +
+            ' oninput="onRigaInput(' + i + ',\'unita\',this.value)"></td>' +
+          // FASE 20 — onfocus/select: il campo parte con «1» (quantita) e col
+          // valore gia' scritto (prezzo). Senza la selezione, la prima cifra si
+          // ACCODA invece di sostituire: scrivere 150 sopra 0 dava 1500, ed e'
+          // finito su una fattura vera.
+          '<td><input class="cell-input num" type="number" step="0.001" value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'quantita\',this.value)"></td>' +
+          '<td><input class="cell-input num" type="number" step="0.01" value="' + esc(r.prezzo_unitario == null ? '' : String(r.prezzo_unitario)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'prezzo_unitario\',this.value)"></td>' +
+          (ivaOn ? '<td><select class="cell-input" onchange="onRigaInput(' + i + ',\'codice_iva_id\',this.value)">' + buildIvaOptions(r.codice_iva_id) + '</select></td>' : '') +
+          '<td class="num" id="imp-cell-' + i + '">' + importoRigaTesto(calc.imponibile) + '</td>' +
+          (ivaOn ? '<td class="num" id="iva-cell-' + i + '">' + importoRigaTesto(calc.iva) + '</td>' : '')
+        ) +
         '<td><button class="icon-btn danger" title="Rimuovi riga" onclick="removeRiga(' + i + ')">✕</button></td>' +
       '</tr>'
   }
   tb.innerHTML = rows
+  // Le descrizioni gia' scritte devono aprirsi alla loro altezza, non a una
+  // riga con il resto nascosto.
+  var aree = tb.querySelectorAll('textarea.cell-desc')
+  for (var j = 0; j < aree.length; j++) autoGrowRiga(aree[j])
   recalcFatturaTotals()
+}
+
+// FASE 20 — il campo cresce col testo, cosi' si vede tutto senza scorrere
+// dentro il campo. Si azzera prima di misurare: senza, l'altezza puo' solo
+// aumentare e il campo non si richiude piu' cancellando righe.
+function autoGrowRiga(ta) {
+  if (!ta) return
+  ta.style.height = 'auto'
+  ta.style.height = ta.scrollHeight + 'px'
+}
+
+// FASE 20 — l'importo di una riga dell'editor: una riga ancora vuota vale
+// zero, e si scrive «0,00». Il trattino dice «dato non disponibile», che qui
+// non e' vero: il dato c'e' ed e' zero finche' non si scrive un prezzo.
+function importoRigaTesto(v) {
+  return fmtNum2(v == null ? 0 : v)
 }
 
 function onRigaInput(i, field, value) {
@@ -2659,18 +2897,27 @@ function onRigaInput(i, field, value) {
   fatturaRighe[i][field] = value
   var calc = calcolaRiga(fatturaRighe[i])
   var impCell = el('imp-cell-' + i), ivaCell = el('iva-cell-' + i)
-  if (impCell) impCell.textContent = fmtNum2(calc.imponibile)
-  if (ivaCell) ivaCell.textContent = fmtNum2(calc.iva)
+  if (impCell) impCell.textContent = importoRigaTesto(calc.imponibile)
+  if (ivaCell) ivaCell.textContent = importoRigaTesto(calc.iva)
   recalcFatturaTotals()
 }
 
+// FASE 21 — la riga-titolo si aggiunge da un bottone suo: trasformare una
+// voce in titolo con una tendina avrebbe voluto dire un campo in piu' su ogni
+// riga, per una cosa che si decide una volta.
+function addTitolo() {
+  fatturaRighe.push({ descrizione: '', quantita: '', prezzo_unitario: '',
+                      codice_iva_id: '', unita: '', tipo_riga: 'titolo' })
+  renderRigheEditor()
+}
+
 function addRiga() {
-  fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' })
+  fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' })
   renderRigheEditor()
 }
 function removeRiga(i) {
   fatturaRighe.splice(i, 1)
-  if (!fatturaRighe.length) fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: 0, codice_iva_id: '' })
+  if (!fatturaRighe.length) fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' })
   renderRigheEditor()
 }
 
@@ -2746,7 +2993,7 @@ function collectFatturaHeader() {
     // lo stesso, con contatto_id nullo.
     contatto_id:       (el('f-cli-contatto-id') && el('f-cli-contatto-id').value) || null,
     cliente_indirizzo: el('f-cli-indirizzo') ? (el('f-cli-indirizzo').value.trim() || null) : null,
-    cliente_paese:     (el('f-cli-paese') && el('f-cli-paese').value.trim()) ? el('f-cli-paese').value.trim().toUpperCase().slice(0, 2) : PAESE_PREDEFINITO,
+    cliente_paese:     (el('f-cli-paese') && el('f-cli-paese').value.trim()) || PAESE_PREDEFINITO,
     cliente_iva:       el('f-cli-iva') ? (el('f-cli-iva').value.trim() || null) : null,
     valuta:            el('f-fat-valuta') ? el('f-fat-valuta').value : 'CHF',
     data_emissione:    dataVal || null,
@@ -2768,14 +3015,23 @@ async function replaceRighe(fatturaId) {
   for (var i = 0; i < fatturaRighe.length; i++) {
     var r = fatturaRighe[i]
     var desc = (r.descrizione || '').trim()
-    if (!desc) continue   // salta le righe vuote
+    // Una riga senza descrizione non e' niente: vale per le voci come per i
+    // titoli. Un titolo ha SEMPRE una descrizione (e' tutto quello che ha),
+    // quindi questa regola non ne butta via nessuno.
+    if (!desc) continue
+    var titolo = isRigaTitolo(r)
     var calc = calcolaRiga(r)
     payload.push({
       fattura_id:      fatturaId,
       descrizione:     desc,
-      quantita:        safeNum(r.quantita) != null ? safeNum(r.quantita) : 0,
-      prezzo_unitario: safeNum(r.prezzo_unitario) != null ? safeNum(r.prezzo_unitario) : 0,
-      codice_iva_id:   isSoggettoIva() ? (r.codice_iva_id || null) : null,
+      // FASE 21 — su un titolo tutti i numeri vanno a zero e l'unita' sparisce:
+      // le colonne sono NOT NULL con default 0, e uno zero esplicito e' piu'
+      // onesto di un residuo lasciato nel modulo prima di cambiare tipo riga.
+      unita:           titolo ? null : ((r.unita || '').trim() || null),
+      tipo_riga:       titolo ? 'titolo' : 'voce',
+      quantita:        titolo ? 0 : (safeNum(r.quantita) != null ? safeNum(r.quantita) : 0),
+      prezzo_unitario: titolo ? 0 : (safeNum(r.prezzo_unitario) != null ? safeNum(r.prezzo_unitario) : 0),
+      codice_iva_id:   (titolo || !isSoggettoIva()) ? null : (r.codice_iva_id || null),
       imponibile_riga: calc.imponibile != null ? calc.imponibile : 0,
       iva_riga:        calc.iva != null ? calc.iva : 0,
       totale_riga:     calc.totale != null ? calc.totale : 0,
@@ -2981,7 +3237,8 @@ async function creaNotaCredito(id) {
       var rp = righe.map(function (r, idx) {
         return {
           fattura_id: ncId, descrizione: r.descrizione, quantita: r.quantita, prezzo_unitario: r.prezzo_unitario,
-          codice_iva_id: r.codice_iva_id, imponibile_riga: r.imponibile_riga, iva_riga: r.iva_riga, totale_riga: r.totale_riga, ordine: idx
+          codice_iva_id: r.codice_iva_id, imponibile_riga: r.imponibile_riga, iva_riga: r.iva_riga, totale_riga: r.totale_riga, ordine: idx,
+          unita: r.unita || null, tipo_riga: r.tipo_riga || 'voce'   // FASE 21
         }
       })
       const { error: rErr2 } = await sb.from('tm_conta_fatture_righe').insert(rp).select()
@@ -3285,6 +3542,31 @@ function giorniPagamentoFattura(f, a) {
   return 30
 }
 
+// FASE 20 — unisce dei pezzi di testo con un separatore, saltando quelli che
+// non ci sono. Uno spazio vuoto non e' un valore: filter(Boolean) lo teneva, e
+// il separatore restava stampato con niente dopo.
+function unisciParti(parti, sep) {
+  return (parti || [])
+    .map(function (p) { return p == null ? '' : String(p).trim() })
+    .filter(function (p) { return p !== '' })
+    .join(sep)
+}
+
+// La forma giuridica da aggiungere al nome, oppure '' se il nome la contiene
+// gia'. Il confronto ignora maiuscole, punti e spazi: «SAGL», «Sagl» e
+// «S.a.g.l.» sono la stessa cosa.
+function formaGiuridicaDaMostrare(nome, forma) {
+  var f = String(forma == null ? '' : forma).trim()
+  if (!f) return ''
+  function nudo(s) { return String(s).toLowerCase().replace(/[^a-z0-9]/g, '') }
+  var n = nudo(nome), fn = nudo(f)
+  if (!fn) return ''
+  // «finisce con» e non «contiene»: una ditta che si chiamasse «Sagliani SA»
+  // non deve perdere la sua forma giuridica per via delle lettere nel nome.
+  if (n.length >= fn.length && n.slice(-fn.length) === fn) return ''
+  return f
+}
+
 function renderFatturaPrint(f, righe, rifInfo) {
   var a = aziendaInfo || {}
   var v = esc(f.valuta || 'CHF')
@@ -3293,12 +3575,31 @@ function renderFatturaPrint(f, righe, rifInfo) {
   var ivaOn = isSoggettoIva()   // interruttore IVA: colonne/riepilogo/numero IVA solo se ON
 
   // Righe (colonne IVA solo se soggetto IVA)
+  // FASE 21 — la numerazione si calcola QUI, alla stampa, e non si salva:
+  // togliendo una riga in mezzo i numeri si rifanno da soli.
+  var posizioni = posizioniRighe(righe)
+  // Quante colonne stanno a destra della descrizione: servono per il colspan
+  // della riga-titolo, che occupa tutto il resto della larghezza.
+  var colonneDopoDesc = 4 + (ivaOn ? 2 : 0)   // Un., Q.tà, Prezzo, [IVA], Importo, [IVA]
   var righeHtml = ''
   for (var i = 0; i < righe.length; i++) {
     var r = righe[i]
+    if (r.tipo_riga === 'titolo') {
+      righeHtml +=
+        '<tr class="inv-riga-titolo">' +
+          '<td class="inv-pos">' + esc(posizioni[i]) + '</td>' +
+          '<td class="inv-desc" colspan="' + colonneDopoDesc + '">' +
+            esc(r.descrizione || '') + '</td>' +
+        '</tr>'
+      continue
+    }
     righeHtml +=
       '<tr>' +
-        '<td>' + esc(r.descrizione || '') + '</td>' +
+        '<td class="inv-pos">' + esc(posizioni[i]) + '</td>' +
+        '<td class="inv-desc">' + esc(r.descrizione || '') + '</td>' +
+        // FASE 21 — l'unita' resta VUOTA sulle righe che non ce l'hanno: un
+        // trattino o un «pz» messo d'ufficio sarebbe un dato inventato.
+        '<td class="inv-un">' + esc(r.unita || '') + '</td>' +
         '<td class="num">' + fmtNum2(safeNum(r.quantita)) + '</td>' +
         '<td class="num">' + fmtNum2(safeNum(r.prezzo_unitario)) + '</td>' +
         (ivaOn ? '<td>' + esc(ivaLabel(r.codice_iva_id)) + '</td>' : '') +
@@ -3307,7 +3608,8 @@ function renderFatturaPrint(f, righe, rifInfo) {
       '</tr>'
   }
   var righeHead =
-    '<th>Descrizione</th><th class="num">Q.tà</th><th class="num">Prezzo</th>' +
+    '<th class="inv-pos">Pos</th><th>Descrizione</th><th class="inv-un">Un.</th>' +
+    '<th class="num">Q.tà</th><th class="num">Prezzo</th>' +
     (ivaOn ? '<th>IVA</th>' : '') +
     '<th class="num">' + (ivaOn ? 'Imponibile' : 'Importo') + '</th>' +
     (ivaOn ? '<th class="num">IVA</th>' : '')
@@ -3355,11 +3657,19 @@ function renderFatturaPrint(f, righe, rifInfo) {
 
   // Intestazione azienda (nome = ragione sociale; indirizzo, NPA città, tel, email)
   var azNome = a.nome || aziendaNome()
+  // FASE 20 — la forma giuridica si stampa solo se NON e' gia' dentro il nome.
+  // Con la ragione sociale scritta per intero («… Sagl») e il campo forma
+  // giuridica compilato («Sagl»), sul documento usciva due volte: sulla carta
+  // che va al cliente sembra un errore di stampa.
+  var formaExtra = formaGiuridicaDaMostrare(azNome, a.forma_giuridica)
   var addrLines = []
   if (a.indirizzo) addrLines.push(a.indirizzo)
-  var cittaRiga = [a.cap, a.citta].filter(Boolean).join(' ')
+  // FASE 20 — i separatori si mettono solo FRA due valori che esistono
+  // davvero: unisciParti scarta anche i campi che contengono solo spazi, che
+  // filter(Boolean) invece teneva. Era il «·» sospeso dopo il telefono.
+  var cittaRiga = unisciParti([a.cap, a.citta], ' ')
   if (cittaRiga) addrLines.push(cittaRiga)
-  var contattiLine = [(a.telefono ? 'Tel. ' + a.telefono : null), a.email].filter(Boolean).join(' · ')
+  var contattiLine = unisciParti([(a.telefono ? 'Tel. ' + a.telefono : null), a.email], ' · ')
   if (contattiLine) addrLines.push(contattiLine)
   if (ivaOn && a.numero_iva) addrLines.push('IVA ' + a.numero_iva)
   var addrText = addrLines.join('\n')
@@ -3415,8 +3725,8 @@ function renderFatturaPrint(f, righe, rifInfo) {
 
   // Piè di pagina centrato
   var footerParts = [esc(azNome)]
-  if (a.uid) footerParts.push('UID ' + esc(a.uid))
-  if (a.sito_web) footerParts.push(esc(a.sito_web))
+  if (unisciParti([a.uid], '')) footerParts.push('UID ' + esc(String(a.uid).trim()))
+  if (unisciParti([a.sito_web], '')) footerParts.push(esc(String(a.sito_web).trim()))
   var footerHtml =
     '<div class="inv-footer">' +
       '<strong>' + footerParts.join(' · ') + '</strong><br>' +
@@ -3430,7 +3740,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
           '<img src="' + esc(logoSrc) + '" alt="Logo azienda" class="inv-logo" onerror="logoOnError(this)">' +
           '<div class="inv-brand-info">' +
             '<div class="inv-azienda-nome">' + esc(azNome) +
-              (a.forma_giuridica ? ' <span class="inv-forma">' + esc(a.forma_giuridica) + '</span>' : '') +
+              (formaExtra ? ' <span class="inv-forma">' + esc(formaExtra) + '</span>' : '') +
             '</div>' +
             '<div class="inv-azienda-addr">' + esc(addrText) + '</div>' +
           '</div>' +
@@ -3443,7 +3753,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
       '<div class="inv-cliente">' +
         '<div class="inv-cliente-lbl">Fatturare a</div>' +
         '<div class="inv-cliente-nome">' + esc(f.cliente_nome || '') + '</div>' +
-        (f.cliente_indirizzo ? '<div>' + esc(f.cliente_indirizzo) + '</div>' : '') +
+        (f.cliente_indirizzo ? '<div class="inv-cli-addr">' + esc(f.cliente_indirizzo) + '</div>' : '') +
         (f.cliente_paese ? '<div>' + esc(f.cliente_paese) + '</div>' : '') +
         (f.cliente_iva ? '<div>IVA: ' + esc(f.cliente_iva) + '</div>' : '') +
       '</div>' +
@@ -3463,6 +3773,8 @@ function renderDetailActions(f) {
   a += '<button class="btn-primary" onclick="printFattura()">🖨 Stampa</button>'
   // Stesso CSS di stampa, stesso risultato: cambia solo il nome del file proposto.
   a += '<button class="btn-secondary" onclick="scaricaFatturaPDF()">📄 Scarica PDF</button>'
+  // FASE 21 — la busta col destinatario gia' pronto.
+  a += '<button class="btn-secondary" onclick="apriBustaDaFattura(\'' + esc(f.id) + '\')">✉️ Stampa busta</button>'
   // FASE 7 — il PDF si allega dopo averlo generato: da li' entra nel pacchetto
   // per il commercialista. Il testo cambia se ce n'e' gia' uno.
   if (f.stato !== 'bozza') {
@@ -5297,6 +5609,348 @@ function contattoInCategoria(c, cat) {
   return false
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 21 / P9 — LA BUSTA
+//
+// LE ZONE NON SONO INVENTATE. Vengono dalle «Spezifikationen Briefgestaltung
+// von A-Z» della Posta Svizzera (edizione luglio 2026), scaricate e lette:
+//
+//   Frankierzone (affrancatura)  74 x 38 mm, in alto a DESTRA, a filo dei
+//                                bordi. Deve restare libera.
+//   Codierzone   (codifica)      140 x 15 mm fino al formato B5, 140 x 35 mm
+//                                da B5 a B4. In basso a DESTRA, a filo dei
+//                                bordi. DEVE restare libera: e' la fascia su
+//                                cui stampa la macchina di smistamento.
+//   Lesezone     (lettura)       la fascia in mezzo alle due, a filo del bordo
+//                                destro: e' li' che va l'indirizzo.
+//
+// Il blocco indirizzo e' posato DENTRO la zona di lettura con margini larghi.
+// La sua distanza esatta dal bordo sinistro non e' un numero della specifica:
+// il disegno della Posta e' schematico e non in scala (verificato sui
+// rettangoli del PDF). Per questo c'e' la taratura, e per questo c'e' la
+// stampa di prova su A4 da appoggiare sopra la busta.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var FORMATI_BUSTA = {
+  c56: { etichetta: 'C5/6 (DL)', larghezza: 220, altezza: 110, codificaH: 15 },
+  c4:  { etichetta: 'C4',        larghezza: 324, altezza: 229, codificaH: 35 }
+}
+
+// Zona di affrancatura: uguale su tutti i formati.
+var BUSTA_FRANC_W = 74
+var BUSTA_FRANC_H = 38
+// Zona di codifica: larghezza uguale, altezza secondo il formato.
+var BUSTA_CODIF_W = 140
+
+function formatoBustaCorrente() {
+  var v = getVal('busta-formato') || 'c56'
+  return FORMATI_BUSTA[v] ? v : 'c56'
+}
+
+// L'indirizzo come va su una busta: via, NPA e localita', e il paese solo se
+// non e' la Svizzera. Su una lettera interna il paese non si scrive.
+function indirizzoPerBusta(x) {
+  if (!x) return ''
+  var righe = []
+  if (x.indirizzo) righe.push(String(x.indirizzo).trim())
+  var citta = unisciParti([x.cap, x.citta], ' ')
+  if (citta) righe.push(citta)
+  var p = String(x.paese || '').trim().toUpperCase()
+  if (p && p !== 'CH') righe.push(paeseValido(p) ? nomePaese(p).toUpperCase() : p)
+  return righe.join('\n')
+}
+
+async function initBustaPage() {
+  await loadAziendaInfo()
+  await loadImpostazioniConta()
+  caricaTaraturaBusta()
+  onAffrancaturaChange()
+  disegnaBusta()
+}
+
+// Le due chiavi della taratura, una coppia per formato.
+function chiaviTaraturaBusta(formato) {
+  return { x: 'busta_off_x_' + formato, y: 'busta_off_y_' + formato }
+}
+
+function caricaTaraturaBusta() {
+  var k = chiaviTaraturaBusta(formatoBustaCorrente())
+  if (el('busta-off-x')) el('busta-off-x').value = impostazione(k.x, '0')
+  if (el('busta-off-y')) el('busta-off-y').value = impostazione(k.y, '0')
+}
+
+async function salvaTaraturaBusta() {
+  var f = formatoBustaCorrente()
+  var k = chiaviTaraturaBusta(f)
+  try {
+    await salvaImpostazioneConta(k.x, safeNum(getVal('busta-off-x')) || 0,
+      'Taratura busta ' + FORMATI_BUSTA[f].etichetta + ': scostamento orizzontale in mm')
+    await salvaImpostazioneConta(k.y, safeNum(getVal('busta-off-y')) || 0,
+      'Taratura busta ' + FORMATI_BUSTA[f].etichetta + ': scostamento verticale in mm')
+    html('busta-banner',
+      '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
+      '<div class="msg">Taratura salvata per il formato ' +
+        esc(FORMATI_BUSTA[f].etichetta) + '.</div></div>')
+  } catch (e) {
+    html('busta-banner',
+      '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">Taratura non salvata: ' + esc(e.message || e) + '</div></div>')
+  }
+}
+
+function onFormatoBustaChange() {
+  caricaTaraturaBusta()
+  disegnaBusta()
+}
+
+function onAffrancaturaChange() {
+  var digital = getVal('busta-affrancatura') === 'digital'
+  var g = el('busta-digital-group')
+  if (g) g.style.display = digital ? 'block' : 'none'
+  disegnaBusta()
+}
+
+// Il contenuto della busta, in millimetri. Lo stesso HTML serve per
+// l'anteprima a schermo e per la stampa: una cosa sola, che non puo' divergere.
+function bustaHtml(conGuide) {
+  var f = FORMATI_BUSTA[formatoBustaCorrente()]
+  var offX = safeNum(getVal('busta-off-x')) || 0
+  var offY = safeNum(getVal('busta-off-y')) || 0
+  var a = aziendaInfo || {}
+
+  // Mittente in alto a sinistra: se una lettera torna indietro, la Posta deve
+  // sapere a chi renderla senza doverla aprire.
+  var mitt = unisciParti([
+    a.nome || aziendaNome(),
+    a.indirizzo,
+    unisciParti([a.cap, a.citta], ' ')
+  ], '\n')
+
+  var logo = (a.logo_url && String(a.logo_url).trim()) ? a.logo_url : 'img/logo.png'
+
+  var nome = getVal('busta-nome')
+  var indirizzo = el('busta-indirizzo') ? el('busta-indirizzo').value : ''
+  var destinatario = unisciParti([nome, indirizzo], '\n')
+
+  var digital = getVal('busta-affrancatura') === 'digital'
+  var codice = getVal('busta-digital')
+
+  // Il blocco indirizzo sta dentro la zona di lettura: sotto l'affrancatura
+  // (38 mm dall'alto) e sopra la zona di codifica.
+  var indTop  = BUSTA_FRANC_H + 8
+  var indLeft = Math.round(f.larghezza * 0.45)
+  var indMaxH = f.altezza - indTop - f.codificaH - 4
+
+  var guide = conGuide
+    ? '<div class="bz bz-franc" style="width:' + BUSTA_FRANC_W + 'mm;height:' + BUSTA_FRANC_H + 'mm">' +
+        '<span>zona affrancatura 74 × 38 — libera</span></div>' +
+      '<div class="bz bz-codif" style="width:' + BUSTA_CODIF_W + 'mm;height:' + f.codificaH + 'mm">' +
+        '<span>zona di codifica ' + BUSTA_CODIF_W + ' × ' + f.codificaH + ' — DEVE restare libera</span></div>' +
+      '<div class="bz bz-lettura" style="top:' + BUSTA_FRANC_H + 'mm;bottom:' + f.codificaH + 'mm">' +
+        '<span>zona di lettura</span></div>'
+    : ''
+
+  return '<div class="busta busta-' + formatoBustaCorrente() + '"' +
+           ' style="width:' + f.larghezza + 'mm;height:' + f.altezza + 'mm">' +
+           '<div class="busta-contenuto" style="transform:translate(' + offX + 'mm,' + offY + 'mm)">' +
+             guide +
+             '<div class="busta-mitt">' +
+               '<img src="' + esc(logo) + '" alt="" class="busta-logo" onerror="logoOnError(this)">' +
+               '<div class="busta-mitt-testo">' + esc(mitt) + '</div>' +
+             '</div>' +
+             (digital && codice
+               ? '<div class="busta-digital" style="width:' + BUSTA_FRANC_W + 'mm">' +
+                   '<div class="busta-digital-et">DigitalStamp</div>' +
+                   '<div class="busta-digital-cod">' + esc(codice) + '</div>' +
+                 '</div>'
+               : '') +
+             '<div class="busta-dest" style="left:' + indLeft + 'mm;top:' + indTop + 'mm;' +
+                  'max-height:' + indMaxH + 'mm">' +
+               esc(destinatario || 'Destinatario da compilare') +
+             '</div>' +
+           '</div>' +
+         '</div>'
+}
+
+function disegnaBusta() {
+  if (!el('busta-foglio')) return
+  html('busta-foglio', bustaHtml(false))
+  // L'anteprima e' la stessa busta rimpicciolita: se le due divergessero,
+  // quella a schermo non varrebbe niente.
+  html('busta-anteprima-wrap',
+    '<div class="busta-scala">' + bustaHtml(true) + '</div>')
+}
+
+// La misura del foglio si decide qui e non nel CSS fisso: cambia con il
+// formato scelto, e la stampa di prova esce su A4.
+function impostaPaginaBusta(perProva) {
+  var f = FORMATI_BUSTA[formatoBustaCorrente()]
+  var st = el('busta-page-style')
+  if (!st) return
+  st.textContent = perProva
+    ? '@media print { @page { size: A4 portrait; margin: 0; } }'
+    : '@media print { @page { size: ' + f.larghezza + 'mm ' + f.altezza + 'mm; margin: 0; } }'
+}
+
+function stampaBusta() {
+  impostaPaginaBusta(false)
+  html('busta-foglio', bustaHtml(false))
+  document.body.classList.add('stampa-busta')
+  var pulisci = function () {
+    document.body.classList.remove('stampa-busta')
+    window.removeEventListener('afterprint', pulisci)
+  }
+  window.addEventListener('afterprint', pulisci)
+  window.print()
+  setTimeout(pulisci, 60000)
+}
+
+// La prova: su A4 normale, col contorno della busta e i riquadri delle zone.
+// Si appoggia il foglio sopra la busta in controluce e si vede di quanto
+// spostare. Cosi' non si sprecano buste per tarare.
+function stampaProvaBusta() {
+  impostaPaginaBusta(true)
+  html('busta-foglio',
+    '<div class="busta-prova-nota">Prova di taratura — formato ' +
+      esc(FORMATI_BUSTA[formatoBustaCorrente()].etichetta) +
+      '. Appoggia questo foglio sopra la busta, in controluce, e correggi gli ' +
+      'scostamenti finché il contorno combacia.</div>' +
+    bustaHtml(true))
+  document.body.classList.add('stampa-busta', 'stampa-busta-prova')
+  var pulisci = function () {
+    document.body.classList.remove('stampa-busta', 'stampa-busta-prova')
+    disegnaBusta()
+    window.removeEventListener('afterprint', pulisci)
+  }
+  window.addEventListener('afterprint', pulisci)
+  window.print()
+  setTimeout(pulisci, 60000)
+}
+
+// Le due porte d'ingresso: dal documento e dalla rubrica.
+async function apriBustaDaFattura(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  showPage('busta')
+  await initBustaPage()
+  if (f) {
+    if (el('busta-nome')) el('busta-nome').value = f.cliente_nome || ''
+    if (el('busta-indirizzo')) {
+      var righe = [f.cliente_indirizzo || '']
+      var p = String(f.cliente_paese || '').trim().toUpperCase()
+      if (p && p !== 'CH') righe.push(paeseValido(p) ? nomePaese(p).toUpperCase() : p)
+      el('busta-indirizzo').value = unisciParti(righe, '\n')
+    }
+    if (el('busta-contatto-id')) el('busta-contatto-id').value = f.contatto_id || ''
+    html('busta-contatto-legato', '')
+  }
+  disegnaBusta()
+}
+
+async function apriBustaDaContatto(id) {
+  var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
+  showPage('busta')
+  await initBustaPage()
+  if (c) {
+    if (el('busta-nome')) el('busta-nome').value = contattoNome(c)
+    if (el('busta-indirizzo')) el('busta-indirizzo').value = indirizzoPerBusta(c)
+    if (el('busta-contatto-id')) el('busta-contatto-id').value = c.id
+    renderContattoLegato('b', c, null)
+  }
+  disegnaBusta()
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 21 / P8 — IL FOGLIO DEI CODICI
+//
+// Un foglio solo, da stampare e tenere sul tavolo mentre si classifica: il
+// piano dei conti e i nove gruppi. Si legge dai dati veri, non da un elenco
+// scritto qui dentro: un elenco scritto nel codice il giorno dopo e' gia'
+// vecchio, e nessuno se ne accorge finche' non sbaglia una classificazione.
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function initCodiciPage(force) {
+  html('codici-foglio', loadingRow('Lettura di conti e gruppi…'))
+  try {
+    await ensureContiIva(force)
+    await loadGruppi(force)
+    html('codici-foglio', foglioCodiciHtml())
+  } catch (e) {
+    html('codici-foglio',
+      '<div class="fase-banner err" role="alert">' +
+        '<span class="icon" aria-hidden="true">\u274c</span>' +
+        '<div class="msg">Elenco non caricato: ' + esc(e.message || e) +
+          '. Ricarica la pagina e riprova.</div>' +
+      '</div>')
+  }
+}
+
+function foglioCodiciHtml() {
+  var conti  = contiCache || []
+  var gruppi = gruppiCache || []
+
+  // Lo stesso ordine che si vede classificando: prima i conti propri, poi il
+  // pacchetto CH, e dentro ciascun blocco per numero di conto. Un foglio che
+  // ordina in un altro modo costringe a cercare due volte.
+  var propri    = conti.filter(function (c) { return c.azienda_id != null })
+  var pacchetto = conti.filter(function (c) { return c.azienda_id == null })
+
+  function righeConti(list) {
+    return list.map(function (c) {
+      return '<tr>' +
+               '<td class="cod-num">' + esc(String(c.codice_conto)) + '</td>' +
+               '<td>' + esc(c.descrizione || '') + '</td>' +
+             '</tr>'
+    }).join('')
+  }
+
+  function blocco(titolo, list) {
+    if (!list.length) return ''
+    return '<h3 class="cod-sottotitolo">' + esc(titolo) +
+             ' <span class="cod-quanti">(' + list.length + ')</span></h3>' +
+           '<table class="cod-tabella">' +
+             '<thead><tr><th class="cod-num">Conto</th><th>Descrizione</th></tr></thead>' +
+             '<tbody>' + righeConti(list) + '</tbody>' +
+           '</table>'
+  }
+
+  var contiHtml = (propri.length || pacchetto.length)
+    ? blocco('I miei conti', propri) + blocco('Pacchetto CH', pacchetto)
+    : '<div class="dim">Piano dei conti non disponibile: rientra e riprova.</div>'
+
+  var gruppiHtml = gruppi.length
+    ? '<table class="cod-tabella">' +
+        '<thead><tr><th class="cod-num">Gruppo</th><th>Significato</th></tr></thead>' +
+        '<tbody>' + gruppi.map(function (g) {
+          return '<tr>' +
+                   '<td class="cod-num">' + esc(g.codice) + '</td>' +
+                   '<td><strong>' + esc(g.nome || '') + '</strong>' +
+                     (g.esempi ? '<br><span class="cod-esempi">' + esc(g.esempi) + '</span>' : '') +
+                   '</td>' +
+                 '</tr>'
+        }).join('') + '</tbody>' +
+      '</table>'
+    : '<div class="dim">Gruppi non disponibili: rientra e riprova.</div>'
+
+  // Intestazione: chi e quando. Su un foglio stampato senza data non si sa se
+  // e' quello di oggi o quello dell'anno scorso.
+  var a = aziendaInfo || {}
+  return '<div class="cod-foglio">' +
+           '<div class="cod-testata">' +
+             '<div class="cod-ditta">' + esc(a.nome || aziendaNome() || '') + '</div>' +
+             '<div class="cod-titolo">Elenco dei codici</div>' +
+             '<div class="cod-data">Stampato il ' + esc(fmtDate(oggiISO())) + '</div>' +
+           '</div>' +
+           '<h2 class="cod-sezione">Piano dei conti</h2>' +
+           contiHtml +
+           '<h2 class="cod-sezione">I nove gruppi di costo e ricavo</h2>' +
+           gruppiHtml +
+         '</div>'
+}
+
+function stampaElencoCodici() {
+  window.print()
+}
+
 // ── Pagina Rubrica ───────────────────────────────────────────────────────────
 
 async function initRubricaPage() {
@@ -5450,7 +6104,7 @@ async function nuovoContatto(categoriaIniziale) {
   // Cliente, che è la voce più frequente, e resta cambiabile dal menu.
   var catIniziale = categoriaIniziale || (rubricaTab === 'tutti' ? 'cliente' : rubricaTab)
   if (el('c-categoria')) el('c-categoria').value = catIniziale
-  if (el('c-paese'))     el('c-paese').value = 'CH'
+  impostaPaese('c-paese', PAESE_PREDEFINITO)
   if (el('c-attivo'))    el('c-attivo').checked = true
   if (el('c-anche-cliente'))   el('c-anche-cliente').checked = false
   if (el('c-anche-fornitore')) el('c-anche-fornitore').checked = false
@@ -5475,6 +6129,7 @@ async function apriContatto(id) {
   if (el('contatto-lettura-titolo')) {
     el('contatto-lettura-titolo').textContent = '👤 ' + contattoNome(c)
   }
+  html('contatto-lettura-banner', '')
   html('contatto-lettura-azioni', azioniRapideHtml(c.telefono, c.email, contattoNome(c)))
   html('contatto-lettura-dati', contattoLetturaHtml(c))
   html('contatto-lettura-fatture', loadingRow('Caricamento fatture…'))
@@ -5502,7 +6157,11 @@ function contattoLetturaHtml(c) {
     '<div class="ro-section">Dove</div>' +
     riga('Indirizzo', esc(c.indirizzo || '')) +
     riga('NPA e località', esc(luogo)) +
-    riga('Paese', esc(c.paese || '')) +
+    riga('Paese', c.paese
+      ? (paeseValido(c.paese)
+          ? esc(nomePaese(c.paese) + ' (' + String(c.paese).toUpperCase() + ')')
+          : esc(String(c.paese)) + ' ' + badge('err', '\u26a0\ufe0f codice non valido'))
+      : '') +
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Recapiti</div>' +
     riga('Telefono', esc(c.telefono || '')) +
@@ -5656,6 +6315,159 @@ function fattureContattoHtml(list, residuo) {
   '</div>'
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 21 / P4 — Eliminare un contatto
+//
+// Un contatto si elimina solo se non e' nominato da nessun documento. Una
+// fattura deve continuare a dire a chi e' stata fatta: staccarla dal suo
+// contatto per far posto a una cancellazione sarebbe rovinare il documento
+// per comodita' dell'anagrafica. Quando ci sono documenti l'unica strada e'
+// l'archiviazione, che toglie il contatto dagli elenchi e lascia intatto il
+// passato.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Le TRE tabelle che nominano un contatto (verificate su SQL_PASSO1.sql:
+// nessun'altra ha la colonna contatto_id).
+var TABELLE_CON_CONTATTO = [
+  { tabella: 'tm_conta_fatture',           uno: 'fattura di vendita',  molti: 'fatture di vendita' },
+  { tabella: 'tm_conta_fatture_acquisto',  uno: 'fattura d\'acquisto', molti: 'fatture d\'acquisto' },
+  { tabella: 'tm_conta_movimenti_propri',  uno: 'movimento',           molti: 'movimenti' }
+]
+
+async function contaDocumentiContatto(contattoId) {
+  var esito = { totale: 0, pezzi: [] }
+  for (var i = 0; i < TABELLE_CON_CONTATTO.length; i++) {
+    var t = TABELLE_CON_CONTATTO[i]
+    const { count, error } = await sb
+      .from(t.tabella)
+      .select('id', { count: 'exact', head: true })
+      .eq('azienda_id', currentAziendaId)
+      .eq('contatto_id', contattoId)
+    if (error) throw error
+    var n = count || 0
+    if (n > 0) {
+      esito.totale += n
+      esito.pezzi.push(n + ' ' + (n === 1 ? t.uno : t.molti))
+    }
+  }
+  return esito
+}
+
+async function chiediEliminaContatto() {
+  if (!contattoLetturaId) return
+  var c = (contattiCache || []).filter(function (x) { return x.id === contattoLetturaId })[0]
+  if (!c) return
+  var btn = el('contatto-elimina-btn')
+  if (btn) { btn.disabled = true }
+  html('contatto-lettura-banner', loadingRow('Controllo i documenti collegati…'))
+  try {
+    var uso = await contaDocumentiContatto(contattoLetturaId)
+    if (uso.totale > 0) {
+      html('contatto-lettura-banner',
+        '<div class="fase-banner warn" role="alert">' +
+          '<span class="icon" aria-hidden="true">\ud83d\udd12</span>' +
+          '<div class="msg">' +
+            '<strong>Non si pu\u00f2 eliminare: \u00e8 collegato a ' + uso.totale +
+              (uso.totale === 1 ? ' documento' : ' documenti') + '</strong> (' +
+              esc(uso.pezzi.join(', ')) + ').' +
+            '<div style="margin-top:4px">Una fattura deve continuare a dire a chi \u00e8 stata ' +
+              'fatta: eliminando il contatto quei documenti resterebbero senza intestatario. ' +
+              'La strada \u00e8 <strong>archiviarlo</strong> — sparisce dagli elenchi e dalle ' +
+              'ricerche, il passato resta leggibile.</div>' +
+            '<div class="dop-azioni">' +
+              '<button type="button" class="btn-primary" onclick="archiviaContattoCorrente()">' +
+                '\ud83d\udce6 Archivia il contatto</button>' +
+              '<button type="button" class="btn-secondary" onclick="annullaEliminaContatto()">' +
+                '\u2716\ufe0f Annulla</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>')
+      return
+    }
+    html('contatto-lettura-banner',
+      '<div class="fase-banner err" role="alert">' +
+        '<span class="icon" aria-hidden="true">\ud83d\uddd1\ufe0f</span>' +
+        '<div class="msg">' +
+          '<strong>Vuoi eliminare definitivamente ' + esc(contattoNome(c)) + '?</strong>' +
+          '<div style="margin-top:4px">Nessun documento lo nomina, quindi si pu\u00f2 togliere ' +
+            'del tutto. <strong>L\u2019operazione non si annulla.</strong></div>' +
+          '<div class="dop-azioni">' +
+            '<button type="button" class="btn-danger" onclick="eliminaContattoConfermato()">' +
+              '\ud83d\uddd1\ufe0f S\u00ec, elimina definitivamente</button>' +
+            '<button type="button" class="btn-secondary" onclick="annullaEliminaContatto()">' +
+              '\u2716\ufe0f Annulla</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>')
+  } catch (e) {
+    html('contatto-lettura-banner',
+      '<div class="fase-banner err" role="alert">' +
+        '<span class="icon" aria-hidden="true">\u274c</span>' +
+        '<div class="msg">Non sono riuscito a contare i documenti collegati: ' +
+          esc(e.message || e) + '. Senza quel conteggio non elimino niente.</div>' +
+      '</div>')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+function annullaEliminaContatto() { html('contatto-lettura-banner', '') }
+
+async function eliminaContattoConfermato() {
+  var id = contattoLetturaId
+  if (!id) return
+  var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
+  var nome = c ? contattoNome(c) : 'il contatto'
+  html('contatto-lettura-banner', loadingRow('Eliminazione…'))
+  try {
+    const { error } = await sb.from('tm_contatti')
+      .delete().eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadContatti(true)
+    contattoLetturaId = null
+    mostraRubricaVista('lista')
+    renderContattiList()
+    showRubricaBanner('ok', 'Contatto eliminato: ' + nome + '.')
+  } catch (e) {
+    // Il caso piu' probabile e' il permesso di cancellazione mancante: lo si
+    // dice con parole sue invece di lasciare l'errore Postgres grezzo.
+    var m = String(e.message || e)
+    var spiega = (/row-level security|violates row-level|permission denied/i.test(m))
+      ? 'il database ha rifiutato la cancellazione. La policy c\'è (contatti_own, FOR ALL ' +
+        'agli utenti autenticati): riprova dopo aver rifatto il login, e se resta così ' +
+        'segnalalo — vuol dire che le regole di sicurezza sono cambiate.'
+      : friendlyContattoError(e)
+    html('contatto-lettura-banner',
+      '<div class="fase-banner err" role="alert">' +
+        '<span class="icon" aria-hidden="true">\u274c</span>' +
+        '<div class="msg">Non eliminato: ' + esc(spiega) + '</div>' +
+      '</div>')
+  }
+}
+
+// L'archiviazione dalla scheda letta: la stessa cosa che fa la spunta
+// «Contatto attivo» nel modulo, senza dover entrare in modifica.
+async function archiviaContattoCorrente() {
+  var id = contattoLetturaId
+  if (!id) return
+  html('contatto-lettura-banner', loadingRow('Archiviazione…'))
+  try {
+    const { error } = await sb.from('tm_contatti')
+      .update({ attivo: false }).eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadContatti(true)
+    mostraRubricaVista('lista')
+    renderContattiList()
+    showRubricaBanner('ok', 'Contatto archiviato: non compare più negli elenchi, i suoi documenti restano.')
+  } catch (e) {
+    html('contatto-lettura-banner',
+      '<div class="fase-banner err" role="alert">' +
+        '<span class="icon" aria-hidden="true">\u274c</span>' +
+        '<div class="msg">Non archiviato: ' + esc(friendlyContattoError(e)) + '</div>' +
+      '</div>')
+  }
+}
+
 function modificaContattoCorrente() {
   // Restituisce la promessa: chi chiama puo' aspettare che il modulo sia pronto.
   return contattoLetturaId ? modificaContatto(contattoLetturaId) : Promise.resolve()
@@ -5673,7 +6485,7 @@ async function modificaContatto(id) {
   if (el('c-indirizzo')) el('c-indirizzo').value = c.indirizzo || ''
   if (el('c-cap'))       el('c-cap').value       = c.cap || ''
   if (el('c-citta'))     el('c-citta').value     = c.citta || ''
-  if (el('c-paese'))     el('c-paese').value     = c.paese || 'CH'
+  impostaPaese('c-paese', c.paese || PAESE_PREDEFINITO)
   if (el('c-telefono'))  el('c-telefono').value  = c.telefono || ''
   if (el('c-email'))     el('c-email').value     = c.email || ''
   if (el('c-sito'))      el('c-sito').value      = c.sito_web || ''
@@ -5754,7 +6566,7 @@ function raccogliContatto() {
     indirizzo:       getVal('c-indirizzo') || null,
     cap:             getVal('c-cap') || null,
     citta:           getVal('c-citta') || null,
-    paese:           (getVal('c-paese') || 'CH').toUpperCase().slice(0, 2),
+    paese:           getVal('c-paese') || null,
     telefono:        getVal('c-telefono') || null,
     email:           getVal('c-email') || null,
     sito_web:        getVal('c-sito') || null,
@@ -5999,6 +6811,13 @@ function rubricaCampi(prefix) {
              indirizzo: 'f-cli-indirizzo', paese: 'f-cli-paese', uid: 'f-cli-iva',
              btnSfoglia: 'f-cli-sfoglia' }
   }
+  // FASE 21 — 'b' e' la busta. Niente gruppo, niente scadenza: si sta solo
+  // scrivendo un indirizzo su un pezzo di carta.
+  if (prefix === 'b') {
+    return { testo: 'busta-nome', hidden: 'busta-contatto-id', suggest: 'busta-nome-suggest',
+             legato: 'busta-contatto-legato', gruppo: null, scadenza: null,
+             data: null, categoria: 'cliente', btnSfoglia: 'busta-sfoglia' }
+  }
   return { testo: 'f-ente', hidden: 'f-contatto-id', suggest: 'f-ente-suggest',
            legato: 'f-contatto-legato', gruppo: 'f-gruppo', scadenza: 'f-scadenza',
            data: 'f-data', categoria: 'fornitore',
@@ -6125,6 +6944,17 @@ async function scegliContatto(prefix, id) {
   if (el(c.hidden)) el(c.hidden).value = id
   chiudiSuggerimenti(prefix)
 
+  // FASE 21 — sulla busta l'indirizzo si RIFA' ogni volta che si sceglie un
+  // destinatario: qui la regola «solo se vuoto» sarebbe d'impiccio, perche'
+  // cambiando destinatario resterebbe l'indirizzo di quello di prima. Resta
+  // comunque correggibile a mano: quello che si vede e' quello che si stampa.
+  if (prefix === 'b') {
+    if (el('busta-indirizzo')) el('busta-indirizzo').value = indirizzoPerBusta(x)
+    renderContattoLegato(prefix, x, null)
+    if (typeof disegnaBusta === 'function') disegnaBusta()
+    return
+  }
+
   var compilati = []
 
   // Gruppo predefinito: si propone solo se il campo è ancora vuoto, per non
@@ -6163,11 +6993,11 @@ async function scegliContatto(prefix, id) {
     var paeseOra = el(c.paese).value.trim()
     var cede = !paeseOra ||
                (!paeseFatturaToccato && paeseOra.toUpperCase() === PAESE_PREDEFINITO)
-    var paeseNuovo = String(x.paese).toUpperCase().slice(0, 2)
+    var paeseNuovo = String(x.paese).trim().toUpperCase()
     // Si annuncia solo un cambiamento vero: scrivere CH sopra CH non e'
     // «compilato in automatico», e dirlo sarebbe rumore.
     if (cede && paeseNuovo !== paeseOra.toUpperCase()) {
-      el(c.paese).value = paeseNuovo
+      impostaPaese(c.paese, paeseNuovo)
       compilati.push('paese')
     }
   }
@@ -6283,15 +7113,40 @@ function proponiStatoDaData() {
 
 // «Fattura_2026-003_Skinner.pdf»: niente spazi, niente accenti, niente
 // caratteri che i file system rifiutano.
+// FASE 20 — AAAA-MM-GG_Fattura_NUMERO_Cliente
+// La data per prima e in forma AAAA-MM-GG: cosi' l'ordine alfabetico della
+// cartella e' anche l'ordine cronologico, senza che nessuno debba ordinare.
+// Prima il cliente era troncato alla PRIMA PAROLA: «Ghisletta Stefano»
+// diventava «Ghisletta», e due clienti con lo stesso cognome davano lo stesso
+// nome di file.
+//
+// Il pezzo del cantiere non c'e': vedi nomeClientePerFile() qui sotto e il
+// riepilogo della FASE 20 — sulla fattura di vendita un cantiere non e'
+// registrato da nessuna parte, e inventarlo sarebbe peggio che ometterlo.
 function nomeFilePdfFattura(f) {
   if (!f) return 'Fattura'
   var tipo = (f.tipo === 'nota_credito') ? 'NotaCredito' : 'Fattura'
   var num  = f.numero || 'bozza'
-  var chi  = (f.cliente_nome || '')
-    .normalize ? (f.cliente_nome || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '') : (f.cliente_nome || '')
-  // Solo la prima parola del cliente: il nome del file resta corto e leggibile
-  chi = chi.replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/)[0] || ''
-  return [tipo, num, chi].filter(Boolean).join('_').replace(/\s+/g, '_')
+  // Una bozza non ha ancora una data di emissione: si usa oggi, cosi' il file
+  // non nasce senza data. dataISO()/oggiISO(), mai toISOString().
+  var data = f.data_emissione || oggiISO()
+  var chi  = nomeClientePerFile(f.cliente_nome)
+  return unisciParti([data, tipo, num, chi], '_').replace(/\s+/g, '_')
+}
+
+// Il nome del cliente ridotto a qualcosa che un file system accetta, INTERO:
+// accenti sciolti nella lettera semplice, spazi in trattino, il resto via.
+// Si taglia solo se e' davvero lunghissimo, e mai a meta' di una parola.
+function nomeClientePerFile(nome) {
+  var s = String(nome == null ? '' : nome)
+  if (s.normalize) s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  s = s.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  if (s.length <= 48) return s
+  // Taglio all'ultimo trattino prima del limite: meglio un nome piu' corto di
+  // una parola spezzata a meta'.
+  var tagliato = s.slice(0, 48)
+  var ultimo = tagliato.lastIndexOf('-')
+  return (ultimo > 12 ? tagliato.slice(0, ultimo) : tagliato).replace(/-+$/, '')
 }
 
 function scaricaFatturaPDF() {
@@ -9800,6 +10655,8 @@ function caricaPagina(pageId) {
     if (pageId === 'fatture')     { initFatturePage() }
     if (pageId === 'acquisti')    { initAcquistiPage() }
     if (pageId === 'rubrica')     { initRubricaPage() }
+    if (pageId === 'codici')      { initCodiciPage() }
+    if (pageId === 'busta')       { initBustaPage() }
     if (pageId === 'cruscotto')   { initCruscottoPage() }
     if (pageId === 'scadenze')    { initScadenzePage() }
     if (pageId === 'cantieri')    { initCantieriPage() }
@@ -9909,6 +10766,7 @@ function movimentoPerClassificare(tabella, doc) {
       origine_tipo: 'acquisto', origine_id: doc.id,
       data: doc.data, importo: safeNum(doc.importo),
       valuta: doc.valuta || 'CHF', cantiere_id: null,
+      codice_iva_id: doc.codice_iva_id || null,   // FASE 20 — vedi sopra
       descrizione: 'Acquisto ' + (doc.numero_fornitore || '') + ' — ' + (doc.fornitore || ''),
       ente: doc.fornitore || null,
       _sorgente: 'Fatture acquisto', _tipo_label: 'Fattura acquisto', _icon: '📥'
@@ -10547,7 +11405,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '39'
+var VERSIONE = '40'
 
 function controllaVersionePagina() {
   try {
@@ -10936,6 +11794,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'fatture')     { initFatturePage() }
       if (pageId === 'acquisti')    { initAcquistiPage() }
       if (pageId === 'rubrica')     { initRubricaPage() }
+      if (pageId === 'codici')      { initCodiciPage() }
+      if (pageId === 'busta')       { initBustaPage() }
       if (pageId === 'cruscotto')   { initCruscottoPage() }
       if (pageId === 'scadenze')    { initScadenzePage() }
       if (pageId === 'cantieri')    { initCantieriPage() }
@@ -11041,7 +11901,7 @@ function closeSidebar() {
 // FASE 2 — il menu dei suggerimenti della rubrica si chiude cliccando altrove.
 // Senza questo resterebbe aperto sopra il resto del modulo.
 document.addEventListener('click', function (ev) {
-  ['f', 'a', 'v'].forEach(function (prefix) {
+  ['f', 'a', 'v', 'b'].forEach(function (prefix) {
     var c = rubricaCampi(prefix)
     var box = el(c.suggest)
     if (!box || !box.innerHTML) return
