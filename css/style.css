@@ -504,12 +504,17 @@ tbody td {
 }
 .busta-contenuto { position: absolute; inset: 0; }
 
-/* Mittente in alto a sinistra, con il logo. */
+/* Mittente in alto a sinistra, con il logo.
+   FASE 23 — left/top/max-width NON stanno piu' qui: li scrive bustaHtml in
+   millimetri, insieme al margine di sicurezza dal bordo. Erano 8mm e 7mm, e a
+   quella distanza la stampante non arriva: le prime lettere uscivano mozzate. */
 .busta-mitt {
-  position: absolute; left: 8mm; top: 7mm;
+  position: absolute;
   display: flex; align-items: flex-start; gap: 3mm;
-  max-width: 85mm;
 }
+/* FASE 23 — larghezza e altezza arrivano in linea da bustaHtml. Con
+   width:auto un'immagine non ancora caricata e' larga ZERO, e in stampa
+   lasciava un buco al posto del logo: era questo il difetto. */
 .busta-logo { height: 11mm; width: auto; }
 .busta-mitt-testo { font-size: 8pt; line-height: 1.3; white-space: pre-line; }
 
@@ -525,9 +530,10 @@ tbody td {
 }
 
 /* Il codice DigitalStamp, nella zona di affrancatura in alto a destra. */
+/* FASE 23 — right/top/height arrivano da bustaHtml: anche il codice si stampa,
+   e stava proprio nell'angolo che la stampante non raggiunge. */
 .busta-digital {
-  position: absolute; right: 0; top: 0;
-  height: 38mm;
+  position: absolute;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 1mm; text-align: center;
 }
@@ -1295,6 +1301,12 @@ textarea.cell-desc {
   body.stampa-busta #busta-foglio, body.stampa-busta #busta-foglio * { visibility: visible; }
   body.stampa-busta #busta-foglio {
     position: absolute; left: 0; top: 0; padding: 0;
+  }
+  /* FASE 23 — la stessa fedelta' di colore della fattura. C'era solo per
+     #fatture-print, e il commento la' nomina proprio il logo. */
+  body.stampa-busta #busta-foglio, body.stampa-busta #busta-foglio * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   /* Sulla busta vera i riquadri delle zone non si stampano: sono guide. */
   body.stampa-busta:not(.stampa-busta-prova) .bz { display: none; }
