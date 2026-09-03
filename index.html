@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=41" />
+  <link rel="stylesheet" href="css/style.css?v=42" />
 </head>
-<body data-versione="41">
+<body data-versione="42">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -703,12 +703,28 @@
               <option value="pers">Personalizzata &mdash; misure mie</option>
             </select>
           </div>
-          <div class="form-group" style="flex:1">
+          <div class="form-group" style="flex:1" id="busta-affrancatura-group">
             <label for="busta-affrancatura" class="form-label">Affrancatura</label>
             <select id="busta-affrancatura" class="form-input" onchange="onAffrancaturaChange()">
               <option value="francobollo">Francobollo fisico &mdash; lascia lo spazio vuoto</option>
               <option value="digital">Codice DigitalStamp &mdash; lo stampo io</option>
             </select>
+          </div>
+        </div>
+
+        <!-- FASE 23 / P1 — cosa si stampa sulla busta. -->
+        <div class="form-group">
+          <label for="busta-modo" class="form-label">Cosa stampare</label>
+          <select id="busta-modo" class="form-input" onchange="onModoBustaChange()">
+            <option value="tutto">Tutto: logo + mittente + destinatario</option>
+            <option value="senza_logo">Mittente + destinatario, senza logo</option>
+            <option value="solo_dest">Solo destinatario</option>
+          </select>
+          <div class="form-hint">
+            Scegli &laquo;Solo destinatario&raquo; sulle buste gi&agrave; intestate e su quelle
+            con il WebStamp della Posta, che escono gi&agrave; con mittente, logo e francobollo:
+            ristamparci sopra fa un pasticcio. <strong>L&rsquo;indirizzo cade sempre nello stesso
+            punto</strong> in tutti e tre i modi. Si salva con &laquo;Salva la taratura&raquo;.
           </div>
         </div>
 
@@ -2418,7 +2434,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=41"></script>
+<script src="js/app.js?v=42"></script>
 
 </body>
 </html>
