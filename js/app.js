@@ -57,6 +57,10 @@ let pendingEmitFn     = null   // callback della modale di conferma emissione
 let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezzo_unitario, codice_iva_id}
 let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
 let currentDetailFattura = null
+// FASE 22 — righe e riferimento della fattura aperta, per rifare il foglio di
+// stampa quando cambia la polizza QR senza rileggere dal database.
+let righeDetailCorrenti = null
+let rifInfoCorrente = null
 
 // ══════════════════════════════════════════════════════════════════════════════
 // FASE 21 — I PAESI
@@ -384,6 +388,118 @@ async function doLogout() {
   updateSidebarAuth()
   html('nav-badge-movimenti', '0')
   showPage('login')
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 22 / P2 — CAMBIA PASSWORD
+//
+// Prima si doveva uscire dal programma e andare su Supabase per una cosa che
+// si fa da dentro.
+//
+// LA PASSWORD ATTUALE SI VERIFICA DAVVERO, e non e' una formalita':
+// sb.auth.updateUser({ password }) da solo cambia la password a chiunque abbia
+// in mano una sessione aperta. Senza questa verifica, chi si siede al computer
+// di Umberto mentre il programma e' aperto puo' cambiargli la password e
+// chiuderlo fuori dal suo gestionale. Si rifa' percio' il login con
+// signInWithPassword sull'email in sessione, e solo se passa si cambia.
+//
+// signInWithPassword sullo STESSO utente rinnova la sessione al posto di
+// chiuderla: dopo il cambio si resta dentro.
+//
+// I messaggi sono in italiano, sempre. Il testo grezzo di Supabase («Password
+// should be at least 6 characters») non arriva mai a schermo: finisce in
+// console per chi deve capirci qualcosa, e all'utente si dice cos'e' successo.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var LUNGHEZZA_MINIMA_PASSWORD = 8
+
+// L'errore di Supabase tradotto. Quello che non si riconosce non si mostra:
+// meglio una frase generica ma comprensibile di una inglese e precisa.
+function messaggioErrorePassword(e) {
+  var m = String((e && e.message) || '').toLowerCase()
+  if (m.indexOf('should be at least') !== -1 || m.indexOf('at least') !== -1 ||
+      m.indexOf('too short') !== -1 || m.indexOf('weak') !== -1) {
+    return 'La nuova password è troppo corta o troppo semplice: usane una di almeno ' +
+           LUNGHEZZA_MINIMA_PASSWORD + ' caratteri.'
+  }
+  if (m.indexOf('different from the old') !== -1 || m.indexOf('same as the old') !== -1) {
+    return 'La nuova password deve essere diversa da quella attuale.'
+  }
+  if (m.indexOf('rate limit') !== -1 || m.indexOf('too many') !== -1) {
+    return 'Troppi tentativi di seguito. Aspetta un minuto e riprova.'
+  }
+  if (m.indexOf('failed to fetch') !== -1 || m.indexOf('network') !== -1) {
+    return 'Non c’è collegamento con il server: controlla internet e riprova.'
+  }
+  return 'Non è stato possibile cambiare la password. Riprova.'
+}
+
+async function cambiaPassword() {
+  html('imp-pwd-banner', '')
+  // NON si usa getVal: quello fa .trim(), e una password puo' legittimamente
+  // cominciare o finire con uno spazio. Tagliarlo vorrebbe dire rifiutare la
+  // password giusta, o peggio salvarne una diversa da quella scritta.
+  function valorePwd(id) { var e = el(id); return e ? e.value : '' }
+  var attuale  = valorePwd('imp-pwd-attuale')
+  var nuova    = valorePwd('imp-pwd-nuova')
+  var conferma = valorePwd('imp-pwd-conferma')
+
+  function stop(msg) { showFattureBanner('imp-pwd-banner', 'err', msg) }
+
+  if (!attuale)  { stop('Scrivi la password che usi adesso.'); return }
+  if (!nuova)    { stop('Scrivi la nuova password.'); return }
+  if (nuova.length < LUNGHEZZA_MINIMA_PASSWORD) {
+    stop('La nuova password è troppo corta: servono almeno ' +
+         LUNGHEZZA_MINIMA_PASSWORD + ' caratteri.'); return
+  }
+  if (nuova !== conferma) {
+    stop('Le due nuove password non coincidono: riscrivile uguali.'); return
+  }
+  if (nuova === attuale) {
+    stop('La nuova password è uguale a quella di adesso: non cambierebbe niente.'); return
+  }
+
+  // L'email dell'utente in sessione. Se non c'e', non c'e' nemmeno la sessione.
+  var email = currentUser && currentUser.email ? currentUser.email : null
+  if (!email) {
+    try {
+      const { data } = await sb.auth.getSession()
+      if (data && data.session && data.session.user) email = data.session.user.email
+    } catch (_) { /* resta null, gestito sotto */ }
+  }
+  if (!email) { stop('La sessione è scaduta: rientra e riprova.'); return }
+
+  var btn = el('imp-pwd-btn')
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Cambio in corso…' }
+  try {
+    // 1. La password attuale e' quella giusta? Se no, si esce senza cambiare.
+    const verifica = await sb.auth.signInWithPassword({ email: email, password: attuale })
+    if (verifica.error) {
+      console.warn('Cambio password — verifica fallita:', verifica.error.message)
+      stop('La password attuale non è corretta.')
+      return
+    }
+
+    // 2. Solo adesso si cambia.
+    const { error } = await sb.auth.updateUser({ password: nuova })
+    if (error) {
+      console.error('Cambio password — updateUser:', error)
+      stop(messaggioErrorePassword(error))
+      return
+    }
+
+    setVal('imp-pwd-attuale', '')
+    setVal('imp-pwd-nuova', '')
+    setVal('imp-pwd-conferma', '')
+    showFattureBanner('imp-pwd-banner', 'ok',
+      'Password cambiata. La sessione resta aperta: non devi rientrare. ' +
+      'Dalla prossima volta entra con quella nuova.')
+  } catch (e) {
+    console.error('Cambio password:', e)
+    stop(messaggioErrorePassword(e))
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔑 Cambia la password' }
+  }
 }
 
 // ─── Carica azienda_id dall'utente loggato ────────────────────────────────────
@@ -889,6 +1005,10 @@ async function ensureContiIva(force) {
   // e' «vero» in JavaScript, e un tentativo fallito prima del login bloccava
   // ogni tentativo successivo.
   if (cacheOk('conti') && cacheOk('iva') && !force) return
+  // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
+  // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
+  // Stessa guardia di loadContatti e loadCantieri.
+  if (!currentAziendaId) return
   try {
     const { data, error } = await sb
       .from('tm_conta_piano_conti')
@@ -960,7 +1080,10 @@ async function loadCantieri(force) {
   try {
     // FASE 6A — servono anche luogo e stato: il luogo distingue due cantieri
     // con lo stesso nome, lo stato decide l'ordine della tendina.
-    // SOLA LETTURA: 'cantieri' e' una tabella di App Cantieri, in produzione.
+    // 'cantieri' e' una tabella di App Cantieri, in produzione. Qui si legge
+    // e basta. L'unica scrittura di tutto il programma su questa tabella e'
+    // createCustomCantiere() (FASE 22 / P4), che inserisce una riga con
+    // quattro colonne. Nessuna ALTER, nessun UPDATE, nessuna cancellazione.
     const { data, error } = await sb.from('cantieri')
       .select('id, nome, luogo, stato, committente').limit(500)
     if (error) throw error
@@ -1076,9 +1199,10 @@ function notaCantieriVuoti() {
   if (cantieriCache && cantieriCache.length) return ''
   return '<div class="form-hint" role="status">' +
            '⚠️ <strong>Nessun cantiere disponibile.</strong> I cantieri arrivano da ' +
-           'App&nbsp;Cantieri e qui si leggono soltanto. Se in App&nbsp;Cantieri ce ne sono, ' +
-           'il permesso di lettura su questa tabella non è attivo per questo programma: ' +
-           'la classificazione funziona lo stesso, il documento resta «Ditta (generale)».' +
+           'App&nbsp;Cantieri. Se in App&nbsp;Cantieri ce ne sono, il permesso di lettura ' +
+           'su questa tabella non è attivo per questo programma: la classificazione ' +
+           'funziona lo stesso, il documento resta «Ditta (generale)». ' +
+           'Con «➕ Nuovo cantiere» qui sopra ne puoi creare uno.' +
          '</div>'
 }
 
@@ -1206,6 +1330,7 @@ async function openSingleClassify(m, prefill) {
   el('cls-banner').innerHTML = ''
   el('cls-suggest').style.display = 'none'
   el('cls-nuovo-conto').style.display = 'none'
+  if (el('cls-nuovo-cantiere')) el('cls-nuovo-cantiere').style.display = 'none'
   el('cls-note').value = (prefill && prefill.note) ? prefill.note : ''
   el('cls-conto-search').value = ''
   el('cls-cantiere-group').style.display = 'block'
@@ -1268,6 +1393,7 @@ async function openBulkPanel() {
   el('cls-banner').innerHTML = ''
   el('cls-suggest').style.display = 'none'
   el('cls-nuovo-conto').style.display = 'none'
+  if (el('cls-nuovo-cantiere')) el('cls-nuovo-cantiere').style.display = 'none'
   el('cls-note').value = ''
   el('cls-conto-search').value = ''
   el('cls-cantiere-group').style.display = 'none'
@@ -1304,6 +1430,104 @@ function closeClassifyPanel() {
 function toggleCantiereComune(checked) {
   var sel = el('cls-cantiere-comune')
   if (sel) sel.style.display = checked ? 'block' : 'none'
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 22 / P4 — CREARE UN CANTIERE DA QUI
+//
+// ATTENZIONE, e' un cambio di regola. Fino alla FASE 21 questo programma su
+// `cantieri` LEGGEVA soltanto: e' la tabella dell'App Cantieri, in produzione.
+// Da adesso ci scrive, ma per una sola operazione e su quattro colonne:
+// nome (l'unico obbligatorio), luogo, committente, stato.
+//
+// Le altre nove colonne della tabella (via, cap, citta, email_committente,
+// telefono_committente, paese, note) esistono e restano dell'App Cantieri:
+// metterle anche qui vorrebbe dire due porte sullo stesso dato, che e' il modo
+// piu' rapido di farlo divergere.
+//
+// `stato` non ha nessun CHECK sul database, ma si scrive 'Attivo' con la A
+// maiuscola perche' e' il valore reale usato in tabella (gli altri cantieri
+// hanno 'Attivo' e 'Completato') ed e' quello che l'App Cantieri si aspetta.
+// ══════════════════════════════════════════════════════════════════════════════
+
+function toggleNuovoCantiere() {
+  var box = el('cls-nuovo-cantiere')
+  if (!box) return
+  var apri = box.style.display === 'none'
+  box.style.display = apri ? 'block' : 'none'
+  html('cls-nuovo-cantiere-banner', '')
+  if (apri && el('ncant-nome')) el('ncant-nome').focus()
+}
+
+// Il rifiuto delle policy non e' un errore da mostrare grezzo: e' una cosa
+// che si risolve una volta sola, e va detto cosa fare.
+function eRifiutoPolicy(e) {
+  var c = String((e && e.code) || '')
+  var m = String((e && e.message) || '').toLowerCase()
+  return c === '42501' || m.indexOf('row-level security') !== -1 ||
+         m.indexOf('violates row') !== -1 || m.indexOf('policy') !== -1
+}
+
+async function createCustomCantiere() {
+  var nome = el('ncant-nome') ? el('ncant-nome').value.trim() : ''
+  var luogo = el('ncant-luogo') ? el('ncant-luogo').value.trim() : ''
+  var committente = el('ncant-committente') ? el('ncant-committente').value.trim() : ''
+
+  function stop(msg) { showFattureBanner('cls-nuovo-cantiere-banner', 'err', msg) }
+  if (!nome) { stop('Il nome del cantiere è obbligatorio.'); return }
+  if (!currentAziendaId) { stop('Sessione non attiva: rientra e riprova.'); return }
+
+  var btn = el('ncant-save-btn')
+  if (btn) { btn.disabled = true; btn.textContent = '⏳…' }
+  try {
+    const { data, error } = await sb
+      .from('cantieri')
+      .insert({
+        nome: nome,
+        luogo: luogo || null,
+        committente: committente || null,
+        stato: 'Attivo'
+      })
+      .select('id, nome, luogo, stato, committente')
+    if (error) throw error
+
+    var nuovo = data && data[0]
+    if (!nuovo) throw new Error('Il database non ha restituito il cantiere appena creato.')
+
+    // Nella cache subito, cosi' e' scegliibile senza ricaricare la pagina.
+    if (!cantieriCache) cantieriCache = []
+    cantieriCache.push({
+      id: nuovo.id, nome: nuovo.nome, luogo: nuovo.luogo || null,
+      stato: nuovo.stato || 'Attivo', committente: nuovo.committente || null
+    })
+
+    // Le due tendine: quella singola e quella del blocco massivo, se aperta.
+    if (el('cls-cantiere')) el('cls-cantiere').innerHTML = buildCantiereOptions(nuovo.id, true)
+    if (el('cls-cantiere-comune')) {
+      var precedente = el('cls-cantiere-comune').value
+      el('cls-cantiere-comune').innerHTML = buildCantiereOptions(precedente || nuovo.id, true)
+    }
+    // L'avviso «nessun cantiere» non ha piu' ragione di esserci.
+    html('cls-cantiere-vuoto', '')
+    html('cls-cantiere-bulk-vuoto', '')
+
+    if (el('ncant-nome')) el('ncant-nome').value = ''
+    if (el('ncant-luogo')) el('ncant-luogo').value = ''
+    if (el('ncant-committente')) el('ncant-committente').value = ''
+    toggleNuovoCantiere()
+    showClsBanner('ok', 'Cantiere «' + nomeCantiere(nuovo, false) + '» creato e già selezionato.')
+  } catch (e) {
+    if (eRifiutoPolicy(e)) {
+      console.error('Creazione cantiere rifiutata dalle policy:', e)
+      stop('Il database non permette a questo programma di creare cantieri. ' +
+           'È un permesso da aggiungere una volta sola: lancia SQL_FASE22_cantieri.sql ' +
+           'dal SQL Editor di Supabase. Intanto non è stato creato niente.')
+    } else {
+      stop('Creazione cantiere: ' + (e.message || e))
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Crea cantiere' }
+  }
 }
 
 // ── Conti personalizzati ─────────────────────────────────────────────────────
@@ -3085,11 +3309,26 @@ async function saveBozza() {
 }
 
 async function emettiFatturaCorrente() {
-  var hasRiga = false
+  // FASE 22 / P5 — le righe-titolo non contano, e il messaggio lo dice.
+  //
+  // Il controllo di prima non guardava tipo_riga: funzionava per caso, perche'
+  // su una riga-titolo calcolaRiga() azzera il prezzo. Una riga-titolo vecchia
+  // rimasta con prezzo_unitario = 0 sarebbe passata (safeNum(0) non e' null) e
+  // avrebbe emesso una fattura fatta di soli titoli. Adesso i titoli sono
+  // esclusi in modo esplicito, con l'helper che esiste gia'.
+  var voci = 0, titoli = 0
   for (var i = 0; i < fatturaRighe.length; i++) {
-    if ((fatturaRighe[i].descrizione || '').trim() && safeNum(fatturaRighe[i].prezzo_unitario) != null) { hasRiga = true; break }
+    var r = fatturaRighe[i]
+    if (isRigaTitolo(r)) { titoli++; continue }
+    if ((r.descrizione || '').trim() && safeNum(r.prezzo_unitario) != null) voci++
   }
-  if (!hasRiga) { showFattureBanner('fatture-edit-banner', 'err', 'Aggiungi almeno una riga con descrizione e prezzo.'); return }
+  if (!voci) {
+    showFattureBanner('fatture-edit-banner', 'err', titoli
+      ? 'Le righe-titolo non hanno importo: servono a raggruppare, non fanno somma. ' +
+        'Aggiungi almeno una voce vera, con descrizione e prezzo.'
+      : 'Aggiungi almeno una riga con descrizione e prezzo.')
+    return
+  }
   if (!el('f-cli-nome').value.trim()) { showFattureBanner('fatture-edit-banner', 'err', 'Il nome cliente è obbligatorio.'); return }
 
   var ncChk = ncStornoCheck()
@@ -3506,6 +3745,15 @@ async function viewFattura(id) {
         if (!rifErr && rif) rifInfo = rif
       } catch (_) { /* riferimento non disponibile */ }
     }
+    // FASE 22 — gli allegati PRIMA di comporre il foglio di stampa: la nota
+    // sulla polizza («allegata a parte» oppure «nell'ultima pagina») dipende
+    // da quello che c'e' allegato. Leggendoli dopo, la prima apertura di una
+    // fattura con la polizza avrebbe stampato la nota sbagliata.
+    try { await loadAllegati() } catch (_) { /* la fattura si vede lo stesso */ }
+    // Righe e riferimento si tengono da parte: servono a rifare il foglio di
+    // stampa quando si allega o si toglie la polizza, senza rileggere tutto.
+    righeDetailCorrenti = righe || []
+    rifInfoCorrente = rifInfo
     renderFatturaPrint(f, righe || [], rifInfo)
     renderDetailActions(f)
     // FASE 8 — pagamenti e rate. Solo sui documenti veri: su una bozza non
@@ -3521,6 +3769,10 @@ async function viewFattura(id) {
     else await aggiornaBoxClassificazione('tm_conta_fatture', f.id, 'fatture-classificazione', f)
     await aggiornaBoxAllegati('tm_conta_fatture', f.id, 'fatture-allegati',
                               'Fattura ' + (f.numero || ''))
+    // FASE 22 — la polizza QR della banca: il riquadro per caricarla e la
+    // pagina in coda al foglio di stampa.
+    await disegnaBoxPolizza(f.id)
+    await preparaPolizzaPerStampa(f.id)
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
@@ -3653,7 +3905,8 @@ function renderFatturaPrint(f, righe, rifInfo) {
     '</div>'
 
   // Logo: logo_url se presente, altrimenti img/logo.png; onerror → fallback → nascondi
-  var logoSrc = (a.logo_url && String(a.logo_url).trim()) ? a.logo_url : 'img/logo.png'
+  // FASE 22 — una sorgente sola, condivisa con la busta (era scritta due volte).
+  var logoSrc = logoAziendaSrc()
 
   // Intestazione azienda (nome = ragione sociale; indirizzo, NPA città, tel, email)
   var azNome = a.nome || aziendaNome()
@@ -3719,7 +3972,12 @@ function renderFatturaPrint(f, righe, rifInfo) {
         (ibanShown ? '<div class="inv-pay-row"><span class="inv-pay-lbl">IBAN</span><span>' + esc(ibanShown) + '</span></div>' : '') +
         '<div class="inv-pay-row"><span class="inv-pay-lbl">Termine di pagamento</span><span>' + giorni + ' giorni</span></div>' +
         (scadenza ? '<div class="inv-pay-row"><span class="inv-pay-lbl">Scadenza</span><span class="inv-scad">' + esc(fmtDate(scadenza)) + '</span></div>' : '') +
-        '<div class="inv-qrnote">Polizza QR allegata a parte.</div>' +
+        // FASE 22 — la nota vale solo finche' la polizza va spedita a parte.
+        // Quando e' allegata alla fattura, dire il contrario sul documento
+        // stesso sarebbe una bugia stampata.
+        (polizzaDi(f.id)
+          ? '<div class="inv-qrnote">Polizza QR nell’ultima pagina di questo documento.</div>'
+          : '<div class="inv-qrnote">Polizza QR allegata a parte.</div>') +
       '</div>'
   }
 
@@ -3764,6 +4022,11 @@ function renderFatturaPrint(f, righe, rifInfo) {
       (!ivaOn ? '<div class="inv-note">Non soggetto IVA.</div>' : '') +
       (f.note ? '<div class="inv-note">' + esc(f.note) + '</div>' : '') +
       footerHtml +
+      // FASE 22 — il posto della polizza QR. Resta VUOTO finche'
+      // preparaPolizzaPerStampa() non ha caricato davvero l'immagine: un <img>
+      // ancora vuoto stamperebbe una pagina bianca in coda alla fattura, e non
+      // se ne accorgerebbe nessuno prima di aver spedito.
+      '<div id="fatture-qrpage"></div>' +
     '</div>'
   )
 }
@@ -3814,7 +4077,17 @@ function renderDetailActions(f) {
   html('fatture-detail-actions', a)
 }
 
-function printFattura() { window.print() }
+// FASE 22 — prima di stampare ci si assicura che la polizza sia davvero
+// caricata. Se non lo e', si stampa lo stesso: la fattura senza polizza e'
+// un documento valido, una fattura non stampata no.
+async function printFattura() {
+  try {
+    if (currentDetailFattura && polizzaDi(currentDetailFattura.id)) {
+      await preparaPolizzaPerStampa(currentDetailFattura.id)
+    }
+  } catch (e) { console.warn('Polizza in stampa:', e.message || e) }
+  window.print()
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // FASE 10 — CONFERMA EMISSIONE (riepilogo prima di rendere definitiva la vendita)
@@ -4678,7 +4951,12 @@ function fillImpostazioniForm(a) {
   setVal('imp-indirizzo', a.indirizzo)
   setVal('imp-npa',      a.cap)                         // NPA = colonna esistente "cap"
   setVal('imp-citta',    a.citta)
-  setVal('imp-paese',    a.paese || 'CH')
+  // FASE 22 / P3 — il Paese della ditta si sceglie da un elenco, come in
+  // rubrica e in fattura. impostaPaese e NON setVal: su una <select> ancora
+  // vuota setVal lascerebbe il campo vuoto senza dire niente. Se il valore
+  // salvato non e' un codice ISO valido, buildPaeseOptions lo mostra come
+  // «da correggere» invece di sostituirlo di nascosto.
+  impostaPaese('imp-paese', a.paese || 'CH')
   setVal('imp-iban',     a.iban)
   setVal('imp-termini',  a.termini_pagamento_giorni == null ? '' : a.termini_pagamento_giorni)
   setVal('imp-email',    a.email)
@@ -4785,7 +5063,10 @@ async function saveImpostazioni() {
     indirizzo:       getVal('imp-indirizzo') || null,
     cap:             getVal('imp-npa') || null,
     citta:           getVal('imp-citta') || null,
-    paese:           (getVal('imp-paese') || 'CH').toUpperCase().slice(0, 2),
+    // FASE 22 / P3 — niente troncamento: il valore arriva da una tendina di
+    // codici ISO, e tagliare «Svizzera» a «SV» (che e' El Salvador) e' proprio
+    // il difetto che si sta togliendo.
+    paese:           getVal('imp-paese') || null,
     iban:            getVal('imp-iban') || null,
     termini_pagamento_giorni: termini === '' ? null : (safeNum(termini) != null ? Math.round(safeNum(termini)) : null),
     email:           getVal('imp-email') || null,
@@ -5483,6 +5764,10 @@ async function loadGruppi(force) {
   // prima del login, quando la RLS blocca tutto — per lasciare i menu vuoti
   // per il resto della sessione, senza un errore da nessuna parte.
   if (cacheOk('gruppi') && !force) return gruppiCache || []
+  // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
+  // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
+  // Stessa guardia di loadContatti e loadCantieri.
+  if (!currentAziendaId) { gruppiCache = gruppiCache || []; return gruppiCache }
   try {
     const { data, error } = await sb
       .from('tm_conta_gruppi')
@@ -5631,9 +5916,19 @@ function contattoInCategoria(c, cat) {
 // stampa di prova su A4 da appoggiare sopra la busta.
 // ══════════════════════════════════════════════════════════════════════════════
 
+// FASE 22 / P6b — i formati europei standard, non piu' solo due.
+// La zona di codifica e' 140 x 15 mm fino al formato B5 e 140 x 35 mm da B5 a
+// B4 (specifica della Posta, vedi sopra): il C4 e' l'unico di questo elenco a
+// superare il B5.
 var FORMATI_BUSTA = {
-  c56: { etichetta: 'C5/6 (DL)', larghezza: 220, altezza: 110, codificaH: 15 },
-  c4:  { etichetta: 'C4',        larghezza: 324, altezza: 229, codificaH: 35 }
+  c6:   { etichetta: 'C6',        larghezza: 162, altezza: 114, codificaH: 15 },
+  c56:  { etichetta: 'C5/6 (DL)', larghezza: 220, altezza: 110, codificaH: 15 },
+  c5:   { etichetta: 'C5',        larghezza: 229, altezza: 162, codificaH: 15 },
+  b5:   { etichetta: 'B5',        larghezza: 250, altezza: 176, codificaH: 15 },
+  c4:   { etichetta: 'C4',        larghezza: 324, altezza: 229, codificaH: 35 },
+  // Le misure della personalizzata si leggono dai due campi: qui restano
+  // vuote apposta, cosi' non c'e' un secondo posto dove possano divergere.
+  pers: { etichetta: 'Personalizzata', larghezza: null, altezza: null, codificaH: null }
 }
 
 // Zona di affrancatura: uguale su tutti i formati.
@@ -5642,9 +5937,84 @@ var BUSTA_FRANC_H = 38
 // Zona di codifica: larghezza uguale, altezza secondo il formato.
 var BUSTA_CODIF_W = 140
 
+// I limiti della busta personalizzata: sotto il C6 la zona di lettura non ci
+// sta, sopra il B4 non e' piu' una busta da lettera.
+var BUSTA_PERS_MIN = 90
+var BUSTA_PERS_MAX = 353
+
 function formatoBustaCorrente() {
   var v = getVal('busta-formato') || 'c56'
   return FORMATI_BUSTA[v] ? v : 'c56'
+}
+
+// Il formato con le misure gia' risolte. Da usare SEMPRE al posto di
+// FORMATI_BUSTA[...]: e' l'unico punto che sa cosa vuol dire «personalizzata».
+function formatoBusta() {
+  var k = formatoBustaCorrente()
+  var f = FORMATI_BUSTA[k]
+  if (k !== 'pers') return { chiave: k, etichetta: f.etichetta, larghezza: f.larghezza,
+                             altezza: f.altezza, codificaH: f.codificaH }
+  var l = safeNum(getVal('busta-pers-l'))
+  var h = safeNum(getVal('busta-pers-h'))
+  // Senza misure valide si ripiega sul C5, e la stampa lo dice: meglio una
+  // busta sbagliata di formato che una busta di 0 x 0 mm.
+  if (l == null || h == null || l < BUSTA_PERS_MIN || h < BUSTA_PERS_MIN ||
+      l > BUSTA_PERS_MAX || h > BUSTA_PERS_MAX) {
+    var c5 = FORMATI_BUSTA.c5
+    return { chiave: 'pers', etichetta: 'Personalizzata (misure mancanti — uso il C5)',
+             larghezza: c5.larghezza, altezza: c5.altezza, codificaH: c5.codificaH,
+             misureMancanti: true }
+  }
+  return { chiave: 'pers', etichetta: 'Personalizzata ' + fmtNumIt(l) + ' × ' + fmtNumIt(h) + ' mm',
+           larghezza: l, altezza: h, codificaH: (l > 250 ? 35 : 15) }
+}
+
+// ── FASE 22 / P6c — la dimensione dei caratteri ─────────────────────────────
+// Il mittente sta SEMPRE piu' piccolo del destinatario: sono le due misure
+// che si scelgono, non una sola, perche' una busta piccola con un indirizzo
+// lungo e una busta grande con tre righe non vogliono lo stesso corpo.
+var CORPI_DESTINATARIO = [
+  { v: '10', et: 'Piccolo (10 pt)' },
+  { v: '12', et: 'Normale (12 pt)' },
+  { v: '14', et: 'Grande (14 pt)' },
+  { v: '16', et: 'Molto grande (16 pt)' }
+]
+var CORPI_MITTENTE = [
+  { v: '7', et: 'Piccolo (7 pt)' },
+  { v: '8', et: 'Normale (8 pt)' },
+  { v: '9', et: 'Grande (9 pt)' }
+]
+
+function corpoDestinatario() {
+  var v = getVal('busta-font-dest')
+  return safeNum(v) != null ? safeNum(v) : 12
+}
+function corpoMittente() {
+  var v = getVal('busta-font-mitt')
+  var n = safeNum(v) != null ? safeNum(v) : 8
+  // Il mittente non puo' superare il destinatario: su una busta chi la riceve
+  // viene prima di chi la manda.
+  return Math.min(n, Math.max(6, corpoDestinatario() - 1))
+}
+
+// ── Il logo, una sorgente sola ──────────────────────────────────────────────
+// Era scritto identico in due posti (fattura e busta). Due copie della stessa
+// riga sono due cose che un giorno diventano diverse.
+function logoAziendaSrc() {
+  var a = aziendaInfo || {}
+  return (a.logo_url && String(a.logo_url).trim()) ? a.logo_url : 'img/logo.png'
+}
+
+// FASE 22 / P6a — il logo sulla busta c'era gia', ma quando non si caricava
+// spariva in silenzio (logoOnError lo nasconde). Su una busta e' la prima cosa
+// che si vede: se manca, si dice perche'.
+function bustaLogoOnError(img) {
+  logoOnError(img)
+  if (img && img.style.display === 'none') {
+    showFattureBanner('busta-banner', 'warn',
+      'Il logo non si carica: l’indirizzo scritto in Impostazioni ditta → Logo (URL) non ' +
+      'risponde, e img/logo.png non c’è. La busta si stampa lo stesso, col solo mittente.')
+  }
 }
 
 // L'indirizzo come va su una busta: via, NPA e localita', e il paese solo se
@@ -5663,6 +6033,7 @@ function indirizzoPerBusta(x) {
 async function initBustaPage() {
   await loadAziendaInfo()
   await loadImpostazioniConta()
+  caricaPreferenzeBusta()
   caricaTaraturaBusta()
   onAffrancaturaChange()
   disegnaBusta()
@@ -5673,24 +6044,55 @@ function chiaviTaraturaBusta(formato) {
   return { x: 'busta_off_x_' + formato, y: 'busta_off_y_' + formato }
 }
 
+// Gli scostamenti sono PER FORMATO: cambiando formato si ricaricano.
 function caricaTaraturaBusta() {
   var k = chiaviTaraturaBusta(formatoBustaCorrente())
   if (el('busta-off-x')) el('busta-off-x').value = impostazione(k.x, '0')
   if (el('busta-off-y')) el('busta-off-y').value = impostazione(k.y, '0')
+  mostraCampiPersonalizzata()
+}
+
+// FASE 22 — i corpi dei caratteri e le misure della personalizzata NON sono
+// per formato: si caricano una volta sola, all'apertura della pagina.
+// Rileggerli a ogni cambio di formato cancellerebbe quello che si e' appena
+// scelto senza salvare.
+function caricaPreferenzeBusta() {
+  if (el('busta-pers-l')) el('busta-pers-l').value = impostazione('busta_pers_l', '229')
+  if (el('busta-pers-h')) el('busta-pers-h').value = impostazione('busta_pers_h', '162')
+  if (el('busta-font-dest')) el('busta-font-dest').value = impostazione('busta_font_dest', '12')
+  if (el('busta-font-mitt')) el('busta-font-mitt').value = impostazione('busta_font_mitt', '8')
+}
+
+// I due campi delle misure si vedono solo quando servono.
+function mostraCampiPersonalizzata() {
+  var g = el('busta-pers-group')
+  if (g) g.style.display = formatoBustaCorrente() === 'pers' ? 'block' : 'none'
 }
 
 async function salvaTaraturaBusta() {
-  var f = formatoBustaCorrente()
-  var k = chiaviTaraturaBusta(f)
+  var k = chiaviTaraturaBusta(formatoBustaCorrente())
+  var f = formatoBusta()
   try {
     await salvaImpostazioneConta(k.x, safeNum(getVal('busta-off-x')) || 0,
-      'Taratura busta ' + FORMATI_BUSTA[f].etichetta + ': scostamento orizzontale in mm')
+      'Taratura busta ' + f.etichetta + ': scostamento orizzontale in mm')
     await salvaImpostazioneConta(k.y, safeNum(getVal('busta-off-y')) || 0,
-      'Taratura busta ' + FORMATI_BUSTA[f].etichetta + ': scostamento verticale in mm')
+      'Taratura busta ' + f.etichetta + ': scostamento verticale in mm')
+    // FASE 22 — corpi dei caratteri e misure personalizzate, salvati insieme
+    // alla taratura: sono la stessa regolazione della stessa busta.
+    await salvaImpostazioneConta('busta_font_dest', corpoDestinatario(),
+      'Busta: corpo del destinatario in punti')
+    await salvaImpostazioneConta('busta_font_mitt', corpoMittente(),
+      'Busta: corpo del mittente in punti')
+    if (formatoBustaCorrente() === 'pers') {
+      await salvaImpostazioneConta('busta_pers_l', safeNum(getVal('busta-pers-l')) || 0,
+        'Busta personalizzata: larghezza in mm')
+      await salvaImpostazioneConta('busta_pers_h', safeNum(getVal('busta-pers-h')) || 0,
+        'Busta personalizzata: altezza in mm')
+    }
     html('busta-banner',
       '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
-      '<div class="msg">Taratura salvata per il formato ' +
-        esc(FORMATI_BUSTA[f].etichetta) + '.</div></div>')
+      '<div class="msg">Taratura e caratteri salvati per il formato ' +
+        esc(f.etichetta) + '.</div></div>')
   } catch (e) {
     html('busta-banner',
       '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
@@ -5699,7 +6101,7 @@ async function salvaTaraturaBusta() {
 }
 
 function onFormatoBustaChange() {
-  caricaTaraturaBusta()
+  caricaTaraturaBusta()      // solo gli scostamenti: sono l'unica cosa per formato
   disegnaBusta()
 }
 
@@ -5713,7 +6115,7 @@ function onAffrancaturaChange() {
 // Il contenuto della busta, in millimetri. Lo stesso HTML serve per
 // l'anteprima a schermo e per la stampa: una cosa sola, che non puo' divergere.
 function bustaHtml(conGuide) {
-  var f = FORMATI_BUSTA[formatoBustaCorrente()]
+  var f = formatoBusta()
   var offX = safeNum(getVal('busta-off-x')) || 0
   var offY = safeNum(getVal('busta-off-y')) || 0
   var a = aziendaInfo || {}
@@ -5726,7 +6128,7 @@ function bustaHtml(conGuide) {
     unisciParti([a.cap, a.citta], ' ')
   ], '\n')
 
-  var logo = (a.logo_url && String(a.logo_url).trim()) ? a.logo_url : 'img/logo.png'
+  var logo = logoAziendaSrc()
 
   var nome = getVal('busta-nome')
   var indirizzo = el('busta-indirizzo') ? el('busta-indirizzo').value : ''
@@ -5755,8 +6157,9 @@ function bustaHtml(conGuide) {
            '<div class="busta-contenuto" style="transform:translate(' + offX + 'mm,' + offY + 'mm)">' +
              guide +
              '<div class="busta-mitt">' +
-               '<img src="' + esc(logo) + '" alt="" class="busta-logo" onerror="logoOnError(this)">' +
-               '<div class="busta-mitt-testo">' + esc(mitt) + '</div>' +
+               '<img src="' + esc(logo) + '" alt="" class="busta-logo" onerror="bustaLogoOnError(this)">' +
+               '<div class="busta-mitt-testo" style="font-size:' + corpoMittente() + 'pt">' +
+                 esc(mitt) + '</div>' +
              '</div>' +
              (digital && codice
                ? '<div class="busta-digital" style="width:' + BUSTA_FRANC_W + 'mm">' +
@@ -5764,12 +6167,80 @@ function bustaHtml(conGuide) {
                    '<div class="busta-digital-cod">' + esc(codice) + '</div>' +
                  '</div>'
                : '') +
+             // max-height NON taglia piu' il testo: se sborda si deve VEDERE
+             // che sborda, sia in anteprima sia nel controllo. A tagliarlo di
+             // nascosto si stampa una busta senza il numero civico.
              '<div class="busta-dest" style="left:' + indLeft + 'mm;top:' + indTop + 'mm;' +
-                  'max-height:' + indMaxH + 'mm">' +
+                  'font-size:' + corpoDestinatario() + 'pt">' +
                esc(destinatario || 'Destinatario da compilare') +
              '</div>' +
            '</div>' +
          '</div>'
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 22 / P6c — L'INDIRIZZO CHE SBORDA
+//
+// Con i caratteri grandi, o un indirizzo lungo, o una busta piccola, il blocco
+// del destinatario esce dalla zona di lettura e finisce nella zona di codifica
+// — quella che la macchina di smistamento della Posta usa per stampare. Li'
+// dentro non ci deve andare niente.
+//
+// Prima il blocco aveva max-height con overflow:hidden: il testo in piu' non
+// si vedeva, ma spariva anche dalla stampa. Una busta senza numero civico e'
+// peggio di una busta che non si stampa.
+//
+// La misura si prende dall'anteprima, che e' la stessa busta rimpicciolita:
+// si converte da pixel a millimetri usando la larghezza, che in mm la sappiamo.
+// Cosi' non serve conoscere ne' la scala ne' i DPI dello schermo.
+// ══════════════════════════════════════════════════════════════════════════════
+function verificaIndirizzoBusta() {
+  try {
+    var wrap = el('busta-anteprima-wrap')
+    if (!wrap) return null
+    var bustaEl = wrap.querySelector('.busta')
+    var destEl  = wrap.querySelector('.busta-dest')
+    if (!bustaEl || !destEl) return null
+
+    var rb = bustaEl.getBoundingClientRect()
+    var rd = destEl.getBoundingClientRect()
+    if (!rb.width) return null
+
+    var f = formatoBusta()
+    var mmPerPx = f.larghezza / rb.width          // la scala, qualunque sia
+
+    var indTop   = BUSTA_FRANC_H + 8
+    var altezzaMm = rd.height * mmPerPx
+    var bassoMm   = indTop + altezzaMm            // dove finisce, dall'alto
+    var limiteMm  = f.altezza - f.codificaH - 4   // dove comincia il vietato
+    var destraMm  = (rd.right - rb.left) * mmPerPx
+
+    // Un millimetro di tolleranza: la misura viene da pixel dello schermo
+    // riportati in millimetri, e mezzo pixel di arrotondamento non e' un
+    // motivo per rifiutare una busta che in realta' ci sta.
+    var TOLLERANZA = 1
+    var MARGINE_DESTRO = 3    // spazio da lasciare fra testo e bordo
+
+    var problemi = []
+    if (bassoMm > limiteMm + TOLLERANZA) {
+      problemi.push('l’indirizzo scende ' + fmtNumIt(Math.round((bassoMm - limiteMm) * 10) / 10) +
+                    ' mm dentro la zona di codifica, che deve restare libera')
+    }
+    if (destraMm > f.larghezza - MARGINE_DESTRO + TOLLERANZA) {
+      var restano = Math.round((f.larghezza - destraMm) * 10) / 10
+      problemi.push(restano < 0
+        ? 'l’indirizzo esce di ' + fmtNumIt(-restano) + ' mm dal bordo destro della busta'
+        : 'l’indirizzo arriva a ' + fmtNumIt(restano) + ' mm dal bordo destro: ne servono almeno ' +
+          MARGINE_DESTRO)
+    }
+    if (!problemi.length) return null
+    return 'Con questi caratteri ' + problemi.join(' e ') +
+           '. Scegli un corpo più piccolo per il destinatario, accorcia l’indirizzo ' +
+           'o passa a un formato di busta più grande.'
+  } catch (e) {
+    console.warn('Controllo sbordo busta:', e.message || e)
+    return null   // un controllo che non riesce non deve impedire di stampare
+  }
 }
 
 function disegnaBusta() {
@@ -5779,20 +6250,58 @@ function disegnaBusta() {
   // quella a schermo non varrebbe niente.
   html('busta-anteprima-wrap',
     '<div class="busta-scala">' + bustaHtml(true) + '</div>')
+  // Il controllo si fa a ogni ridisegno, cosi' l'avviso compare mentre si
+  // scrive l'indirizzo e non solo quando si preme Stampa. Ha un posto suo e
+  // non il banner generale: li' ci scrivono anche il logo e la taratura, e si
+  // cancellerebbero a vicenda.
+  var problema = verificaIndirizzoBusta()
+  var f = formatoBusta()
+  if (problema) showFattureBanner('busta-avviso-indirizzo', 'warn', problema)
+  else if (f.misureMancanti) {
+    showFattureBanner('busta-avviso-indirizzo', 'warn',
+      'Scrivi larghezza e altezza della busta personalizzata (fra ' + BUSTA_PERS_MIN +
+      ' e ' + BUSTA_PERS_MAX + ' mm). Intanto sto disegnando un C5.')
+  } else {
+    html('busta-avviso-indirizzo', '')
+  }
+}
+
+// Il foglio A4, per la prova. Se la busta ci sta per il lungo si stampa
+// verticale, altrimenti orizzontale.
+var A4_CORTO = 210
+var A4_LUNGO = 297
+
+// Come esce la prova su A4: il verso, e di quanto la busta sborda dal foglio.
+// FASE 22 — il C4 (324 mm) non entra in un A4 nemmeno per il lungo: prima si
+// stampava lo stesso, tagliato, e sembrava una prova valida.
+function provaSuA4(f) {
+  if (f.larghezza <= A4_CORTO && f.altezza <= A4_LUNGO) {
+    return { verso: 'portrait', fogliaL: A4_CORTO, fogliaH: A4_LUNGO }
+  }
+  return { verso: 'landscape', fogliaL: A4_LUNGO, fogliaH: A4_CORTO }
 }
 
 // La misura del foglio si decide qui e non nel CSS fisso: cambia con il
 // formato scelto, e la stampa di prova esce su A4.
 function impostaPaginaBusta(perProva) {
-  var f = FORMATI_BUSTA[formatoBustaCorrente()]
+  var f = formatoBusta()
   var st = el('busta-page-style')
   if (!st) return
   st.textContent = perProva
-    ? '@media print { @page { size: A4 portrait; margin: 0; } }'
+    ? '@media print { @page { size: A4 ' + provaSuA4(f).verso + '; margin: 0; } }'
     : '@media print { @page { size: ' + f.larghezza + 'mm ' + f.altezza + 'mm; margin: 0; } }'
 }
 
 function stampaBusta() {
+  // FASE 22 — se l'indirizzo sborda in una zona vietata non si stampa storto:
+  // si dice cosa non va e si lascia correggere.
+  var problema = verificaIndirizzoBusta()
+  if (problema) {
+    showFattureBanner('busta-banner', 'err', 'Non stampo: ' + problema)
+    var av = el('busta-avviso-indirizzo')
+    if (av) av.scrollIntoView({ block: 'center' })
+    return
+  }
   impostaPaginaBusta(false)
   html('busta-foglio', bustaHtml(false))
   document.body.classList.add('stampa-busta')
@@ -5810,11 +6319,27 @@ function stampaBusta() {
 // spostare. Cosi' non si sprecano buste per tarare.
 function stampaProvaBusta() {
   impostaPaginaBusta(true)
+  var f = formatoBusta()
+  var p = provaSuA4(f)
+  var fuoriL = Math.round((f.larghezza - p.fogliaL) * 10) / 10
+  var fuoriH = Math.round((f.altezza - p.fogliaH) * 10) / 10
+  var avviso = ''
+  if (fuoriL > 0 || fuoriH > 0) {
+    var pezzi = []
+    if (fuoriL > 0) pezzi.push(fmtNumIt(fuoriL) + ' mm a destra')
+    if (fuoriH > 0) pezzi.push(fmtNumIt(fuoriH) + ' mm in basso')
+    avviso = '<div class="busta-prova-avviso">⚠️ Attenzione: il formato ' +
+      esc(f.etichetta) + ' è più grande di un foglio A4. Il contorno esce dal foglio di ' +
+      pezzi.join(' e ') + ': quella parte non viene stampata. Il blocco ' +
+      'dell’indirizzo però ci sta, ed è quello che serve per tarare — allinea ' +
+      'l’angolo in alto a sinistra del foglio con quello della busta.</div>'
+  }
   html('busta-foglio',
     '<div class="busta-prova-nota">Prova di taratura — formato ' +
-      esc(FORMATI_BUSTA[formatoBustaCorrente()].etichetta) +
+      esc(f.etichetta) +
       '. Appoggia questo foglio sopra la busta, in controluce, e correggi gli ' +
       'scostamenti finché il contorno combacia.</div>' +
+    avviso +
     bustaHtml(true))
   document.body.classList.add('stampa-busta', 'stampa-busta-prova')
   var pulisci = function () {
@@ -7149,8 +7674,12 @@ function nomeClientePerFile(nome) {
   return (ultimo > 12 ? tagliato.slice(0, ultimo) : tagliato).replace(/-+$/, '')
 }
 
-function scaricaFatturaPDF() {
+async function scaricaFatturaPDF() {
   var f = currentDetailFattura
+  // FASE 22 — come per la stampa: la polizza dev'essere caricata prima, se c'e'.
+  try {
+    if (f && polizzaDi(f.id)) await preparaPolizzaPerStampa(f.id)
+  } catch (e) { console.warn('Polizza nel PDF:', e.message || e) }
   var nome = nomeFilePdfFattura(f)
   var titoloPrima = document.title
   document.title = nome
@@ -7253,6 +7782,10 @@ async function loadFlussi(force) {
 
 async function loadIvaPeriodi(force) {
   if (cacheOk('ivaPeriodi') && !force) return ivaPeriodiCache || []
+  // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
+  // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
+  // Stessa guardia di loadContatti e loadCantieri.
+  if (!currentAziendaId) { ivaPeriodiCache = ivaPeriodiCache || []; return ivaPeriodiCache }
   try {
     const { data, error } = await sb
       .from('tm_conta_iva_periodi')
@@ -7820,8 +8353,13 @@ let scadenzeCache     = null   // ultimo calcolo dei blocchi (per il badge)
 
 async function loadImpostazioniConta(force) {
   if (impostazioniConta && !force) return impostazioniConta
+  // FASE 22 — la stessa trappola delle altre cache, in un'altra forma: prima
+  // si metteva impostazioniConta = {} e si usciva, e quell'oggetto vuoto —
+  // «vero» in JavaScript — restava in cache per tutta la sessione anche dopo
+  // il login. Le impostazioni della busta e della taratura sparivano cosi'.
+  // Adesso senza sessione non si scrive niente in cache: si riprova dopo.
+  if (!currentAziendaId) return impostazioniConta || {}
   impostazioniConta = {}
-  if (!currentAziendaId) return impostazioniConta
   try {
     const { data, error } = await sb
       .from('tm_conta_impostazioni')
@@ -8654,6 +9192,11 @@ function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto) {
 // produzione. Qui si leggono e basta. Nessuna ALTER, nessun UPDATE, nessun
 // trigger, nessuna cancellazione.
 //
+// L'unica eccezione, dalla FASE 22, e' createCustomCantiere(): inserisce un
+// cantiere nuovo con nome, luogo, committente e stato 'Attivo', per poterlo
+// scegliere subito nella classificazione. Resta una INSERT sola, su quattro
+// colonne. Tutto il resto della scheda si compila nell'App Cantieri.
+//
 // DUE ERRORI CHE QUESTA SCHERMATA NON DEVE FARE
 //
 //   1. Il margine con la tariffa di VENDITA e' falso. 78 CHF/h e' il prezzo a
@@ -8688,6 +9231,10 @@ function costoOrarioAggiornatoIl() { return impostazione('costo_orario_aggiornat
 
 async function loadSpeseCantiere(force) {
   if (cacheOk('speseCantiere') && !force) return speseCantiereCache || []
+  // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
+  // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
+  // Stessa guardia di loadContatti e loadCantieri.
+  if (!currentAziendaId) { speseCantiereCache = speseCantiereCache || []; return speseCantiereCache }
   try {
     const { data, error } = await sb.from('spese')
       .select('id, cantiere_id, data, descrizione, importo, valuta, note')
@@ -8704,6 +9251,10 @@ async function loadSpeseCantiere(force) {
 
 async function loadRegiaCantiere(force) {
   if (cacheOk('regiaCantiere') && !force) return regiaCantiereCache || []
+  // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
+  // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
+  // Stessa guardia di loadContatti e loadCantieri.
+  if (!currentAziendaId) { regiaCantiereCache = regiaCantiereCache || []; return regiaCantiereCache }
   try {
     const { data, error } = await sb.from('regia')
       .select('id, cantiere_id, data, descrizione, quantita, um, prezzo_unitario, fatturato')
@@ -8720,6 +9271,10 @@ async function loadRegiaCantiere(force) {
 
 async function loadGiornate(force) {
   if (cacheOk('giornate') && !force) return giornateCache || []
+  // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
+  // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
+  // Stessa guardia di loadContatti e loadCantieri.
+  if (!currentAziendaId) { giornateCache = giornateCache || []; return giornateCache }
   try {
     const { data, error } = await sb.from('giornate')
       .select('id, cantiere_id, data, ore_totali, note')
@@ -10980,14 +11535,24 @@ var TIPI_ALLEGATO = [
   { v: 'fattura',  et: 'Fattura',  ic: '📄' },
   { v: 'bolla',    et: 'Bolla',    ic: '📋' },
   { v: 'ricevuta', et: 'Ricevuta', ic: '🧾' },
-  { v: 'altro',    et: 'Altro',    ic: '📎' }
+  { v: 'altro',    et: 'Altro',    ic: '📎' },
+  // FASE 22 — la polizza QR della banca. Non si sceglie da questa tendina: si
+  // carica dal suo riquadro sulla fattura, perche' porta con se' l'immagine
+  // per la stampa. Sta qui perche' l'elenco degli allegati la deve saper
+  // nominare, e perche' il pacchetto per il commercialista la ritrovi.
+  { v: 'polizza_qr', et: 'Polizza QR', ic: '🏦' }
 ]
 
+// Il tipo 'altro' e' il ripiego. Si cerca per nome e non per posizione:
+// l'indice fisso 3 aveva smesso di essere «altro» appena si e' aggiunta una
+// voce in coda.
 function etichettaTipoAllegato(tipo) {
+  var ripiego = null
   for (var i = 0; i < TIPI_ALLEGATO.length; i++) {
     if (TIPI_ALLEGATO[i].v === tipo) return TIPI_ALLEGATO[i]
+    if (TIPI_ALLEGATO[i].v === 'altro') ripiego = TIPI_ALLEGATO[i]
   }
-  return TIPI_ALLEGATO[3]
+  return ripiego || TIPI_ALLEGATO[0]
 }
 
 // ── La cache ────────────────────────────────────────────────────────────────
@@ -11034,15 +11599,41 @@ async function loadAllegati(force) {
   // Senza sessione non si legge niente, ma non e' una lettura riuscita:
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
   if (!currentAziendaId) { allegatiCache = []; return allegatiCache }
-  const { data, error } = await sb.from('tm_conta_allegati')
-    .select('id, tabella_origine, id_origine, tipo, path, nome_file, dimensione, created_at')
-    .eq('azienda_id', currentAziendaId)
-    .order('created_at', { ascending: true })
-  if (error) throw error
-  allegatiCache = data || []
+
+  var COLONNE_BASE = 'id, tabella_origine, id_origine, tipo, path, nome_file, dimensione, created_at'
+  // FASE 22 — le quattro colonne della polizza QR: senza, la stampa non
+  // saprebbe ne' dove sta l'immagine ne' quanto misura.
+  var COLONNE_POLIZZA = COLONNE_BASE + ', img_path, img_larghezza_mm, img_altezza_mm, pagina_origine'
+
+  async function leggi(colonne) {
+    return await sb.from('tm_conta_allegati')
+      .select(colonne)
+      .eq('azienda_id', currentAziendaId)
+      .order('created_at', { ascending: true })
+  }
+
+  var r = await leggi(COLONNE_POLIZZA)
+  if (r.error) {
+    // SQL_FASE22 non ancora lanciato: le colonne non esistono. Gli allegati
+    // devono continuare a funzionare come prima — a non poter caricare una
+    // polizza si sopravvive, a perdere l'elenco dei giustificativi no.
+    // La bandierina dice al riquadro della polizza di spiegarlo invece di
+    // dare un errore incomprensibile.
+    console.warn('Allegati senza le colonne della FASE 22:', r.error.message || r.error)
+    sqlFase22Mancante = true
+    r = await leggi(COLONNE_BASE)
+  } else {
+    sqlFase22Mancante = false
+  }
+  if (r.error) throw r.error
+  allegatiCache = r.data || []
   segnaCacheOk('allegati')
   return allegatiCache
 }
+
+// Vero quando le colonne della polizza QR non ci sono ancora: SQL_FASE22.sql
+// non e' stato lanciato.
+var sqlFase22Mancante = false
 
 function invalidaCacheAllegati() { scadeCache('allegati') }
 
@@ -11077,14 +11668,21 @@ function boxAllegatiHtml(tabella, id, nome) {
   var righe = lista.length
     ? lista.map(function (a) {
         var t = etichettaTipoAllegato(a.tipo)
-        // Il tipo si puo' cambiare dopo: capita di caricare una bolla e
-        // accorgersi solo dopo di averla segnata come fattura.
-        var sel = '<select class="alleg-tipo" title="Tipo di documento" ' +
-          'onchange="cambiaTipoAllegato(\'' + esc(a.id) + '\', this.value, ' + argomenti + ')">' +
-          TIPI_ALLEGATO.map(function (x) {
-            return '<option value="' + x.v + '"' + (x.v === a.tipo ? ' selected' : '') + '>' +
-                   x.ic + ' ' + x.et + '</option>'
-          }).join('') + '</select>'
+        // FASE 22 — la polizza QR non si sceglie da questa tendina, e non si
+        // puo' nemmeno diventare: porta con se' l'immagine per la stampa, che
+        // un cambio di tipo non creerebbe. Si mostra come etichetta ferma, e
+        // si gestisce dal suo riquadro.
+        var sel = a.tipo === 'polizza_qr'
+          ? '<span class="alleg-tipo-fisso" title="Si gestisce dal riquadro «Polizza QR della banca»">' +
+              t.ic + ' ' + esc(t.et) + '</span>'
+          // Il tipo si puo' cambiare dopo: capita di caricare una bolla e
+          // accorgersi solo dopo di averla segnata come fattura.
+          : '<select class="alleg-tipo" title="Tipo di documento" ' +
+            'onchange="cambiaTipoAllegato(\'' + esc(a.id) + '\', this.value, ' + argomenti + ')">' +
+            TIPI_ALLEGATO.filter(function (x) { return x.v !== 'polizza_qr' }).map(function (x) {
+              return '<option value="' + x.v + '"' + (x.v === a.tipo ? ' selected' : '') + '>' +
+                     x.ic + ' ' + x.et + '</option>'
+            }).join('') + '</select>'
         return '<div class="alleg-riga">' +
           sel +
           '<span class="alleg-nome" title="' + esc(a.path) + '">' +
@@ -11229,6 +11827,10 @@ async function eliminaAllegato(idAllegato, tabella, id, nome) {
     if (error) throw error
     try {
       await deleteAllegatoStorage(a.path)
+      // FASE 22 — la polizza QR ha due file: l'originale e l'immagine per la
+      // stampa. Cancellandone uno solo l'altro resterebbe nel bucket senza
+      // che niente lo nomini piu'.
+      if (a.img_path) await deleteAllegatoStorage(a.img_path)
     } catch (eFile) {
       console.warn('File non cancellato dallo storage:', eFile.message || eFile, a.path)
       avvisoAllegato(bannerAllegatiDi(tabella), 'warn',
@@ -11237,6 +11839,13 @@ async function eliminaAllegato(idAllegato, tabella, id, nome) {
     invalidaCacheAllegati()
     exportDataset = null
     await ricaricaDopoAllegato({ tabella: tabella, id: id, nome: nome })
+    // Se era la polizza, anche il suo riquadro e il foglio di stampa devono
+    // accorgersene: altrimenti la fattura continuerebbe a mostrare una pagina
+    // in coda che non c'e' piu'.
+    if (a.tipo === 'polizza_qr' && tabella === 'tm_conta_fatture') {
+      await disegnaBoxPolizza(id)
+      await ridisegnaStampaFattura(id)
+    }
   } catch (e) {
     avvisoAllegato(bannerAllegatiDi(tabella), 'err', 'Allegato non eliminato: ' + (e.message || e))
   }
@@ -11256,6 +11865,509 @@ async function ricaricaDopoAllegato(d) {
       if (currentPage === 'inserimento') await loadRecentiInseriti()
     }
   } catch (e) { console.warn('Ricarica dopo allegato:', e.message || e) }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 22 / P7 — LA POLIZZA QR DELLA BANCA, IN CODA ALLA FATTURA
+//
+// IL PROGRAMMA NON GENERA IL CODICE QR, E NON DEVE.
+// La polizza la fa la banca di Umberto, gratis e valida, e lui la scarica in
+// PDF a ogni fattura. Rifarla qui vorrebbe dire riscrivere una cosa gia' fatta
+// bene, col rischio che una polizza sbagliata venga rifiutata dalla banca o
+// faccia pagare male il cliente. La generazione automatica e' una fase futura,
+// per quando TimberMaster sara' un prodotto per chi il conto di Umberto non ce
+// l'ha.
+//
+// Quello che serve adesso e' molto piu' semplice: la polizza della banca si
+// allega alla fattura e si stampa insieme a lei. Un documento solo, un file
+// solo da spedire.
+//
+// LA SCELTA CHE REGGE TUTTO: SI CONVERTE UNA VOLTA, AL CARICAMENTO.
+// Il PDF diventa un'immagine a 300 dpi nel momento in cui Umberto lo carica, e
+// l'immagine si salva accanto all'originale (che non si butta). Da li' in poi
+// la stampa e' banale: una figura di misure fisse, come una foto. Non si
+// renderizza al momento di stampare — proprio quando serve non si vuole
+// dipendere da una libreria che arriva da internet.
+//
+// PERCHE' 300 DPI: e' l'errore piu' probabile di tutta questa fase. Un QR
+// sgranato sembra giusto a schermo e poi il telefono non lo legge. 300 dpi
+// significa scale = 300/72 sul canvas di pdf.js.
+//
+// PERCHE' NON SI RITAGLIA E NON SI RIDIMENSIONA: la polizza ha misure standard
+// e fisse, e il testo stampato accanto al codice fa parte della polizza. Una
+// polizza scalata anche di poco non e' piu' conforme. Si posiziona e basta.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// pdf.js 3.11.174: e' l'ultima serie che cdnjs pubblica ancora in UMD (un
+// <script> normale, con un global). Dalla 4 in poi ci sono solo moduli ES,
+// che questa pagina non carica.
+var PDFJS_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/'
+var TIMEOUT_PDFJS_MS = 20000
+var DPI_POLIZZA = 300
+var POLIZZA_MM_L = 210      // misure standard della polizza svizzera:
+var POLIZZA_MM_H = 105      // 210 x 105 mm, la fascia in fondo all'A4
+
+// Si scarica solo quando serve, come JSZip: sono quasi due megabyte, e chi non
+// carica mai una polizza non deve pagarli a ogni apertura del programma.
+// A differenza di caricaJSZip, qui c'e' un tempo massimo: un CDN che accetta
+// la connessione e poi non risponde lascerebbe la Promise appesa per sempre, e
+// il bottone girerebbe all'infinito.
+function caricaPdfJs() {
+  return new Promise(function (risolvi, rifiuta) {
+    if (window.pdfjsLib) { risolvi(window.pdfjsLib); return }
+    var finito = false
+    var orologio = setTimeout(function () {
+      if (finito) return
+      finito = true
+      rifiuta(new Error('La libreria per leggere i PDF non risponde. Controlla il collegamento a internet.'))
+    }, TIMEOUT_PDFJS_MS)
+
+    var s = document.createElement('script')
+    s.src = PDFJS_BASE + 'pdf.min.js'
+    s.onload = function () {
+      if (finito) return
+      finito = true; clearTimeout(orologio)
+      if (!window.pdfjsLib) { rifiuta(new Error('Libreria PDF caricata ma non disponibile.')); return }
+      // Il worker deve essere della STESSA versione: pdf.js si rifiuta di
+      // partire se le due non combaciano.
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + 'pdf.worker.min.js'
+      risolvi(window.pdfjsLib)
+    }
+    s.onerror = function () {
+      if (finito) return
+      finito = true; clearTimeout(orologio)
+      rifiuta(new Error('Non riesco a scaricare la libreria per leggere i PDF. Serve internet.'))
+    }
+    document.head.appendChild(s)
+  })
+}
+
+// I punti tipografici del PDF (72 per pollice) in millimetri.
+function puntiInMm(pt) { return pt * 25.4 / 72 }
+
+// La polizza QR di una fattura, se c'e'.
+function polizzaDi(idFattura) {
+  return allegatiDi('tm_conta_fatture', idFattura).filter(function (a) {
+    return a.tipo === 'polizza_qr'
+  })[0] || null
+}
+
+// ── Quale pagina del PDF ────────────────────────────────────────────────────
+// Il PDF della banca a volte e' un A4 con la polizza in fondo, a volte la sola
+// fascia di pagamento, a volte una lettera di due pagine con la polizza in
+// coda. Si cerca la pagina che contiene le parole della polizza — nelle tre
+// lingue, perche' la banca puo' emetterla in tedesco o francese. Se non si
+// trova, si prende l'ultima: e' li' che la polizza sta quasi sempre.
+var PAROLE_POLIZZA = [
+  'sezione pagamento', 'zahlteil', 'section paiement', 'payment part',
+  'ricevuta', 'empfangsschein', 'récépissé', 'recepisse', 'receipt'
+]
+
+async function scegliPaginaPolizza(pdf) {
+  if (pdf.numPages === 1) return 1
+  for (var n = 1; n <= pdf.numPages; n++) {
+    try {
+      var pagina = await pdf.getPage(n)
+      var testo = await pagina.getTextContent()
+      var s = testo.items.map(function (i) { return i.str }).join(' ').toLowerCase()
+      for (var k = 0; k < PAROLE_POLIZZA.length; k++) {
+        if (s.indexOf(PAROLE_POLIZZA[k]) !== -1) return n
+      }
+    } catch (_) { /* pagina illeggibile: si prova la prossima */ }
+  }
+  return pdf.numPages
+}
+
+// ── L'IBAN scritto sulla polizza ────────────────────────────────────────────
+// Non si corregge NIENTE da soli: si legge, si confronta e si avvisa. Umberto
+// ha piu' di un conto, e una polizza su un conto diverso da quello stampato
+// sulla fattura fa leggere al cliente due numeri diversi sullo stesso foglio.
+function ibanNudo(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '') }
+
+function trovaIbanNelTesto(testo) {
+  // Solo CH e LI: sono gli unici conti su cui una polizza QR svizzera puo'
+  // essere emessa, e cercare qualunque IBAN prenderebbe anche quello del
+  // cliente se comparisse.
+  //
+  // 21 caratteri: CH + 2 cifre di controllo + 5 dell'istituto + 12 del conto.
+  // Gli ultimi 17 NON sono solo cifre — il conto puo' contenere lettere, e
+  // proprio quelli di Umberto finiscono con una lettera
+  // (…0001 N, …0002 X). Con \d{19} non si trovavano.
+  var m = ibanNudo(testo).match(/(?:CH|LI)\d{2}[A-Z0-9]{17}/)
+  return m ? m[0] : null
+}
+
+async function leggiIbanDallaPagina(pagina) {
+  try {
+    var testo = await pagina.getTextContent()
+    return trovaIbanNelTesto(testo.items.map(function (i) { return i.str }).join(' '))
+  } catch (_) { return null }
+}
+
+// ── Il caricamento ──────────────────────────────────────────────────────────
+
+var polizzaFatturaCorrente = null   // {id, numero} della fattura su cui si sta lavorando
+
+function bannerPolizza(tipo, msg) { showFattureBanner('polizza-banner', tipo, msg) }
+
+async function caricaPolizzaQr(input) {
+  var file = input && input.files && input.files[0]
+  if (!file) return
+  var f = polizzaFatturaCorrente
+  if (!f) { bannerPolizza('err', 'Apri prima una fattura.'); return }
+  if (sqlFase22Mancante) {
+    bannerPolizza('err', 'Prima serve la migrazione: lancia SQL_FASE22.sql dal SQL Editor ' +
+      'di Supabase, poi ricarica la pagina. Fino ad allora la polizza non si può allegare.')
+    input.value = ''
+    return
+  }
+
+  var btn = el('polizza-carica-btn')
+  if (btn) { btn.disabled = true }
+  html('polizza-anteprima', '')
+  bannerPolizza('warn', '⏳ Preparo la polizza per la stampa…')
+
+  try {
+    var mb = file.size / (1024 * 1024)
+    if (mb > LIMITE_ALLEGATO_MB) {
+      throw new Error('Il file pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' +
+                      LIMITE_ALLEGATO_MB + ' MB.')
+    }
+    var nome = String(file.name || '').toLowerCase()
+    var ePdf = nome.slice(-4) === '.pdf' || file.type === 'application/pdf'
+    var eImmagine = /\.(png|jpe?g)$/.test(nome) || /^image\/(png|jpeg)$/.test(file.type)
+    if (!ePdf && !eImmagine) {
+      throw new Error('La polizza dev’essere un PDF, oppure un’immagine PNG o JPG.')
+    }
+
+    var preparata = ePdf ? await polizzaDaPdf(file) : await polizzaDaImmagine(file)
+
+    // Una sola polizza per fattura: la precedente se ne va prima, riga e file.
+    await togliPolizzaSilenziosa(f.id)
+
+    // Due file: l'originale (che non si butta) e l'immagine per la stampa.
+    var pathOriginale = await uploadAllegato(file)
+    var pathImmagine
+    try {
+      pathImmagine = await uploadAllegato(preparata.file)
+    } catch (eImg) {
+      try { await deleteAllegatoStorage(pathOriginale) } catch (_) {}
+      throw eImg
+    }
+
+    const { error } = await sb.from('tm_conta_allegati').insert({
+      azienda_id: currentAziendaId,
+      tabella_origine: 'tm_conta_fatture',
+      id_origine: f.id,
+      tipo: 'polizza_qr',
+      path: pathOriginale,
+      nome_file: file.name,
+      dimensione: file.size,
+      img_path: pathImmagine,
+      img_larghezza_mm: preparata.larghezzaMm,
+      img_altezza_mm: preparata.altezzaMm,
+      pagina_origine: preparata.pagina || null,
+      created_by: currentUser ? currentUser.id : null
+    }).select()
+    if (error) {
+      // I file sono saliti ma la riga no: si tolgono, altrimenti restano nello
+      // Storage senza che niente li nomini.
+      try { await deleteAllegatoStorage(pathOriginale) } catch (_) {}
+      try { await deleteAllegatoStorage(pathImmagine) } catch (_) {}
+      throw error
+    }
+
+    invalidaCacheAllegati()
+    exportDataset = null
+    await loadAllegati(true)
+    await disegnaBoxPolizza(f.id)
+    await aggiornaBoxAllegati('tm_conta_fatture', f.id, 'fatture-allegati', 'Fattura ' + (f.numero || ''))
+    // La fattura stampata cambia: la nota «allegata a parte» deve sparire e la
+    // pagina in coda deve comparire.
+    await ridisegnaStampaFattura(f.id)
+
+    bannerPolizza('ok', messaggioEsitoPolizza(preparata, f))
+  } catch (e) {
+    console.error('Polizza QR:', e)
+    bannerPolizza('err', 'Polizza non allegata: ' + (e.message || e) +
+      ' — la fattura resta com’era e si stampa lo stesso, senza polizza.')
+  } finally {
+    if (btn) btn.disabled = false
+    if (input) input.value = ''
+  }
+}
+
+// Il riepilogo di cosa e' stato preso, IBAN compreso.
+function messaggioEsitoPolizza(p, f) {
+  var parti = ['Polizza allegata']
+  if (p.pagina) parti.push('presa dalla pagina ' + p.pagina + ' del PDF')
+  parti.push('stampata a ' + Math.round(p.larghezzaMm) + ' × ' +
+             Math.round(p.altezzaMm) + ' mm, a grandezza reale')
+  var msg = parti.join(', ') + '. Guarda l’anteprima qui sotto: se il codice è sgranato o è il ' +
+            'file sbagliato, ricaricane un altro adesso.'
+
+  var ibanFattura = ibanNudo(f.iban || (aziendaInfo || {}).iban)
+  if (p.iban) {
+    if (ibanFattura && ibanNudo(p.iban) !== ibanFattura) {
+      msg += ' ⚠️ ATTENZIONE: la polizza è sul conto ' + p.iban + ', ma sulla fattura è ' +
+             'stampato ' + (f.iban || (aziendaInfo || {}).iban) + '. Sono due conti diversi: ' +
+             'il cliente leggerebbe due numeri sullo stesso documento. Controlla quale dei due è ' +
+             'quello giusto — non correggo niente da solo.'
+    } else {
+      msg += ' Il conto della polizza è lo stesso stampato sulla fattura.'
+    }
+  } else {
+    msg += ' ⚠️ Non sono riuscito a leggere l’IBAN dalla polizza: controlla tu che sia il conto ' +
+           'giusto. Sulla fattura è stampato ' +
+           (f.iban || (aziendaInfo || {}).iban || '(nessun IBAN)') + '.'
+  }
+  return msg
+}
+
+// ── Da PDF a immagine, una volta sola ───────────────────────────────────────
+async function polizzaDaPdf(file) {
+  var pdfjs = await caricaPdfJs()
+  var dati = new Uint8Array(await file.arrayBuffer())
+  var pdf = await pdfjs.getDocument({ data: dati }).promise
+
+  var numero = await scegliPaginaPolizza(pdf)
+  var pagina = await pdf.getPage(numero)
+  var iban = await leggiIbanDallaPagina(pagina)
+
+  // scale 1 = 72 dpi. Le misure in millimetri si prendono da qui, prima di
+  // ingrandire: sono quelle vere della pagina, ed e' a quelle che si stampa.
+  var naturale = pagina.getViewport({ scale: 1 })
+  var larghezzaMm = puntiInMm(naturale.width)
+  var altezzaMm   = puntiInMm(naturale.height)
+
+  var vista = pagina.getViewport({ scale: DPI_POLIZZA / 72 })
+  var canvas = document.createElement('canvas')
+  canvas.width  = Math.round(vista.width)
+  canvas.height = Math.round(vista.height)
+  var ctx = canvas.getContext('2d')
+  // Fondo bianco: un PDF senza fondo diventerebbe un PNG trasparente, e in
+  // stampa il nero del QR su trasparente puo' uscire grigio.
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  await pagina.render({ canvasContext: ctx, viewport: vista }).promise
+
+  var blob = await canvasInPng(canvas)
+  return {
+    file: new File([blob], 'polizza_qr_stampa.png', { type: 'image/png' }),
+    larghezzaMm: larghezzaMm,
+    altezzaMm: altezzaMm,
+    pagina: numero,
+    pagineTotali: pdf.numPages,
+    iban: iban
+  }
+}
+
+// Un'immagine si prende com'e'. Le misure in millimetri non si possono
+// ricavare dai pixel — un PNG non sa a che dimensione va stampato — quindi si
+// assumono quelle standard della polizza svizzera, e lo si scrive.
+async function polizzaDaImmagine(file) {
+  return {
+    file: file,
+    larghezzaMm: POLIZZA_MM_L,
+    altezzaMm: POLIZZA_MM_H,
+    pagina: null,
+    iban: null
+  }
+}
+
+// PNG e non JPEG: il QR e' tratto in bianco e nero, e il JPEG lo sporca di
+// aloni proprio sui bordi dei quadratini.
+function canvasInPng(canvas) {
+  return new Promise(function (risolvi, rifiuta) {
+    if (canvas.toBlob) {
+      canvas.toBlob(function (b) {
+        if (b) risolvi(b); else rifiuta(new Error('Non riesco a creare l’immagine della polizza.'))
+      }, 'image/png')
+    } else {
+      rifiuta(new Error('Questo browser non sa creare l’immagine della polizza.'))
+    }
+  })
+}
+
+// ── Togliere la polizza ─────────────────────────────────────────────────────
+
+// Senza domande e senza avvisi: e' il passo interno di una sostituzione.
+async function togliPolizzaSilenziosa(idFattura) {
+  var vecchia = polizzaDi(idFattura)
+  if (!vecchia) return
+  const { error } = await sb.from('tm_conta_allegati')
+    .delete().eq('id', vecchia.id).eq('azienda_id', currentAziendaId).select()
+  if (error) throw error
+  try { await deleteAllegatoStorage(vecchia.path) } catch (_) {}
+  if (vecchia.img_path) { try { await deleteAllegatoStorage(vecchia.img_path) } catch (_) {} }
+  invalidaCacheAllegati()
+}
+
+async function togliPolizza(idFattura, numero) {
+  if (!window.confirm('Togliere la polizza QR da questa fattura?\n\n' +
+      'I file vengono cancellati dallo storage: non si può annullare. ' +
+      'La fattura si stamperà come prima, con la nota «Polizza QR allegata a parte».')) return
+  var btn = el('polizza-togli-btn')
+  if (btn) btn.disabled = true
+  try {
+    await togliPolizzaSilenziosa(idFattura)
+    exportDataset = null
+    await loadAllegati(true)
+    await disegnaBoxPolizza(idFattura)
+    await aggiornaBoxAllegati('tm_conta_fatture', idFattura, 'fatture-allegati', 'Fattura ' + (numero || ''))
+    await ridisegnaStampaFattura(idFattura)
+    bannerPolizza('ok', 'Polizza tolta.')
+  } catch (e) {
+    console.error('Rimozione polizza:', e)
+    bannerPolizza('err', 'Polizza non tolta: ' + (e.message || e))
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+// ── Il riquadro sulla fattura ───────────────────────────────────────────────
+
+async function disegnaBoxPolizza(idFattura) {
+  var cont = el('fatture-polizza')
+  if (!cont) return
+  var f = (currentDetailFattura && currentDetailFattura.id === idFattura) ? currentDetailFattura : null
+  polizzaFatturaCorrente = f ? { id: f.id, numero: f.numero, iban: f.iban } : { id: idFattura, numero: '', iban: null }
+
+  // Sulle note di credito la polizza non ha senso: non si incassa niente.
+  if (f && f.tipo === 'nota_credito') { html(cont.id, ''); return }
+
+  var p = polizzaDi(idFattura)
+  var corpo
+
+  if (sqlFase22Mancante) {
+    corpo = '<div class="fase-banner warn"><span class="icon" aria-hidden="true">⚠️</span>' +
+      '<div class="msg">Per allegare la polizza serve prima la migrazione ' +
+      '<code>SQL_FASE22.sql</code>, da lanciare una volta sola dal SQL Editor di Supabase. ' +
+      'Tutto il resto del programma funziona lo stesso.</div></div>'
+  } else if (p) {
+    corpo =
+      '<div class="polizza-riga">' +
+        '<span class="polizza-et">🏦 Polizza allegata</span>' +
+        '<span class="alleg-nome" title="' + esc(p.path) + '">' +
+          esc(p.nome_file || allegatoNomeFile(p.path)) + '</span>' +
+        '<span class="alleg-azioni">' +
+          '<button type="button" class="icon-btn" onclick="openAllegato(\'' + esc(p.path) +
+            '\', \'polizza-banner\')">📎 Apri l’originale</button>' +
+          '<button type="button" class="icon-btn danger" id="polizza-togli-btn" ' +
+            'onclick="togliPolizza(\'' + esc(idFattura) + '\', \'' +
+              esc((polizzaFatturaCorrente && polizzaFatturaCorrente.numero) || '') + '\')">' +
+            '🗑️ Togli la polizza</button>' +
+        '</span>' +
+      '</div>' +
+      '<div class="form-hint">' +
+        'Si stampa in coda alla fattura, su una pagina sua, a grandezza reale (' +
+        Math.round(safeNum(p.img_larghezza_mm) || POLIZZA_MM_L) + ' × ' +
+        Math.round(safeNum(p.img_altezza_mm) || POLIZZA_MM_H) + ' mm' +
+        (p.pagina_origine ? ', dalla pagina ' + p.pagina_origine + ' del PDF' : '') + ').' +
+        ' Per sostituirla, caricane un&#8217;altra: la vecchia se ne va da sola.' +
+      '</div>' +
+      '<div id="polizza-anteprima" class="polizza-anteprima"></div>'
+  } else {
+    corpo = '<div class="form-hint" style="margin-top:0">' +
+      'Carica qui la polizza che ti manda la banca. Viene stampata in coda alla fattura, ' +
+      'su una pagina sua e a grandezza reale, così spedisci un documento solo. ' +
+      'Senza polizza la fattura si stampa come sempre.</div>'
+  }
+
+  html(cont.id,
+    '<div class="card no-print">' +
+      '<div class="card-title">🏦 Polizza QR della banca</div>' +
+      '<div id="polizza-banner" role="status" aria-live="polite"></div>' +
+      corpo +
+      (sqlFase22Mancante ? '' :
+        '<div class="form-group" style="margin-top:12px">' +
+          '<label for="polizza-file" class="form-label">' +
+            (p ? 'Sostituisci la polizza' : 'Polizza (PDF, oppure PNG/JPG)') + '</label>' +
+          '<input type="file" id="polizza-file" class="form-input-file" ' +
+            'accept=".pdf,.png,.jpg,.jpeg" onchange="caricaPolizzaQr(this)" />' +
+          '<div class="form-hint">Massimo ' + LIMITE_ALLEGATO_MB + ' MB. ' +
+            'Il PDF viene convertito in immagine a ' + DPI_POLIZZA + ' dpi una volta sola, ' +
+            'adesso: l’originale resta archiviato con la fattura.</div>' +
+        '</div>') +
+    '</div>')
+
+  if (p) await mostraAnteprimaPolizza(p)
+}
+
+// L'anteprima e' quello che verra' stampato, non il PDF originale: se e'
+// sgranata o e' il file sbagliato si vede qui, non dopo aver spedito.
+async function mostraAnteprimaPolizza(p) {
+  var cont = el('polizza-anteprima')
+  if (!cont || !p.img_path) return
+  try {
+    var url = await urlFirmato(p.img_path)
+    html('polizza-anteprima',
+      '<div class="form-label" style="margin-bottom:6px">Anteprima di quello che verrà stampato</div>' +
+      '<img src="' + esc(url) + '" alt="Anteprima della polizza QR" class="polizza-img">')
+  } catch (e) {
+    html('polizza-anteprima',
+      '<div class="form-hint">Anteprima non disponibile (' + esc(e.message || e) +
+      '). La polizza resta allegata.</div>')
+  }
+}
+
+// Il link temporaneo a un file del bucket privato. Un'ora basta: serve solo a
+// mostrarlo e a stamparlo adesso.
+async function urlFirmato(path) {
+  const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 3600)
+  if (error) throw error
+  if (!data || !data.signedUrl) throw new Error('Il server non ha restituito un link firmato.')
+  return data.signedUrl
+}
+
+// Rifa' il foglio di stampa della fattura aperta: la nota «allegata a parte» e
+// la pagina della polizza dipendono da quello che e' appena cambiato.
+async function ridisegnaStampaFattura(idFattura) {
+  try {
+    if (!currentDetailFattura || currentDetailFattura.id !== idFattura) return
+    if (!righeDetailCorrenti) return
+    renderFatturaPrint(currentDetailFattura, righeDetailCorrenti, rifInfoCorrente)
+    await preparaPolizzaPerStampa(idFattura)
+  } catch (e) { console.warn('Ridisegno stampa:', e.message || e) }
+}
+
+// ── La stampa ───────────────────────────────────────────────────────────────
+//
+// L'immagine si carica PRIMA di window.print(): un <img> ancora vuoto stampa
+// una pagina bianca, e nessuno se ne accorge finche' la busta non e' spedita.
+// Se non si carica, la fattura esce come sempre e un banner lo dice: il
+// programma non deve mai restare bloccato per colpa della polizza.
+async function preparaPolizzaPerStampa(idFattura) {
+  var posto = el('fatture-qrpage')
+  if (!posto) return false
+  var p = polizzaDi(idFattura)
+  if (!p || !p.img_path) { posto.innerHTML = ''; return false }
+
+  var l = safeNum(p.img_larghezza_mm) || POLIZZA_MM_L
+  var h = safeNum(p.img_altezza_mm) || POLIZZA_MM_H
+  try {
+    var url = await urlFirmato(p.img_path)
+    await new Promise(function (risolvi, rifiuta) {
+      var img = new Image()
+      img.onload = function () { risolvi() }
+      img.onerror = function () { rifiuta(new Error('immagine non caricata')) }
+      img.src = url
+    })
+    posto.innerHTML =
+      '<div class="inv-qrpage">' +
+        '<img class="inv-qrimg" src="' + esc(url) + '" alt="Polizza QR" ' +
+             'style="width:' + l + 'mm;height:' + h + 'mm">' +
+      '</div>'
+    return true
+  } catch (e) {
+    console.warn('Polizza non pronta per la stampa:', e.message || e)
+    posto.innerHTML = ''
+    showFattureBanner('fatture-detail-banner', 'warn',
+      'La polizza allegata non si è caricata: la fattura si stampa senza. ' +
+      'Riprova fra un momento o controlla il collegamento.')
+    return false
+  }
 }
 
 
@@ -11405,7 +12517,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '40'
+var VERSIONE = '41'
 
 function controllaVersionePagina() {
   try {
@@ -11429,15 +12541,48 @@ function controllaVersionePagina() {
 }
 
 function ricaricaPagina() {
-  // location.reload(true) e' deprecato e su molti browser viene ignorato:
-  // si aggiunge un parametro che cambia, che la cache non puo' servire.
+  // location.reload() e location.reload(true) NON bastano: il secondo e'
+  // deprecato e i browser moderni lo ignorano, e un ricaricamento normale
+  // ripesca index.html dalla cache — che e' l'unico file senza ?v=. Si
+  // naviga percio' su un indirizzo con un parametro sempre diverso, che la
+  // cache non puo' servire.
+  //
+  // Si riparte da pathname e non dall'indirizzo intero: cosi' un ?r= vecchio
+  // non si somma a quello nuovo. Il #frammento si tiene, per tornare sulla
+  // schermata da cui si e' premuto.
   try {
-    var u = new URL(window.location.href)
-    u.searchParams.set('ricarica', String(Date.now()))
-    window.location.replace(u.toString())
+    window.location.replace(window.location.pathname + '?r=' + Date.now() +
+                            window.location.hash)
   } catch (_) {
     window.location.reload()
   }
+}
+
+// FASE 22 / P1 — SUBITO DOPO, L'INDIRIZZO SI RIPULISCE.
+//
+// Il ?r= ha fatto il suo lavoro nel momento in cui il browser ha chiesto la
+// pagina: da li' in poi e' sporcizia. E non se ne andrebbe da solo, perche'
+// spingiStato() chiama history.replaceState con un indirizzo RELATIVO
+// ('#fatture'), che conserva la query: il parametro resterebbe nella barra
+// per tutta la sessione e finirebbe dentro il collegamento salvato.
+//
+// Va chiamata PRIMA di installaCronologia(): dopo il primo spingiStato()
+// sarebbe gia' tardi.
+function pulisciIndirizzoRicarica() {
+  try {
+    if (!window.location.search) return
+    var p = new URLSearchParams(window.location.search)
+    // 'ricarica' e' il nome usato dalla versione 40: chi ce l'ha appiccicato
+    // in cache deve vederselo togliere lo stesso.
+    if (!p.has('r') && !p.has('ricarica')) return
+    // Si tolgono SOLO i due parametri nostri. Buttare via tutta la query
+    // sarebbe piu' corto, ma un giorno qualcuno passerebbe un parametro suo e
+    // se lo vedrebbe sparire senza capire perche'.
+    p.delete('r'); p.delete('ricarica')
+    var resto = p.toString()
+    history.replaceState(history.state, '', window.location.pathname +
+                         (resto ? '?' + resto : '') + window.location.hash)
+  } catch (e) { console.warn('Pulizia indirizzo:', e.message || e) }
 }
 
 
@@ -11817,6 +12962,8 @@ document.addEventListener('DOMContentLoaded', function () {
   // Esc e clic-fuori sono gestiti in un posto solo, con la regola per tutte
   // le finestre: vedi installaGestioneFinestre().
   installaGestioneFinestre()
+  // FASE 22 — prima della cronologia: dopo, il ?r= resterebbe incollato.
+  pulisciIndirizzoRicarica()
   installaCronologia()
   // FASE 9C — se l'HTML e' una versione vecchia rimasta in cache, lo si dice.
   controllaVersionePagina()
