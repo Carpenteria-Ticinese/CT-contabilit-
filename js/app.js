@@ -385,6 +385,10 @@ async function doLogout() {
   } catch (_) { /* ignora errori di logout */ }
   currentUser = null
   currentAziendaId = null
+  // FASE 23 / P2 — i dati della ditta se ne vanno con la sessione. Restavano
+  // in memoria dopo l'uscita, e chi fosse entrato dopo si sarebbe trovato
+  // l'intestazione della ditta precedente su un documento nuovo.
+  aziendaInfo = null
   updateSidebarAuth()
   html('nav-badge-movimenti', '0')
   showPage('login')
@@ -522,6 +526,21 @@ async function loadAziendaId() {
 // ─── CANALE A — legge spese e regia (App Cantieri) ───────────────────────────
 async function loadCanalA() {
   const movimenti = []
+
+  // FASE 23 / P2 — LA GUARDIA SULLA SESSIONE, ANCHE QUI.
+  //
+  // `spese` e `regia` sono tabelle di App Cantieri protette da RLS: senza
+  // sessione la lettura NON da' errore, restituisce zero righe. Le altre due
+  // sorgenti sono gia' dentro `if (currentAziendaId)`, queste no.
+  //
+  // Il guaio non era un elenco vuoto: era che il riquadro dei movimenti
+  // mostrava il banner VERDE «Tutti i movimenti classificati!» proprio quando
+  // il programma non aveva potuto leggere niente. Un messaggio di successo su
+  // un dato mancante e' peggio di nessun messaggio. Adesso si LANCIA, cosi' il
+  // chiamante lo raccoglie e scrive «Alcune sorgenti non hanno risposto».
+  if (!currentAziendaId) {
+    throw new Error('Sessione non attiva: le spese e la regia di App Cantieri non si possono leggere. Rientra e riprova.')
+  }
 
   // spese: id, data, descrizione, importo, valuta, cantiere_id, note
   try {
@@ -798,10 +817,16 @@ async function loadDaClassificare() {
   var speseCnt = canalA.filter(function (m) { return m.origine_tipo === 'spesa' }).length
   var regiaCnt = canalA.filter(function (m) { return m.origine_tipo === 'regia' }).length
   var propriCnt = canalB.length
+  // FASE 23 / P2 — se il Canale A non ha risposto, i suoi due contatori non
+  // sono «zero»: sono «non lo so». Un 0 e uno «?» si leggono in modo diverso,
+  // ed e' proprio la differenza fra «non c'e' niente» e «non ho letto niente».
+  var canalAMuto = errori.some(function (x) { return String(x).indexOf('Canale A') === 0 })
   html('movimenti-sorgenti',
     '<div class="grid-3" style="margin-bottom:20px">' +
-      statCard('📦 Spese', speseCnt, 'App Cantieri — Canale A') +
-      statCard('🔧 Regia', regiaCnt, 'App Cantieri — Canale A') +
+      statCard('📦 Spese', canalAMuto ? '?' : speseCnt,
+               canalAMuto ? 'App Cantieri — non ha risposto' : 'App Cantieri — Canale A') +
+      statCard('🔧 Regia', canalAMuto ? '?' : regiaCnt,
+               canalAMuto ? 'App Cantieri — non ha risposto' : 'App Cantieri — Canale A') +
       statCard('🏢 Propri', propriCnt, 'Inseriti manualmente — Canale B') +
     '</div>'
   )
@@ -818,7 +843,19 @@ async function loadDaClassificare() {
 
   // ── Sezione: da classificare ───────────────────────────────────────────────
   var sezioneDaClass
-  if (daClass.length === 0) {
+  if (daClass.length === 0 && errori.length > 0) {
+    // FASE 23 / P2 — «Tutti classificati!» quando una sorgente non ha risposto
+    // e' un complimento su un dato che non c'e'. Zero da classificare vale solo
+    // se si e' letto tutto.
+    sezioneDaClass =
+      '<div class="fase-banner warn" role="alert">' +
+        '<span class="icon" aria-hidden="true">⚠️</span>' +
+        '<div class="msg">Non ci sono movimenti da classificare, ma non ho letto tutto.' +
+          '<small>Qui sopra c’è scritto quale sorgente non ha risposto: finché non risponde, ' +
+          'questo elenco non è completo e non vuol dire che il lavoro sia finito.</small>' +
+        '</div>' +
+      '</div>'
+  } else if (daClass.length === 0) {
     sezioneDaClass =
       '<div class="fase-banner ok" role="status">' +
         '<span class="icon" aria-hidden="true">✅</span>' +
@@ -3693,12 +3730,34 @@ async function toggleIbanChiuso(id, toAttivo) {
 // ── Vista / stampa documento ─────────────────────────────────────────────────
 async function loadAziendaInfo() {
   if (aziendaInfo !== null) return
+  // FASE 23 / P2 — due difetti nella stessa funzione.
+  //
+  // 1. LA GUARDIA. Senza sessione la lettura fallisce, il catch scriveva
+  //    `aziendaInfo = {}` — e `{}` NON e' null, quindi la riga qui sopra
+  //    faceva uscire ogni chiamata successiva: non si ritentava mai piu',
+  //    nemmeno dopo il login. E' la stessa trappola della cache «riuscita»
+  //    gia' chiusa per i cantieri e per le impostazioni.
+  // 2. COSA COMPORTA. Con aziendaInfo vuoto isSoggettoIva() torna false, e la
+  //    fattura si stampa SENZA colonne IVA, senza riepilogo IVA e senza numero
+  //    IVA. Nessun errore, nessun avviso: un documento non conforme che sembra
+  //    a posto. Sulla busta sparivano via e NPA del mittente.
+  //
+  // Percio': senza sessione non si scrive niente in cache e si riprova dopo.
+  if (!currentAziendaId) return
   try {
     const { data, error } = await sb.from('tm_aziende').select('*').eq('id', currentAziendaId).single()
     if (error) throw error
     aziendaInfo = data || {}
-  } catch (e) { aziendaInfo = {} }
+  } catch (e) {
+    console.warn('Dati della ditta non letti:', e.message || e)
+    // NON si mette {}: lascerebbe la funzione bloccata per sempre. Si lascia
+    // null, cosi' il prossimo tentativo riprova davvero.
+  }
 }
+
+// I dati della ditta ci sono davvero? Chi stampa un documento deve poterlo
+// chiedere invece di scoprire a cose fatte che l'intestazione e' vuota.
+function datiDittaMancanti() { return aziendaInfo === null || !aziendaInfo.nome }
 function aziendaNome() {
   var a = aziendaInfo || {}
   return a.nome || a.ragione_sociale || a.denominazione || a.name || 'Carpenteria Ticinese Sàgl'
@@ -5634,6 +5693,17 @@ function statCard(label, value, detail) {
 // ─── Piano dei conti (Fase 1) ─────────────────────────────────────────────────
 async function renderPianoConti() {
   html('fase1-pdc', loadingRow('Caricamento piano dei conti…'))
+  // FASE 23 / P2 — senza sessione la RLS non da' errore: restituisce zero
+  // righe. Senza questa guardia si disegnava una tabella vuota col badge VERDE
+  // «0 conti», che si legge come un esito riuscito. Un elenco vuoto deve dire
+  // perche' e' vuoto — come fa notaCantieriVuoti per i cantieri.
+  if (!currentAziendaId) {
+    html('fase1-pdc', '<div class="cru-vuoto"><strong>Piano dei conti non disponibile.</strong><br>' +
+      'La sessione non &egrave; attiva, quindi il programma non pu&ograve; leggerlo. ' +
+      'Rientra e riprova: il dato c&rsquo;&egrave;, &egrave; l&rsquo;accesso che manca.</div>')
+    return
+  }
+
   var conti = []
   try {
     const { data, error } = await sb.from('tm_conta_piano_conti').select('codice_conto, descrizione, tipo, attivo').eq('paese', 'CH').order('codice_conto')
@@ -5679,7 +5749,9 @@ async function renderPianoConti() {
 
   html('fase1-pdc',
     '<div class="card">' +
-      '<div class="card-title">📋 Piano dei conti CH — Kontenrahmen KMU ' + badge('ok', conti.length + ' conti') + '</div>' +
+      // FASE 23 — «0 conti» in verde e' la bugia piu' corta del programma.
+      '<div class="card-title">📋 Piano dei conti CH — Kontenrahmen KMU ' +
+        badge(conti.length ? 'ok' : 'warn', conti.length + ' conti') + '</div>' +
       '<div class="table-wrap"><table><thead><tr><th style="width:90px">Conto</th><th>Descrizione</th><th style="width:110px">Tipo</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<div class="sql-tip">💡 Piano dei conti provvisorio. Il piano definitivo è fornito dal commercialista.</div>' +
     '</div>'
@@ -5689,6 +5761,17 @@ async function renderPianoConti() {
 // ─── Codici IVA (Fase 1) ──────────────────────────────────────────────────────
 async function renderCodiciIVA() {
   html('fase1-iva', loadingRow('Caricamento codici IVA…'))
+  // FASE 23 / P2 — senza sessione la RLS non da' errore: restituisce zero
+  // righe. Senza questa guardia si disegnava una tabella vuota col badge VERDE
+  // «0 conti», che si legge come un esito riuscito. Un elenco vuoto deve dire
+  // perche' e' vuoto — come fa notaCantieriVuoti per i cantieri.
+  if (!currentAziendaId) {
+    html('fase1-iva', '<div class="cru-vuoto"><strong>Elenco dei codici IVA non disponibile.</strong><br>' +
+      'La sessione non &egrave; attiva, quindi il programma non pu&ograve; leggerlo. ' +
+      'Rientra e riprova: il dato c&rsquo;&egrave;, &egrave; l&rsquo;accesso che manca.</div>')
+    return
+  }
+
   var codici = []
   try {
     const { data, error } = await sb.from('tm_conta_codici_iva').select('codice, descrizione, aliquota, attivo').eq('paese', 'CH').order('aliquota', { ascending: false })
@@ -5712,7 +5795,8 @@ async function renderCodiciIVA() {
 
   html('fase1-iva',
     '<div class="card">' +
-      '<div class="card-title">🏷 Codici IVA CH ' + badge('ok', codici.length + ' codici') + '</div>' +
+      '<div class="card-title">🏷 Codici IVA CH ' +
+        badge(codici.length ? 'ok' : 'warn', codici.length + ' codici') + '</div>' +
       '<div class="table-wrap"><table><thead><tr><th style="width:110px">Codice</th><th>Descrizione</th><th style="width:90px;text-align:right">Aliquota</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<div class="sql-tip">ℹ️ Aliquote IVA CH in vigore dal 01.01.2024 (riforma IVA).</div>' +
     '</div>'
@@ -5942,6 +6026,83 @@ var BUSTA_CODIF_W = 140
 var BUSTA_PERS_MIN = 90
 var BUSTA_PERS_MAX = 353
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 23 / P4a — IL MARGINE DI SICUREZZA DAL BORDO
+//
+// La busta si stampa con @page { margin: 0 }: tutte le misure partono dal
+// bordo FISICO del foglio. Ma nessuna stampante stampa fino al bordo — su
+// busta la fascia morta e' tipicamente 4-6 mm, e sui supporti spessi anche di
+// piu', perche' i rulli devono tenere il foglio.
+//
+// Il mittente stava a 8 mm da sinistra e 7 dall'alto, ed e' uscito con le
+// prime lettere mozzate a meta'. Dieci millimetri lasciano due millimetri di
+// aria sopra il minimo richiesto, e sono UN NUMERO SOLO da alzare se una
+// stampante si rivelasse peggiore.
+// ══════════════════════════════════════════════════════════════════════════════
+var BUSTA_MARGINE_SICUREZZA = 10   // mm, quanto sta dentro tutto cio' che si stampa
+var BUSTA_MARGINE_MINIMO    = 8    // mm, sotto i quali il controllo protesta
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 23 / P1 — COSA SI STAMPA SULLA BUSTA
+//
+// Umberto compra anche buste gia' intestate, e buste gia' affrancate con i
+// WebStamp della Posta, che escono dalla stampante della Posta con mittente,
+// logo e francobollo gia' sopra. Ristamparci sopra il mittente fa un pasticcio.
+//
+// LA REGOLA CHE NON SI TOCCA: il destinatario sta NELLO STESSO PUNTO in tutti
+// e tre i modi. E' il senso della funzione — la busta e' gia' stampata, e
+// l'indirizzo deve cadere dove cadrebbe comunque, dentro la zona di lettura e
+// dentro la finestrella se la busta ne ha una. Non si ricentra e non si sposta
+// in alto «perche' tanto c'e' spazio libero».
+// ══════════════════════════════════════════════════════════════════════════════
+var MODI_BUSTA = [
+  { v: 'tutto',      et: 'Tutto: logo + mittente + destinatario' },
+  { v: 'senza_logo', et: 'Mittente + destinatario, senza logo' },
+  { v: 'solo_dest',  et: 'Solo destinatario (busta gia’ intestata o WebStamp)' }
+]
+
+function modoBusta() {
+  var v = getVal('busta-modo')
+  for (var i = 0; i < MODI_BUSTA.length; i++) if (MODI_BUSTA[i].v === v) return v
+  return 'tutto'      // il predefinito resta quello di sempre
+}
+
+function etichettaModoBusta() {
+  var v = modoBusta()
+  for (var i = 0; i < MODI_BUSTA.length; i++) if (MODI_BUSTA[i].v === v) return MODI_BUSTA[i].et
+  return MODI_BUSTA[0].et
+}
+
+// Un numero per il CSS: punto decimale, mai la virgola di it-IT. Le misure che
+// si mostrano all'utente passano da fmtNumIt; queste finiscono in uno style, e
+// «38,2mm» il browser non lo capisce.
+function fmtMm(n) { return String(Math.round((safeNum(n) || 0) * 10) / 10) }
+
+// ── Quanto e' grande il logo sulla busta, in millimetri ─────────────────────
+// Si scrivono ENTRAMBE le misure sull'<img> invece di lasciare width:auto:
+// un'immagine di cui non si conoscono ancora le proporzioni con width:auto e'
+// larga ZERO, e in stampa lascia un buco. Le proporzioni vere si prendono
+// dall'immagine quando c'e'; finche' non c'e' si usa un rapporto tipico, che
+// e' comunque meglio di zero.
+var BUSTA_LOGO_H = 11          // mm, l'altezza di sempre
+var BUSTA_LOGO_RAPPORTO = 3.5  // ripiego: larghezza / altezza
+
+function misureLogoBusta() {
+  var r = BUSTA_LOGO_RAPPORTO
+  try {
+    // Una qualunque immagine del logo gia' caricata nella pagina va bene: la
+    // fattura e l'anteprima della busta ne hanno una.
+    var imgs = document.querySelectorAll('.busta-logo, .inv-logo')
+    for (var i = 0; i < imgs.length; i++) {
+      if (imgs[i].naturalWidth > 0 && imgs[i].naturalHeight > 0) {
+        r = imgs[i].naturalWidth / imgs[i].naturalHeight
+        break
+      }
+    }
+  } catch (_) { /* si resta sul rapporto di ripiego */ }
+  return { h: BUSTA_LOGO_H, l: Math.round(BUSTA_LOGO_H * r * 10) / 10 }
+}
+
 function formatoBustaCorrente() {
   var v = getVal('busta-formato') || 'c56'
   return FORMATI_BUSTA[v] ? v : 'c56'
@@ -6061,6 +6222,9 @@ function caricaPreferenzeBusta() {
   if (el('busta-pers-h')) el('busta-pers-h').value = impostazione('busta_pers_h', '162')
   if (el('busta-font-dest')) el('busta-font-dest').value = impostazione('busta_font_dest', '12')
   if (el('busta-font-mitt')) el('busta-font-mitt').value = impostazione('busta_font_mitt', '8')
+  // FASE 23 — cosa si stampa: vale per tutti i formati, come i caratteri.
+  if (el('busta-modo')) el('busta-modo').value = impostazione('busta_modo', 'tutto')
+  onModoBustaChange()
 }
 
 // I due campi delle misure si vedono solo quando servono.
@@ -6083,6 +6247,8 @@ async function salvaTaraturaBusta() {
       'Busta: corpo del destinatario in punti')
     await salvaImpostazioneConta('busta_font_mitt', corpoMittente(),
       'Busta: corpo del mittente in punti')
+    await salvaImpostazioneConta('busta_modo', modoBusta(),
+      'Busta: cosa si stampa (tutto / senza_logo / solo_dest)')
     if (formatoBustaCorrente() === 'pers') {
       await salvaImpostazioneConta('busta_pers_l', safeNum(getVal('busta-pers-l')) || 0,
         'Busta personalizzata: larghezza in mm')
@@ -6091,8 +6257,8 @@ async function salvaTaraturaBusta() {
     }
     html('busta-banner',
       '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
-      '<div class="msg">Taratura e caratteri salvati per il formato ' +
-        esc(f.etichetta) + '.</div></div>')
+      '<div class="msg">Salvati per il formato ' + esc(f.etichetta) +
+        ': taratura, caratteri e il modo «' + esc(etichettaModoBusta()) + '».</div></div>')
   } catch (e) {
     html('busta-banner',
       '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
@@ -6108,8 +6274,17 @@ function onFormatoBustaChange() {
 function onAffrancaturaChange() {
   var digital = getVal('busta-affrancatura') === 'digital'
   var g = el('busta-digital-group')
-  if (g) g.style.display = digital ? 'block' : 'none'
+  if (g) g.style.display = (digital && modoBusta() !== 'solo_dest') ? 'block' : 'none'
   disegnaBusta()
+}
+
+// FASE 23 / P1 — cambiando modo si nasconde quello che non verra' stampato:
+// compilare un campo che non finisce sulla busta e' un invito a sbagliare.
+function onModoBustaChange() {
+  var soloDest = modoBusta() === 'solo_dest'
+  var ga = el('busta-affrancatura-group')
+  if (ga) ga.style.display = soloDest ? 'none' : 'block'
+  onAffrancaturaChange()      // rivaluta anche il campo del codice, poi ridisegna
 }
 
 // Il contenuto della busta, in millimetri. Lo stesso HTML serve per
@@ -6119,6 +6294,9 @@ function bustaHtml(conGuide) {
   var offX = safeNum(getVal('busta-off-x')) || 0
   var offY = safeNum(getVal('busta-off-y')) || 0
   var a = aziendaInfo || {}
+  var modo = modoBusta()
+  var conLogo = modo === 'tutto'
+  var conMitt = modo !== 'solo_dest'
 
   // Mittente in alto a sinistra: se una lettera torna indietro, la Posta deve
   // sapere a chi renderla senza doverla aprire.
@@ -6152,17 +6330,44 @@ function bustaHtml(conGuide) {
         '<span>zona di lettura</span></div>'
     : ''
 
+  // FASE 23 / P4a — IL MARGINE DI SICUREZZA.
+  // La busta si stampa con @page { margin: 0 }, quindi queste misure partono
+  // dal bordo FISICO del foglio. Nessuna stampante stampa fino al bordo: su
+  // busta il margine morto e' tipicamente 4-6 mm e sui supporti spessi di piu'.
+  // Il mittente stava a 8 mm da sinistra e 7 dall'alto: le prime lettere
+  // finivano dentro quella fascia e uscivano mozzate a meta'.
+  //
+  // NON si risolve con la taratura: quella sposta l'INTERA busta e sposterebbe
+  // anche il destinatario, che invece cade giusto. E' il blocco mittente che
+  // va messo piu' dentro.
+  var mL = BUSTA_MARGINE_SICUREZZA
+  var ml = misureLogoBusta()
+  var mittHtml = conMitt
+    ? '<div class="busta-mitt" style="left:' + mL + 'mm;top:' + mL + 'mm;' +
+           'max-width:' + Math.max(60, Math.round(f.larghezza * 0.5)) + 'mm">' +
+        (conLogo
+          // FASE 23 / P4b — le misure del logo scritte QUI, in millimetri.
+          // Con height+width:auto un'immagine non ancora caricata e' larga
+          // ZERO, e in stampa esce un buco: e' esattamente quello che
+          // succedeva. Scrivendo le due misure il posto e' giusto comunque.
+          ? '<img src="' + esc(logo) + '" alt="" class="busta-logo"' +
+              ' style="width:' + fmtMm(ml.l) + 'mm;height:' + fmtMm(ml.h) + 'mm"' +
+              ' onerror="bustaLogoOnError(this)">'
+          : '') +
+        '<div class="busta-mitt-testo" style="font-size:' + corpoMittente() + 'pt">' +
+          esc(mitt) + '</div>' +
+      '</div>'
+    : ''
+
   return '<div class="busta busta-' + formatoBustaCorrente() + '"' +
            ' style="width:' + f.larghezza + 'mm;height:' + f.altezza + 'mm">' +
            '<div class="busta-contenuto" style="transform:translate(' + offX + 'mm,' + offY + 'mm)">' +
              guide +
-             '<div class="busta-mitt">' +
-               '<img src="' + esc(logo) + '" alt="" class="busta-logo" onerror="bustaLogoOnError(this)">' +
-               '<div class="busta-mitt-testo" style="font-size:' + corpoMittente() + 'pt">' +
-                 esc(mitt) + '</div>' +
-             '</div>' +
-             (digital && codice
-               ? '<div class="busta-digital" style="width:' + BUSTA_FRANC_W + 'mm">' +
+             mittHtml +
+             (conMitt && digital && codice
+               ? '<div class="busta-digital" style="width:' + BUSTA_FRANC_W + 'mm;' +
+                      'right:' + mL + 'mm;top:' + mL + 'mm;height:' +
+                      (BUSTA_FRANC_H - mL) + 'mm">' +
                    '<div class="busta-digital-et">DigitalStamp</div>' +
                    '<div class="busta-digital-cod">' + esc(codice) + '</div>' +
                  '</div>'
@@ -6222,21 +6427,60 @@ function verificaIndirizzoBusta() {
     var MARGINE_DESTRO = 3    // spazio da lasciare fra testo e bordo
 
     var problemi = []
+    // Il consiglio finale cambia col problema: «usa caratteri piu' piccoli»
+    // non serve a niente se il difetto e' che qualcosa sta troppo al bordo.
+    var soloMargine = true
     if (bassoMm > limiteMm + TOLLERANZA) {
+      soloMargine = false
       problemi.push('l’indirizzo scende ' + fmtNumIt(Math.round((bassoMm - limiteMm) * 10) / 10) +
                     ' mm dentro la zona di codifica, che deve restare libera')
     }
     if (destraMm > f.larghezza - MARGINE_DESTRO + TOLLERANZA) {
+      soloMargine = false
       var restano = Math.round((f.larghezza - destraMm) * 10) / 10
       problemi.push(restano < 0
         ? 'l’indirizzo esce di ' + fmtNumIt(-restano) + ' mm dal bordo destro della busta'
         : 'l’indirizzo arriva a ' + fmtNumIt(restano) + ' mm dal bordo destro: ne servono almeno ' +
           MARGINE_DESTRO)
     }
+
+    // FASE 23 / P4a — il margine dal bordo fisico, per TUTTO quello che si
+    // stampa: e' la fascia che la stampante non raggiunge, ed e' li' che il
+    // mittente e' uscito tagliato. Si misura sul disegno vero, non sui numeri
+    // che abbiamo scritto: se una regola CSS spostasse qualcosa, il controllo
+    // se ne accorgerebbe lo stesso.
+    var pezzi = bustaEl.querySelectorAll('.busta-mitt, .busta-dest, .busta-digital')
+    var nomi = { 'busta-mitt': 'il mittente', 'busta-dest': 'l’indirizzo',
+                 'busta-digital': 'il codice DigitalStamp' }
+    var giaDetto = {}
+    for (var i = 0; i < pezzi.length; i++) {
+      var r = pezzi[i].getBoundingClientRect()
+      if (!r.width || !r.height) continue
+      var cls = pezzi[i].className.split(' ')[0]
+      var nome = nomi[cls] || 'un elemento'
+      var sinistraMm = (r.left - rb.left) * mmPerPx
+      var altoMm     = (r.top  - rb.top)  * mmPerPx
+      var vicini = []
+      if (sinistraMm < BUSTA_MARGINE_MINIMO - TOLLERANZA) {
+        vicini.push('a ' + fmtNumIt(Math.round(sinistraMm * 10) / 10) + ' mm dal bordo sinistro')
+      }
+      if (altoMm < BUSTA_MARGINE_MINIMO - TOLLERANZA) {
+        vicini.push('a ' + fmtNumIt(Math.round(altoMm * 10) / 10) + ' mm dal bordo superiore')
+      }
+      if (vicini.length && !giaDetto[cls]) {
+        giaDetto[cls] = true
+        soloMargine = soloMargine && true
+        problemi.push(nome + ' finisce ' + vicini.join(' e ') +
+                      ': sotto gli ' + BUSTA_MARGINE_MINIMO +
+                      ' mm la stampante non arriva e il testo esce mozzato')
+      }
+    }
     if (!problemi.length) return null
-    return 'Con questi caratteri ' + problemi.join(' e ') +
-           '. Scegli un corpo più piccolo per il destinatario, accorcia l’indirizzo ' +
-           'o passa a un formato di busta più grande.'
+    return 'Così com’è, ' + problemi.join('; ') + '. ' + (soloMargine
+      ? 'Ho già messo tutto a ' + BUSTA_MARGINE_SICUREZZA + ' mm dal bordo: se compare ' +
+        'questo avviso, qualcosa lo sta spostando. Segnalalo invece di stampare.'
+      : 'Scegli un corpo più piccolo, accorcia l’indirizzo ' +
+        'o passa a un formato di busta più grande.')
   } catch (e) {
     console.warn('Controllo sbordo busta:', e.message || e)
     return null   // un controllo che non riesce non deve impedire di stampare
@@ -6292,7 +6536,68 @@ function impostaPaginaBusta(perProva) {
     : '@media print { @page { size: ' + f.larghezza + 'mm ' + f.altezza + 'mm; margin: 0; } }'
 }
 
-function stampaBusta() {
+// FASE 23 — e finita la stampa lo si svuota.
+// Quel tag arriva DOPO il <link> del CSS, quindi il suo @page vince su quello
+// della fattura (A4 con i margini). Non svuotandolo, dopo aver stampato una
+// busta la fattura successiva usciva sul formato della busta — e a nessuno
+// sarebbe venuto in mente di collegare le due cose.
+function azzeraPaginaBusta() {
+  var st = el('busta-page-style')
+  if (st) st.textContent = ''
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 23 / P4b — PERCHE' IL LOGO NON USCIVA
+//
+// La spiegazione data la volta scorsa («l'immagine non si carica») era
+// sbagliata: sulla fattura lo stesso logo, dalla stessa sorgente, si stampa
+// benissimo. La differenza non e' l'indirizzo dell'immagine, e' IL MOMENTO.
+//
+//   fattura: l'<img> nasce quando si apre il documento (renderFatturaPrint), e
+//            window.print() arriva quando Umberto preme il bottone — secondi o
+//            minuti dopo. Il browser ha avuto tutto il tempo.
+//   busta:   stampaBusta() rifaceva l'HTML e chiamava window.print() SETTE
+//            RIGHE DOPO, nello stesso tick. L'<img> era appena nato, e con
+//            height + width:auto un'immagine senza proporzioni note e' larga
+//            ZERO. In stampa restava un buco.
+//
+// Due rimedi, tutti e due necessari: le misure scritte in millimetri (in
+// bustaHtml) e questa attesa. Il modello e' preparaPolizzaPerStampa, che gia'
+// aspetta l'immagine della polizza prima di stampare.
+//
+// Se l'attesa scade SI STAMPA LO STESSO: una busta senza logo si spedisce, una
+// busta non stampata no.
+// ══════════════════════════════════════════════════════════════════════════════
+function attendiImmagini(contenitore, msMax) {
+  var el0 = typeof contenitore === 'string' ? el(contenitore) : contenitore
+  if (!el0) return Promise.resolve(true)
+  var imgs = Array.prototype.slice.call(el0.querySelectorAll('img'))
+  if (!imgs.length) return Promise.resolve(true)
+
+  var attese = imgs.map(function (img) {
+    if (img.complete && img.naturalWidth > 0) return Promise.resolve(true)
+    // decode() aspetta anche la DECODIFICA, non solo lo scaricamento: e' la
+    // differenza fra «il file c'e'» e «il browser sa quanto e' larga».
+    if (img.decode) return img.decode().then(function () { return true },
+                                             function () { return false })
+    return new Promise(function (risolvi) {
+      img.onload  = function () { risolvi(true) }
+      img.onerror = function () { risolvi(false) }
+    })
+  })
+
+  var scaduto = new Promise(function (risolvi) {
+    setTimeout(function () { risolvi(false) }, msMax || 2000)
+  })
+  return Promise.race([
+    Promise.all(attese).then(function (esiti) {
+      return esiti.every(function (x) { return x })
+    }),
+    scaduto
+  ])
+}
+
+async function stampaBusta() {
   // FASE 22 — se l'indirizzo sborda in una zona vietata non si stampa storto:
   // si dice cosa non va e si lascia correggere.
   var problema = verificaIndirizzoBusta()
@@ -6307,9 +6612,16 @@ function stampaBusta() {
   document.body.classList.add('stampa-busta')
   var pulisci = function () {
     document.body.classList.remove('stampa-busta')
+    azzeraPaginaBusta()
     window.removeEventListener('afterprint', pulisci)
   }
   window.addEventListener('afterprint', pulisci)
+  var pronte = await attendiImmagini('busta-foglio', 2000)
+  if (!pronte) {
+    showFattureBanner('busta-banner', 'warn',
+      'Il logo non è arrivato in tempo: la busta si stampa lo stesso, ma potrebbe uscire ' +
+      'senza. Se ti serve, chiudi la finestra di stampa e riprova fra un momento.')
+  }
   window.print()
   setTimeout(pulisci, 60000)
 }
@@ -6317,7 +6629,7 @@ function stampaBusta() {
 // La prova: su A4 normale, col contorno della busta e i riquadri delle zone.
 // Si appoggia il foglio sopra la busta in controluce e si vede di quanto
 // spostare. Cosi' non si sprecano buste per tarare.
-function stampaProvaBusta() {
+async function stampaProvaBusta() {
   impostaPaginaBusta(true)
   var f = formatoBusta()
   var p = provaSuA4(f)
@@ -6336,18 +6648,23 @@ function stampaProvaBusta() {
   }
   html('busta-foglio',
     '<div class="busta-prova-nota">Prova di taratura — formato ' +
-      esc(f.etichetta) +
+      esc(f.etichetta) + ', modo «' + esc(etichettaModoBusta()) + '»' +
       '. Appoggia questo foglio sopra la busta, in controluce, e correggi gli ' +
-      'scostamenti finché il contorno combacia.</div>' +
+      'scostamenti finché il contorno combacia. Il contorno e i riquadri delle ' +
+      'zone si stampano solo qui: sulla busta vera non ci vanno.</div>' +
     avviso +
     bustaHtml(true))
   document.body.classList.add('stampa-busta', 'stampa-busta-prova')
   var pulisci = function () {
     document.body.classList.remove('stampa-busta', 'stampa-busta-prova')
+    azzeraPaginaBusta()
     disegnaBusta()
     window.removeEventListener('afterprint', pulisci)
   }
   window.addEventListener('afterprint', pulisci)
+  // FASE 23 — anche qui si aspetta il logo: la prova serve a tarare, e una
+  // prova senza logo non e' la busta che uscira'.
+  await attendiImmagini('busta-foglio', 2000)
   window.print()
   setTimeout(pulisci, 60000)
 }
@@ -6860,6 +7177,19 @@ var TABELLE_CON_CONTATTO = [
 ]
 
 async function contaDocumentiContatto(contattoId) {
+  // FASE 23 / P2 — QUI ZERO NON E' UN ELENCO VUOTO, E' UN SEMAFORO VERDE.
+  //
+  // Le tre tabelle sono protette da RLS: senza sessione il conteggio torna
+  // zero SENZA errore. Il chiamante leggeva quello zero come «nessun documento
+  // lo nomina» e proponeva il bottone rosso «Sì, elimina definitivamente» su un
+  // contatto in realta' collegato a fatture emesse. Il ramo protettivo che dice
+  // «Senza quel conteggio non elimino niente» non scattava, perche' non c'era
+  // nessun errore da raccogliere.
+  //
+  // Percio' si LANCIA: meglio non poter cancellare che cancellare al buio.
+  if (!currentAziendaId) {
+    throw new Error('sessione non attiva, il conteggio dei documenti collegati non è possibile')
+  }
   var esito = { totale: 0, pezzi: [] }
   for (var i = 0; i < TABELLE_CON_CONTATTO.length; i++) {
     var t = TABELLE_CON_CONTATTO[i]
@@ -12517,7 +12847,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '41'
+var VERSIONE = '42'
 
 function controllaVersionePagina() {
   try {
@@ -12995,6 +13325,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (badgeScad) { badgeScad.style.display = 'none'; badgeScad.textContent = '' }
       flussiCache = null
       impostazioniConta = null
+      aziendaInfo = null      // FASE 23 — vedi doLogout
       showPage('login')
     }
   })
