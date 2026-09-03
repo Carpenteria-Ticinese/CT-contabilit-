@@ -513,12 +513,15 @@ tbody td {
 .busta-logo { height: 11mm; width: auto; }
 .busta-mitt-testo { font-size: 8pt; line-height: 1.3; white-space: pre-line; }
 
-/* Il destinatario: posato dentro la zona di lettura. */
+/* Il destinatario: posato dentro la zona di lettura.
+   FASE 22 — il corpo arriva in linea da bustaHtml (12pt e' solo il ripiego),
+   e NON si taglia piu' con overflow:hidden: se sborda si deve vedere che
+   sborda, e verificaIndirizzoBusta() blocca la stampa. Nascondere il testo in
+   piu' voleva dire spedire buste senza il numero civico. */
 .busta-dest {
   position: absolute;
   font-size: 12pt; line-height: 1.45;
   white-space: pre-line;
-  overflow: hidden;
 }
 
 /* Il codice DigitalStamp, nella zona di affrancatura in alto a destra. */
@@ -559,6 +562,14 @@ tbody td {
   margin-bottom: -38%;
 }
 .busta-prova-nota { font-size: 9pt; color: #444; margin-bottom: 4mm; font-family: Arial, sans-serif; }
+/* FASE 22 — quando il formato e' piu' grande di un A4 la prova lo dice, invece
+   di uscire tagliata facendo credere di essere valida. */
+.busta-prova-avviso {
+  font-size: 9pt; color: #92400e; background: #fffbeb;
+  border: 0.3mm solid #f59e0b; border-radius: 2mm;
+  padding: 2mm 3mm; margin-bottom: 4mm; font-family: Arial, sans-serif;
+  max-width: 180mm;
+}
 
 /* Il foglio vero sta fuori vista finche' non si stampa. */
 #busta-foglio { display: none; }
@@ -1104,6 +1115,38 @@ textarea.cell-desc {
 .inv-scad { font-weight: 700; color: var(--ink); }
 .inv-qrnote { margin-top: 6px; font-size: 11px; color: #777; font-style: italic; }
 
+/* ── FASE 22 — Il riquadro della polizza QR sulla scheda della fattura ───── */
+.polizza-riga {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.polizza-et {
+  font-size: 12px; font-weight: 700; color: var(--text2);
+  white-space: nowrap;
+}
+.polizza-anteprima { margin-top: 12px; }
+/* L'anteprima a schermo SÌ che si adatta: qui serve a farsi un'idea, e la
+   grandezza reale vale per la stampa, non per il monitor. */
+.polizza-img {
+  max-width: 100%; height: auto; display: block;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: #fff;
+}
+/* Il tipo di un allegato che non si può cambiare (la polizza QR). */
+.alleg-tipo-fisso {
+  font-size: 12px; color: var(--text2); white-space: nowrap;
+  padding: 4px 8px; border: 1px dashed var(--border); border-radius: var(--radius);
+}
+/* A schermo il posto della polizza non si vede: l'anteprima c'è già nel suo
+   riquadro, e mostrarla due volte confonderebbe.
+   ATTENZIONE: la regola sta dentro @media screen di proposito. Un
+   `max-width: 100%` valido anche in stampa rimpicciolirebbe una polizza di
+   210 mm dentro i 180 mm della fascia stampabile — cioè esattamente la cosa
+   che non si deve fare. */
+@media screen {
+  #fatture-qrpage { display: none; }
+}
+
 .inv-note { margin-top: 16px; font-size: 12px; color: #666; white-space: pre-line; }
 
 /* Piè di pagina centrato */
@@ -1301,6 +1344,43 @@ textarea.cell-desc {
   }
   /* Un dito di aria fra l'ultima riga e la fascia del piè di pagina. */
   #fatture-print .inv { padding-bottom: 6mm; }
+
+  /* ── FASE 22 — LA POLIZZA QR, IN CODA E A GRANDEZZA REALE ───────────────
+     Tre vincoli, e nessuno dei tre è negoziabile:
+
+     1. PAGINA PROPRIA: break-before: page.
+     2. GRANDEZZA REALE: le misure in mm le scrive il JS sull'immagine, prese
+        dalla pagina del PDF. Niente max-width, niente width:100%, niente
+        object-fit: una polizza scalata anche di poco non è più conforme.
+     3. NIENTE SOPRA: sulla polizza non vanno intestazioni né piè di pagina.
+
+     Il punto 3 è il difficile. Il piè di pagina è `position: fixed`, quindi si
+     ripete anche su questa pagina, e nasconderlo qui vorrebbe dire nasconderlo
+     ovunque. La via d'uscita è l'ordine di disegno: `.inv-qrpage` viene DOPO
+     `.inv-footer` nel documento e contiene un elemento posizionato, quindi si
+     disegna sopra. L'immagine ha fondo bianco e lo copre.
+
+     Gli scostamenti negativi servono a scavalcare i margini di @page
+     (15mm ai lati, 15mm in alto) e appoggiare la polizza sull'angolo FISICO
+     del foglio: la polizza della banca porta i propri margini già dentro. */
+  #fatture-print .inv-qrpage {
+    break-before: page;
+    page-break-before: always;
+    position: relative;
+    padding: 0;
+    margin: 0;
+    background: #fff;
+  }
+  #fatture-print .inv-qrimg {
+    position: absolute;
+    left: -15mm;
+    top: -15mm;
+    display: block;
+    background: #fff;
+    /* Nessuna interpolazione morbida: il QR è tratto, e sfumarlo è
+       esattamente il modo di renderlo illeggibile al telefono. */
+    image-rendering: crisp-edges;
+  }
 }
 
 /* ── Mobile: barra + overlay (nascosti su desktop) ───────────────────────── */
