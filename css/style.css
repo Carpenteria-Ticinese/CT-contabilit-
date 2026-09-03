@@ -1,2302 +1,2507 @@
-<!DOCTYPE html>
-<html lang="it">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TimberMaster — Pre-Contabilità</title>
-  <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=40" />
-</head>
-<body data-versione="40">
-
-<div id="versione-banner"></div>
-<div id="app">
-
-  <!-- ── Barra superiore mobile (nascosta su desktop) ──────────────────────── -->
-  <div id="mobile-topbar">
-    <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Apri/chiudi menu" aria-controls="sidebar">☰</button>
-    <span class="mobile-title">🌲 TimberMaster <span class="mobile-title-sub">Pre-Contabilità</span></span>
-  </div>
-
-  <!-- ── Overlay per sidebar a scomparsa (mobile) ──────────────────────────── -->
-  <div id="sidebar-overlay" onclick="closeSidebar()" aria-hidden="true"></div>
-
-  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
-  <aside id="sidebar" role="navigation" aria-label="Navigazione principale">
-
-    <div class="sidebar-logo">
-      🌲 TimberMaster
-      <span>Pre-Contabilità</span>
-    </div>
-
-    <div class="sidebar-section">Modulo</div>
-
-    <button class="nav-item" data-page="setup">
-      <span aria-hidden="true">⚙️</span>
-      <span>Setup</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="cruscotto">
-      <span aria-hidden="true">📊</span>
-      <span>Situazione</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="scadenze">
-      <span aria-hidden="true">📅</span>
-      <span>Scadenze</span>
-      <span class="nav-badge badge-scadenze" id="nav-badge-scadenze"
-            style="display:none" aria-live="polite"></span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="cantieri">
-      <span aria-hidden="true">🏗</span>
-      <span>Cantieri</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="movimenti">
-      <span aria-hidden="true">📋</span>
-      <span>Da classificare</span>
-      <span class="nav-badge" id="nav-badge-movimenti" aria-live="polite" aria-label="0 da classificare">0</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="inserimento">
-      <span aria-hidden="true">➕</span>
-      <span>Inserimento manuale</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="rubrica">
-      <span aria-hidden="true">📇</span>
-      <span>Rubrica</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="fatture">
-      <span aria-hidden="true">📤</span>
-      <span>Fatture vendita</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="acquisti">
-      <span aria-hidden="true">📥</span>
-      <span>Fatture acquisto</span>
-      <span class="nav-badge badge-conferma" id="nav-badge-acquisti"
-            style="display:none" aria-live="polite"></span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="export">
-      <span aria-hidden="true">📤</span>
-      <span>Export &amp; consegna</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="busta">
-      <span aria-hidden="true">✉️</span>
-      <span>Busta</span>
-    </button>
-
-    <button class="nav-item auth-only" data-page="codici">
-      <span aria-hidden="true">📖</span>
-      <span>Elenco codici</span>
-    </button>
-
-    <button class="nav-item auth-only nav-settings" data-page="impostazioni">
-      <span aria-hidden="true">⚙️</span>
-      <span>Impostazioni ditta</span>
-    </button>
-
-    <div id="sidebar-user" class="sidebar-user" style="display:none">
-      <span id="sidebar-user-email" class="sidebar-user-email"></span>
-      <button onclick="doLogout()" class="logout-btn" aria-label="Esci dall'account">
-        <span aria-hidden="true">🚪</span> Esci
-      </button>
-    </div>
-
-    <div class="sidebar-footer">
-      Carpenteria Ticinese Sàgl<br>
-      v1 · Giugno 2026
-    </div>
-
-  </aside>
-
-  <!-- ── Contenuto principale ─────────────────────────────────────────────── -->
-  <main id="content">
-
-    <!-- ══ PAGINA: Login ══════════════════════════════════════════════════ -->
-    <div id="page-login" class="page">
-      <div class="login-wrap">
-        <div class="login-card card">
-          <div class="login-logo" aria-hidden="true">🌲</div>
-          <div class="login-title">TimberMaster — Pre-Contabilità</div>
-          <div class="login-subtitle">Accedi con il tuo account</div>
-
-          <div id="login-error" role="alert" aria-live="assertive" class="fase-banner err" style="display:none; margin-bottom:16px">
-            <span class="icon" aria-hidden="true">❌</span>
-            <div class="msg" id="login-error-msg"></div>
-          </div>
-
-          <div class="form-group">
-            <label for="login-email" class="form-label">Email</label>
-            <input
-              type="email" id="login-email" class="form-input"
-              placeholder="email@esempio.com"
-              autocomplete="email"
-              onkeydown="if(event.key==='Enter') doLogin()"
-            />
-          </div>
-          <div class="form-group">
-            <label for="login-password" class="form-label">Password</label>
-            <input
-              type="password" id="login-password" class="form-input"
-              placeholder="••••••••"
-              autocomplete="current-password"
-              onkeydown="if(event.key==='Enter') doLogin()"
-            />
-          </div>
-
-          <button onclick="doLogin()" class="btn-primary" id="login-btn" style="width:100%; margin-top:4px">
-            Accedi
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ══ PAGINA: Setup (Fase 1) ════════════════════════════════════════ -->
-    <div id="page-setup" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">Fase 1 — Fondamenta</div>
-          <div class="page-subtitle">
-            Verifica connessione Supabase · Tabelle tm_conta_* · Pacchetto paese CH
-          </div>
-        </div>
-        <button
-          onclick="runSetupCheck()"
-          class="btn-secondary"
-          aria-label="Ricontrolla setup"
-        >
-          🔄 Ricontrolla
-        </button>
-      </div>
-
-      <div id="fase1-banner" role="status" aria-live="polite"></div>
-      <div class="card">
-        <div class="card-title">🔍 Verifica infrastruttura</div>
-        <div id="fase1-checks"></div>
-      </div>
-      <div id="fase1-sql"></div>
-      <div id="fase1-stats"></div>
-      <div id="fase1-pdc"></div>
-      <div id="fase1-iva"></div>
-
-    </div>
-
-    <!-- ══ PAGINA: Da classificare (Fase 2 — lista) ════════════════════ -->
-    <!-- ══ PAGINA: Cruscotto (Fase 3) ═══════════════════════════ -->
-    <div id="page-cruscotto" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">Situazione</div>
-          <div class="page-subtitle">
-            Quanto è uscito e quanto è entrato, e che cosa resta da pagare e da incassare.
-          </div>
-        </div>
-      </div>
-
-      <div id="cruscotto-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-      <!-- ── Periodo: stessi controlli della schermata Export ────────────── -->
-      <div class="card">
-        <div class="card-title">📅 Periodo</div>
-
-        <div class="periodo-modi" role="group" aria-label="Tipo di periodo">
-          <button type="button" class="modo-btn active" id="cru-modo-anno"      onclick="setCruscottoModo('anno')">📅 Anno intero</button>
-          <button type="button" class="modo-btn"        id="cru-modo-trimestre" onclick="setCruscottoModo('trimestre')">🗓 Trimestre</button>
-          <button type="button" class="modo-btn"        id="cru-modo-mese"      onclick="setCruscottoModo('mese')">📆 Mese</button>
-          <button type="button" class="modo-btn"        id="cru-modo-custom"    onclick="setCruscottoModo('custom')">✏️ Personalizzato</button>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group" style="flex:1" id="cru-anno-group">
-            <label for="cru-anno" class="form-label">Anno</label>
-            <select id="cru-anno" class="form-input" onchange="applicaPeriodoCruscotto()"></select>
-          </div>
-          <div class="form-group" style="flex:1; display:none" id="cru-trimestre-group">
-            <label for="cru-trimestre" class="form-label">Trimestre</label>
-            <select id="cru-trimestre" class="form-input" onchange="applicaPeriodoCruscotto()">
-              <option value="1">T1 — gennaio/marzo</option>
-              <option value="2">T2 — aprile/giugno</option>
-              <option value="3">T3 — luglio/settembre</option>
-              <option value="4">T4 — ottobre/dicembre</option>
-            </select>
-          </div>
-          <div class="form-group" style="flex:1; display:none" id="cru-mese-group">
-            <label for="cru-mese" class="form-label">Mese</label>
-            <select id="cru-mese" class="form-input" onchange="applicaPeriodoCruscotto()">
-              <option value="1">Gennaio</option><option value="2">Febbraio</option><option value="3">Marzo</option>
-              <option value="4">Aprile</option><option value="5">Maggio</option><option value="6">Giugno</option>
-              <option value="7">Luglio</option><option value="8">Agosto</option><option value="9">Settembre</option>
-              <option value="10">Ottobre</option><option value="11">Novembre</option><option value="12">Dicembre</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="cru-da" class="form-label">Da</label>
-            <input type="date" id="cru-da" class="form-input" onchange="onPeriodoCruscottoManuale()" />
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="cru-a" class="form-label">A</label>
-            <input type="date" id="cru-a" class="form-input" onchange="onPeriodoCruscottoManuale()" />
-          </div>
-        </div>
-
-        <!-- SCRITTA OBBLIGATORIA 1: quale data decide il periodo -->
-        <div class="nota-cruscotto" id="cru-nota-data">
-          <span aria-hidden="true">🕑</span>
-          <span>Periodo calcolato sulla data di pagamento/incasso</span>
-        </div>
-      </div>
-
-      <!-- ── RIGA 1: i quattro riquadri ──────────────────────────────────── -->
-      <div id="cru-riquadri" class="cru-riquadri"></div>
-
-      <!-- Saldo del periodo: quanto e rimasto in cassa fra entrate e uscite -->
-      <div id="cru-saldo"></div>
-
-      <!-- SCRITTA OBBLIGATORIA 2: che cosa NON è compreso -->
-      <div class="nota-cruscotto avviso" id="cru-nota-perimetro">
-        <span aria-hidden="true">ℹ️</span>
-        <span>Non include spese di cantiere e regia (App Cantieri)</span>
-      </div>
-
-      <div class="nota-cruscotto" id="cru-nota-periodo">
-        <span aria-hidden="true">💡</span>
-        <span>
-          <strong>Speso</strong> e <strong>Incassato</strong> contano solo il periodo scelto:
-          dicono quanto denaro si è mosso.
-          <strong>Da pagare</strong> e <strong>Da incassare</strong> ignorano il periodo:
-          sono una fotografia di oggi, cioè quanto resta in sospeso in tutto.
-        </span>
-      </div>
-
-      <!-- ── RIGA 2: IVA ─────────────────────────────────────────────────── -->
-      <div id="cru-iva"></div>
-
-      <!-- ── RIGA 3: i nove gruppi ───────────────────────────────────────── -->
-      <div class="card">
-        <div class="card-title">📦 Spese per gruppo</div>
-        <div class="form-hint" style="margin-bottom:12px" id="cru-gruppi-sottotitolo"></div>
-        <div id="cru-gruppi"></div>
-      </div>
-
-      <!-- ── Elenco filtrato (si apre cliccando un riquadro o un gruppo) ── -->
-      <div class="card" id="cru-elenco-card" style="display:none">
-        <div class="card-title" id="cru-elenco-titolo">Elenco</div>
-        <div id="cru-elenco-sottotitolo" class="form-hint" style="margin-bottom:12px"></div>
-        <div id="cru-elenco"></div>
-        <div class="form-actions" style="margin-top:14px">
-          <button type="button" class="btn-secondary" onclick="chiudiElencoCruscotto()">Chiudi elenco</button>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- ══ PAGINA: Scadenze (Fase 4) ════════════════════════════ -->
-    <div id="page-scadenze" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">Scadenze</div>
-          <div class="page-subtitle">
-            Che cosa è in ritardo, che cosa scade a giorni, e quali incassi non sono arrivati.
-          </div>
-        </div>
-      </div>
-
-      <div id="scadenze-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-      <div class="nota-cruscotto" id="scad-nota-preavviso">
-        <span aria-hidden="true">🕑</span>
-        <span id="scad-nota-preavviso-testo"></span>
-      </div>
-
-      <div id="scad-blocchi"></div>
-
-    </div>
-
-    <!-- ══ PAGINA: Contabilità per cantiere (Fase 6) ════════════ -->
-    <div id="page-cantieri" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">Cantieri</div>
-          <div class="page-subtitle">
-            Quanto è entrato e quanto è costato, cantiere per cantiere.
-          </div>
-        </div>
-      </div>
-
-      <div id="cantieri-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-      <!-- ── 6C: elenco di confronto ──────────────────────────────────── -->
-      <div id="cantieri-elenco-view">
-        <div class="card">
-          <div class="card-title">📊 Confronto fra cantieri</div>
-          <div class="form-hint" style="margin-bottom:12px">
-            Un cantiere per riga. Premi su una riga per vederne il dettaglio.
-            Premi sulle intestazioni per cambiare l&rsquo;ordine.
-          </div>
-          <div id="cantieri-tabella"></div>
-        </div>
-      </div>
-
-      <!-- ── 6B: scheda del singolo cantiere ──────────────────────────── -->
-      <div id="cantieri-scheda-view" style="display:none">
-
-        <div class="card">
-          <div class="form-row" style="align-items:flex-end">
-            <div class="form-group" style="flex:2; margin-bottom:0">
-              <label for="cant-scelta" class="form-label">Cantiere</label>
-              <select id="cant-scelta" class="form-input" onchange="apriCantiere(this.value)"></select>
-            </div>
-            <div class="form-group" style="flex:0 0 auto; margin-bottom:0">
-              <button type="button" class="btn-secondary" onclick="tornaElencoCantieri()">
-                &larr; Torna al confronto
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div id="cant-dettaglio"></div>
-
-        <!-- Avvisi obbligatori: sempre visibili, non solo quando c'è un problema -->
-        <div class="nota-cruscotto">
-          <span aria-hidden="true">ℹ️</span>
-          <span>
-            Il margine è calcolato sui documenti registrati: le fatture non ancora inserite
-            non sono contate. Non include ammortamenti, costi di struttura e ore non registrate.
-          </span>
-        </div>
-
-        <div class="card" id="cant-elenco-card" style="display:none">
-          <div class="card-title" id="cant-elenco-titolo">Elenco</div>
-          <div id="cant-elenco"></div>
-          <div class="form-actions" style="margin-top:14px">
-            <button type="button" class="btn-secondary" onclick="chiudiElencoCantiere()">Chiudi elenco</button>
-          </div>
-        </div>
-
-      </div>
-
-    </div>
-
-    <div id="page-movimenti" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">
-            Da classificare
-            <span class="badge badge-warn" id="movimenti-count-badge" style="margin-left:8px; font-size:14px"></span>
-          </div>
-          <div class="page-subtitle">
-            Canale A (App Cantieri: spese + regia) e Canale B (inseriti manualmente).
-            Clicca «Classifica» per assegnare conto + IVA — ogni proposta è modificabile.
-          </div>
-        </div>
-        <button onclick="loadDaClassificare()" class="btn-secondary" aria-label="Aggiorna lista">
-          🔄 Aggiorna
-        </button>
-      </div>
-
-      <div id="movimenti-banner" role="status" aria-live="polite"></div>
-      <div id="movimenti-sorgenti"></div>
-      <div id="movimenti-lista"></div>
-
-    </div>
-
-    <!-- ══ PAGINA: Inserimento manuale (Fase 2 — Canale B) ═════════════ -->
-    <div id="page-inserimento" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">Inserimento manuale</div>
-          <div class="page-subtitle">
-            Canale B — Costi aziendali non presenti in App Cantieri (banca, tasse, assicurazioni, affitto, abbonamenti…)
-          </div>
-        </div>
-      </div>
-
-      <div id="inserimento-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-      <div class="grid-2" style="align-items:start">
-
-        <!-- Colonna sx: form -->
-        <div class="card">
-          <div class="card-title" id="inserimento-card-title">➕ Nuovo movimento</div>
-
-          <div id="edit-mode-bar" class="edit-mode-bar" style="display:none">
-            <span aria-hidden="true">✏️</span>
-            <div class="edit-mode-msg">
-              Stai modificando un movimento esistente
-              <small id="edit-mode-desc"></small>
-            </div>
-            <button type="button" class="edit-mode-exit" onclick="exitEditMode()" aria-label="Esci dalla modifica">
-              Esci da modifica
-            </button>
-          </div>
-
-          <form id="form-inserimento" onsubmit="handleInserimentoSubmit(event)" novalidate>
-
-            <div class="form-group">
-              <label for="f-data" class="form-label">
-                Data <span class="req" aria-hidden="true">*</span>
-              </label>
-              <input type="date" id="f-data" class="form-input" required />
-            </div>
-
-            <div class="form-group">
-              <label for="f-descrizione" class="form-label">
-                Descrizione <span class="req" aria-hidden="true">*</span>
-              </label>
-              <input
-                type="text" id="f-descrizione" class="form-input"
-                required maxlength="500"
-                placeholder="es. Quota annua assicurazione RC, Spese bancarie febbraio…"
-              />
-            </div>
-
-            <div class="form-group rubrica-pick">
-              <label for="f-ente" class="form-label">Ente / Fornitore</label>
-              <div class="campo-con-bottone">
-                <input
-                  type="text" id="f-ente" class="form-input"
-                  maxlength="200" autocomplete="off"
-                  placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
-                  oninput="rubricaSuggerisci('f')"
-                  onkeydown="rubricaTasti(event, 'f')"
-                  aria-describedby="f-ente-hint"
-                  aria-autocomplete="list" aria-controls="f-ente-suggest" />
-                <button type="button" class="btn-secondary" id="f-ente-sfoglia"
-                        onclick="rubricaSfoglia('f')"
-                        aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
-                  📇 Scegli dalla rubrica
-                </button>
-              </div>
-              <input type="hidden" id="f-contatto-id" />
-              <div id="f-ente-suggest" class="rubrica-suggest" role="listbox"
-                   aria-label="Contatti trovati in rubrica"></div>
-              <div id="f-contatto-legato"></div>
-              <div class="form-hint" id="f-ente-hint">
-                Scrivi almeno due lettere per cercare in rubrica, oppure premi
-                &laquo;Scegli dalla rubrica&raquo; per vedere l’elenco completo. Se il
-                contatto non c’&egrave;, puoi crearlo al volo senza uscire da questo modulo.
-                Va bene anche lasciare solo il testo, senza collegare nessun contatto.
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="f-gruppo" class="form-label">Gruppo di costo</label>
-              <select id="f-gruppo" class="form-input"></select>
-              <div class="form-hint" id="f-gruppo-hint">
-                Serve a raggruppare le spese nel cruscotto. Se il contatto ha un gruppo
-                predefinito viene proposto qui, e resta modificabile.
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:2">
-                <label for="f-importo" class="form-label">
-                  Importo <span class="req" aria-hidden="true">*</span>
-                </label>
-                <input
-                  type="number" id="f-importo" class="form-input"
-                  required min="0.01" step="0.01"
-                  placeholder="0.00"
-                  onfocus="this.select()"
-                />
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="f-valuta" class="form-label">Valuta</label>
-                <select id="f-valuta" class="form-input">
-                  <option value="CHF" selected>CHF</option>
-                  <option value="EUR">EUR</option>
-                  <option value="USD">USD</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="f-scadenza" class="form-label">
-                  Scadenza <span class="dim">(quando va pagato)</span>
-                </label>
-                <input type="date" id="f-scadenza" class="form-input" />
-                <div class="form-hint" id="f-scadenza-hint">
-                  Calcolata da sola se il contatto ha i giorni di pagamento. Modificabile.
-                </div>
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="f-stato-pagamento" class="form-label">Stato pagamento</label>
-                <label class="form-label-check" style="margin-top:6px">
-                  <input type="checkbox" id="f-gia-pagata" onchange="onMovStatoChange()" />
-                  <span>Già pagata <span class="dim">(registra subito il pagamento)</span></span>
-                </label>
-                <div class="form-hint" id="f-stato-hint"></div>
-                <div class="form-hint">Lo stato si calcola dai pagamenti registrati.</div>
-              </div>
-            </div>
-
-            <div class="form-group" id="f-data-pagamento-group">
-              <label for="f-data-pagamento" class="form-label">
-                Data del pagamento <span class="dim">(quando è uscito il denaro)</span>
-              </label>
-              <input type="date" id="f-data-pagamento" class="form-input" />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label-check">
-                <input
-                  type="checkbox" id="f-ricorrente"
-                  onchange="togglePeriodicita(this.checked)"
-                />
-                <span>Spesa ricorrente (affitto, abbonamento, assicurazione…)</span>
-              </label>
-            </div>
-
-            <div class="form-group" id="f-periodicita-group" style="display:none">
-              <label for="f-periodicita" class="form-label">
-                Periodicità <span class="req" aria-hidden="true">*</span>
-              </label>
-              <select id="f-periodicita" class="form-input">
-                <option value="mensile">Mensile</option>
-                <option value="trimestrale">Trimestrale</option>
-                <option value="semestrale">Semestrale</option>
-                <option value="annuale">Annuale</option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="f-allegato" class="form-label" id="f-allegato-label">
-                Allegato documento <span class="dim">(opzionale)</span>
-              </label>
-              <div id="f-allegato-corrente" class="allegato-box" style="display:none"></div>
-              <input
-                type="file" id="f-allegato" class="form-input-file"
-                accept=".pdf,.jpg,.jpeg,.png,.heic,.webp"
-              />
-              <div class="form-hint" id="allegato-hint">
-                ⚠️ Gli allegati richiedono il bucket <code>conta-allegati</code> su Supabase Storage.
-                <a href="#" onclick="showBucketInfo(event)">Istruzioni per crearlo</a>
-              </div>
-            </div>
-
-            <div class="form-actions">
-              <button type="submit" class="btn-primary" id="inserimento-submit-btn">
-                💾 Salva movimento
-              </button>
-              <button type="button" onclick="onAnnullaClick()" class="btn-secondary" id="inserimento-annulla-btn">
-                Annulla
-              </button>
-            </div>
-
-          </form>
-        </div>
-
-        <!-- Colonna dx: ultimi inseriti + info bucket -->
-        <div>
-          <div class="card">
-            <div class="card-title">🕐 Ultimi inseriti (Canale B)</div>
-            <div id="inserimento-recenti">
-              <div class="dim" style="padding:8px 0">Nessun movimento ancora inserito.</div>
-            </div>
-          </div>
-
-          <div class="card" id="bucket-info-card" style="display:none">
-            <div class="card-title">🪣 Istruzioni — Bucket allegati</div>
-            <p style="font-size:13px; line-height:1.7; color:var(--text2); margin-bottom:12px">
-              Per salvare gli allegati (PDF/foto scontrini) devi creare un bucket su Supabase Storage:
-            </p>
-            <ol style="padding-left:20px; font-size:13px; line-height:2; color:var(--text2)">
-              <li>Apri <strong>Supabase Dashboard</strong> → progetto <code>wgidgbauhivdctdxfjnk</code></li>
-              <li>Vai su <strong>Storage</strong> → <strong>New bucket</strong></li>
-              <li>Nome: <code>conta-allegati</code></li>
-              <li>Opzioni: <strong>Private</strong> (non pubblico)</li>
-              <li>Clicca <strong>Save</strong></li>
-            </ol>
-            <div class="sql-tip" style="margin-top:12px">
-              Poi aggiungi una RLS policy che permetta all'utente autenticato di caricare e leggere i propri file. Se vuoi, dimmelo e ti preparo la policy SQL.
-            </div>
-          </div>
-        </div>
-
-      </div>
-    </div>
-
-    <!-- ══ PAGINA: Rubrica contatti (Fase 2) ════════════════ -->
-    <!-- FASE 21 — LA BUSTA
-         Le zone rispettano le «Spezifikationen Briefgestaltung von A-Z» della
-         Posta (edizione luglio 2026): zona di affrancatura 74 x 38 mm in alto
-         a destra, zona di codifica da lasciare libera 140 x 15 mm fino al
-         formato B5 e 140 x 35 mm da B5 a B4, in basso a destra. -->
-    <div id="page-busta" class="page">
-
-      <div class="page-header no-print">
-        <div>
-          <div class="page-title">Busta</div>
-          <div class="page-subtitle">
-            Stampa l&rsquo;indirizzo sulla busta invece di scriverlo a mano.
-            Quello che vedi nell&rsquo;anteprima &egrave; quello che esce dalla stampante.
-          </div>
-        </div>
-      </div>
-
-      <div id="busta-banner" role="status" aria-live="polite" class="no-print" style="margin-bottom:16px"></div>
-
-      <div class="card no-print">
-        <div class="card-title">📬 Destinatario</div>
-
-        <div class="form-group rubrica-pick">
-          <label for="busta-nome" class="form-label">Nome / Ragione sociale</label>
-          <div class="campo-con-bottone">
-            <input type="text" id="busta-nome" class="form-input" maxlength="200"
-                   autocomplete="off" placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
-                   oninput="rubricaSuggerisci('b'); disegnaBusta()"
-                   onkeydown="rubricaTasti(event, 'b')"
-                   aria-autocomplete="list" aria-controls="busta-nome-suggest" />
-            <button type="button" class="btn-secondary" id="busta-sfoglia"
-                    onclick="rubricaSfoglia('b')"
-                    aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
-              📇 Scegli dalla rubrica
-            </button>
-          </div>
-          <input type="hidden" id="busta-contatto-id" />
-          <div id="busta-nome-suggest" class="rubrica-suggest" role="listbox"
-               aria-label="Contatti trovati in rubrica"></div>
-          <div id="busta-contatto-legato"></div>
-        </div>
-
-        <div class="form-group">
-          <label for="busta-indirizzo" class="form-label">
-            Indirizzo <span class="dim">(via, NPA e localit&agrave;, e il paese se &egrave; all&rsquo;estero)</span>
-          </label>
-          <textarea id="busta-indirizzo" class="form-input" rows="4" maxlength="400"
-                    oninput="disegnaBusta()"
-                    placeholder="Via Cantonale 12&#10;6710 Biasca"></textarea>
-          <div class="form-hint">
-            Correggi pure qui: si stampa esattamente quello che c&rsquo;&egrave; scritto.
-          </div>
-        </div>
-      </div>
-
-      <div class="card no-print">
-        <div class="card-title">⚙️ Formato e affrancatura</div>
-
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="busta-formato" class="form-label">Formato busta</label>
-            <select id="busta-formato" class="form-input" onchange="onFormatoBustaChange()">
-              <option value="c56">C5/6 (DL) &mdash; 220 &times; 110 mm &mdash; per l&rsquo;A4 piegato</option>
-              <option value="c4">C4 &mdash; 324 &times; 229 mm &mdash; per l&rsquo;A4 non piegato</option>
-            </select>
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="busta-affrancatura" class="form-label">Affrancatura</label>
-            <select id="busta-affrancatura" class="form-input" onchange="onAffrancaturaChange()">
-              <option value="francobollo">Francobollo fisico &mdash; lascia lo spazio vuoto</option>
-              <option value="digital">Codice DigitalStamp &mdash; lo stampo io</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-group" id="busta-digital-group" style="display:none">
-          <label for="busta-digital" class="form-label">Codice DigitalStamp</label>
-          <input type="text" id="busta-digital" class="form-input" maxlength="40"
-                 placeholder="Incolla qui il codice della Post-App" oninput="disegnaBusta()" />
-          <div class="form-hint">
-            ⚠️ <strong>Provalo una volta prima di fidartene.</strong> La Posta dice di
-            <em>scrivere</em> il codice sulla busta: che accetti anche un codice stampato non
-            risulta dichiarato da nessuna parte. Manda una lettera di prova a te stesso.
-          </div>
-        </div>
-      </div>
-
-      <div class="card no-print">
-        <div class="card-title">📐 Taratura della stampante</div>
-        <div class="form-hint" style="margin-top:0;margin-bottom:12px">
-          Nessuna stampante stampa esattamente dove dice. Stampa la prova su un A4 normale,
-          appoggiala sopra la busta in controluce e correggi di quanti millimetri serve.
-          Valori positivi spostano a destra e verso il basso. La taratura si ricorda,
-          ed &egrave; separata per ogni formato.
-        </div>
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="busta-off-x" class="form-label">Scostamento orizzontale (mm)</label>
-            <input type="number" id="busta-off-x" class="form-input" step="0.5" value="0"
-                   onfocus="this.select()" oninput="disegnaBusta()" />
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="busta-off-y" class="form-label">Scostamento verticale (mm)</label>
-            <input type="number" id="busta-off-y" class="form-input" step="0.5" value="0"
-                   onfocus="this.select()" oninput="disegnaBusta()" />
-          </div>
-        </div>
-        <div class="form-actions" style="margin-top:0">
-          <button type="button" class="btn-secondary" onclick="salvaTaraturaBusta()">
-            💾 Salva la taratura</button>
-          <button type="button" class="btn-secondary" onclick="stampaProvaBusta()">
-            📄 Stampa di prova su A4</button>
-        </div>
-      </div>
-
-      <div class="card no-print">
-        <div class="card-title">🖨️ Stampa</div>
-        <div class="fase-banner warn" role="status" style="margin-bottom:12px">
-          <span class="icon" aria-hidden="true">⚠️</span>
-          <div class="msg">
-            Nella finestra di stampa del browser scegli <strong>il formato busta</strong>
-            (o &laquo;Personalizzato&raquo; con le misure giuste) e metti i
-            <strong>margini a zero</strong>, senza &laquo;adatta alla pagina&raquo;:
-            se il browser rimpicciolisce, l&rsquo;indirizzo finisce fuori posto.
-          </div>
-        </div>
-        <div class="form-actions" style="margin-top:0">
-          <button type="button" class="btn-primary" onclick="stampaBusta()">
-            🖨️ Stampa la busta</button>
-        </div>
-      </div>
-
-      <div class="card no-print">
-        <div class="card-title">👁️ Anteprima <span class="dim">(in scala)</span></div>
-        <div id="busta-anteprima-wrap"></div>
-      </div>
-
-      <!-- Il foglio vero, in millimetri: quello che va in stampa. -->
-      <div id="busta-foglio"></div>
-      <style id="busta-page-style"></style>
-    </div>
-
-    <!-- FASE 21 — Elenco codici: un foglio da stampare e tenere sul tavolo
-         mentre si classifica. Si legge dai dati veri (piano dei conti e
-         gruppi): se domani cambia un conto, il foglio cambia da solo. -->
-    <div id="page-codici" class="page">
-
-      <div class="page-header no-print">
-        <div>
-          <div class="page-title">Elenco codici</div>
-          <div class="page-subtitle">
-            Il piano dei conti e i nove gruppi, come compaiono quando classifichi.
-            Da stampare e tenere sotto mano, o da copiare e incollare in Word.
-          </div>
-        </div>
-      </div>
-
-      <div class="card no-print" style="margin-bottom:16px">
-        <div class="form-actions" style="margin-top:0">
-          <button class="btn-primary" onclick="stampaElencoCodici()">🖨️ Stampa elenco</button>
-          <button class="btn-secondary" onclick="initCodiciPage(true)">🔄 Rileggi dal database</button>
-        </div>
-        <div class="form-hint">
-          Per incollarlo in Word: seleziona tutto il foglio qui sotto (Ctrl+A dentro la pagina
-          non basta, trascina con il mouse dall&rsquo;inizio alla fine), copia e incolla.
-          Le due tabelle arrivano in Word come tabelle.
-        </div>
-      </div>
-
-      <div id="codici-foglio"></div>
-    </div>
-
-    <div id="page-rubrica" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">Rubrica</div>
-          <div class="page-subtitle">
-            Anagrafica unica condivisa da tutte le app: clienti, fornitori e collaboratori.
-            Un contatto si scrive una volta sola.
-          </div>
-        </div>
-      </div>
-
-      <div id="rubrica-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-      <!-- Elenco -->
-      <div id="rubrica-lista-view">
-        <div class="card">
-
-          <div class="tabs" role="tablist" aria-label="Categoria contatti">
-            <!-- FASE 18 — «Tutti»: clienti e fornitori insieme. Il conteggio
-                 qui conta le PERSONE, non le presenze nelle schede: chi sta in
-                 due schede resta uno. -->
-            <button class="tab" role="tab" id="tab-tutti" aria-selected="false"
-                    onclick="setRubricaTab('tutti')">
-              <span aria-hidden="true">📚</span> Tutti
-              <span class="tab-count" id="cnt-tutti">0</span>
-            </button>
-            <button class="tab" role="tab" id="tab-cliente" aria-selected="true"
-                    onclick="setRubricaTab('cliente')">
-              <span aria-hidden="true">👤</span> Clienti
-              <span class="tab-count" id="cnt-cliente">0</span>
-            </button>
-            <button class="tab" role="tab" id="tab-fornitore" aria-selected="false"
-                    onclick="setRubricaTab('fornitore')">
-              <span aria-hidden="true">🏢</span> Fornitori
-              <span class="tab-count" id="cnt-fornitore">0</span>
-            </button>
-            <button class="tab" role="tab" id="tab-collaboratore" aria-selected="false"
-                    onclick="setRubricaTab('collaboratore')">
-              <span aria-hidden="true">👷</span> Collaboratori
-              <span class="tab-count" id="cnt-collaboratore">0</span>
-            </button>
-            <button class="tab" role="tab" id="tab-generico" aria-selected="false"
-                    onclick="setRubricaTab('generico')">
-              <span aria-hidden="true">📎</span> Generici
-              <span class="tab-count" id="cnt-generico">0</span>
-            </button>
-          </div>
-
-          <div class="rubrica-toolbar">
-            <button class="btn-primary" onclick="nuovoContatto()">➕ Nuovo contatto</button>
-            <label class="form-label-check" style="margin-bottom:0">
-              <input type="checkbox" id="rubrica-show-inattivi" onchange="renderContattiList()" />
-              <span>Mostra anche i contatti archiviati</span>
-            </label>
-            <div class="spacer"></div>
-            <div class="form-group rubrica-search" style="margin-bottom:0">
-              <label for="rubrica-search" class="form-label">Cerca nella rubrica</label>
-              <input type="text" id="rubrica-search" class="form-input"
-                     placeholder="🔍 Nome, citt&agrave;, email, telefono&hellip;"
-                     oninput="renderContattiList()" autocomplete="off"
-                     aria-label="Cerca un contatto per nome, citt&agrave;, email o telefono" />
-            </div>
-          </div>
-
-          <div id="rubrica-table"></div>
-        </div>
-      </div>
-
-      <!-- FASE 18 — Scheda contatto in SOLA LETTURA.
-           Aprire un contatto non deve poter cambiare un dato per sbaglio:
-           si guarda, e solo premendo «Modifica» si entra nel modulo. -->
-      <div id="rubrica-lettura-view" style="display:none">
-        <div class="card">
-          <div class="card-title" id="contatto-lettura-titolo">👤 Scheda contatto</div>
-
-          <div id="contatto-lettura-banner" role="alert" aria-live="assertive" style="margin-bottom:12px"></div>
-
-          <div id="contatto-lettura-azioni" style="margin-bottom:14px"></div>
-
-          <div id="contatto-lettura-dati"></div>
-
-          <!-- Fatture di vendita intestate a questo contatto -->
-          <div id="contatto-lettura-fatture" style="margin-top:18px"></div>
-
-          <div class="form-actions">
-            <button type="button" class="btn-primary" id="contatto-lettura-modifica"
-                    onclick="modificaContattoCorrente()">✏️ Modifica</button>
-            <!-- FASE 21 — la busta con l'indirizzo di questo contatto. -->
-            <button type="button" class="btn-secondary"
-                    onclick="apriBustaDaContatto(contattoLetturaId)">✉️ Stampa busta</button>
-            <button type="button" class="btn-secondary"
-                    onclick="chiudiSchedaContatto()">&larr; Torna all&rsquo;elenco</button>
-            <button type="button" class="btn-danger" id="contatto-elimina-btn"
-                    onclick="chiediEliminaContatto()">🗑️ Elimina contatto</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Scheda contatto -->
-      <div id="rubrica-scheda-view" style="display:none">
-        <div class="card">
-          <div class="card-title" id="contatto-card-title">👤 Scheda contatto</div>
-          <div id="contatto-banner" role="status" aria-live="polite" style="margin-bottom:12px"></div>
-
-          <div id="contatto-azioni-rapide" style="margin-bottom:14px"></div>
-
-          <form id="form-contatto" onsubmit="salvaContatto(event)" novalidate autocomplete="off">
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-categoria" class="form-label">
-                  Categoria <span class="req" aria-hidden="true">*</span>
-                </label>
-                <select id="c-categoria" class="form-input" onchange="onCategoriaContattoChange()" autocomplete="off">
-                  <option value="cliente">Cliente</option>
-                  <option value="fornitore">Fornitore</option>
-                  <option value="collaboratore">Collaboratore</option>
-                  <option value="generico">Generico</option>
-                </select>
-              </div>
-              <div class="form-group" style="flex:2">
-                <label for="c-ragione" class="form-label">
-                  Ragione sociale <span class="dim">(o nome dell&rsquo;attivit&agrave;)</span>
-                </label>
-                <input type="text" id="c-ragione" class="form-input" maxlength="200"
-                       placeholder="es. Ferramenta Bianchi SA" / autocomplete="off">
-              </div>
-            </div>
-
-            <!-- Doppio uso: la categoria qui sopra resta una sola, ma un contatto
-                 puo' comparire ANCHE in un'altra scheda. Serve al fornitore che
-                 ogni tanto compra una prestazione: una scheda sola, non due. -->
-            <div id="c-anche-cliente-riga">
-              <label class="form-label-check">
-                <input type="checkbox" id="c-anche-cliente" />
-                <span>Compare anche fra i Clienti
-                  <span class="dim">(oltre alla categoria scelta qui sopra)</span></span>
-              </label>
-            </div>
-            <div id="c-anche-fornitore-riga">
-              <label class="form-label-check">
-                <input type="checkbox" id="c-anche-fornitore" />
-                <span>Compare anche fra i Fornitori
-                  <span class="dim">(oltre alla categoria scelta qui sopra)</span></span>
-              </label>
-            </div>
-            <div class="form-hint" style="margin-top:6px;margin-bottom:14px">
-              Se non spunti niente, il contatto resta dov&rsquo;&egrave;: in una scheda sola.
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-nome" class="form-label">Nome <span class="dim">(persona)</span></label>
-                <input type="text" id="c-nome" class="form-input" maxlength="100" / autocomplete="off">
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-cognome" class="form-label">Cognome <span class="dim">(persona)</span></label>
-                <input type="text" id="c-cognome" class="form-input" maxlength="100" / autocomplete="off">
-              </div>
-            </div>
-            <div class="form-hint" style="margin-top:-6px;margin-bottom:14px">
-              Serve almeno uno fra ragione sociale e cognome: &egrave; il nome con cui il contatto
-              compare negli elenchi.
-            </div>
-
-            <div class="form-group">
-              <label for="c-indirizzo" class="form-label">Indirizzo</label>
-              <input type="text" id="c-indirizzo" class="form-input" maxlength="200"
-                     placeholder="es. Via Girardolo del Nado 2" / autocomplete="off">
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-cap" class="form-label">NPA <span class="dim">(codice postale)</span></label>
-                <input type="text" id="c-cap" class="form-input" maxlength="10" placeholder="6500" / autocomplete="off">
-              </div>
-              <div class="form-group" style="flex:2">
-                <label for="c-citta" class="form-label">Localit&agrave;</label>
-                <input type="text" id="c-citta" class="form-input" maxlength="100" placeholder="Bellinzona" / autocomplete="off">
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-paese" class="form-label">Paese</label>
-                <select id="c-paese" class="form-input" autocomplete="off"></select>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-telefono" class="form-label">Telefono</label>
-                <input type="tel" id="c-telefono" class="form-input" maxlength="40"
-                       placeholder="+41 91 000 00 00" oninput="renderAzioniRapide()" / autocomplete="off">
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-email" class="form-label">Email</label>
-                <input type="email" id="c-email" class="form-input" maxlength="150"
-                       placeholder="nome@esempio.ch" oninput="renderAzioniRapide()" / autocomplete="off">
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="c-sito" class="form-label">Sito web</label>
-              <input type="text" id="c-sito" class="form-input" maxlength="200"
-                     placeholder="www.esempio.ch" / autocomplete="off">
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-uid" class="form-label">UID / Partita IVA</label>
-                <input type="text" id="c-uid" class="form-input" maxlength="40"
-                       placeholder="CHE-123.456.789" / autocomplete="off">
-              </div>
-              <div class="form-group" style="flex:2">
-                <label for="c-iban" class="form-label">IBAN</label>
-                <input type="text" id="c-iban" class="form-input" maxlength="40"
-                       placeholder="CH00 0000 0000 0000 0000 0" / autocomplete="off">
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:2">
-                <label for="c-gruppo" class="form-label">Gruppo predefinito</label>
-                <select id="c-gruppo" class="form-input" autocomplete="off"></select>
-                <div class="form-hint">
-                  Proposto ogni volta che si sceglie questo contatto in un movimento. Resta modificabile.
-                </div>
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-giorni" class="form-label">Giorni di pagamento</label>
-                <input type="number" id="c-giorni" class="form-input" min="0" max="365" step="1"
-                       placeholder="30" / autocomplete="off">
-                <div class="form-hint">Giorni. Serve a calcolare la scadenza.</div>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="c-note" class="form-label">Note</label>
-              <textarea id="c-note" class="form-input" rows="3" maxlength="1000" autocomplete="off"></textarea>
-            </div>
-
-            <label class="form-label-check">
-              <input type="checkbox" id="c-attivo" checked />
-              <span>Contatto attivo <span class="dim">(togli la spunta per archiviarlo senza cancellarlo)</span></span>
-            </label>
-
-            <div class="form-actions">
-              <button type="submit" class="btn-primary" id="contatto-submit-btn">💾 Salva contatto</button>
-              <button type="button" class="btn-secondary" onclick="chiudiSchedaContatto()">&larr; Torna all&rsquo;elenco</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- ══ PAGINA: Export & consegna (Fase 5) ══════════════════════════════ -->
-    <div id="page-export" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">Export &amp; consegna</div>
-          <div class="page-subtitle">
-            Esporta i movimenti classificati di un periodo (Excel / CSV) e, dopo la consegna, blocca il periodo.
-            È materiale di lavoro: la contabilità ufficiale resta al commercialista.
-          </div>
-        </div>
-      </div>
-
-      <div id="export-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-      <div class="card">
-        <div class="card-title">🗓 Periodo</div>
-
-        <div class="periodo-modi" role="group" aria-label="Tipo di periodo">
-          <button type="button" class="modo-btn active" id="modo-anno"  onclick="setPeriodoModo('anno')">📅 Anno intero</button>
-          <button type="button" class="modo-btn" id="modo-trimestre"   onclick="setPeriodoModo('trimestre')">🗓 Trimestre</button>
-          <button type="button" class="modo-btn" id="modo-mese"        onclick="setPeriodoModo('mese')">📆 Mese</button>
-          <button type="button" class="modo-btn" id="modo-custom"      onclick="setPeriodoModo('custom')">✏️ Personalizzato</button>
-        </div>
-
-        <div class="form-row" id="exp-sel-row">
-          <div class="form-group" style="flex:1" id="exp-anno-group">
-            <label for="exp-anno" class="form-label">Anno</label>
-            <select id="exp-anno" class="form-input" onchange="applicaPeriodoRapido()"></select>
-          </div>
-          <div class="form-group" style="flex:1; display:none" id="exp-trimestre-group">
-            <label for="exp-trimestre" class="form-label">Trimestre</label>
-            <select id="exp-trimestre" class="form-input" onchange="applicaPeriodoRapido()">
-              <option value="1">T1 — gennaio/marzo</option>
-              <option value="2">T2 — aprile/giugno</option>
-              <option value="3">T3 — luglio/settembre</option>
-              <option value="4">T4 — ottobre/dicembre</option>
-            </select>
-          </div>
-          <div class="form-group" style="flex:1; display:none" id="exp-mese-group">
-            <label for="exp-mese" class="form-label">Mese</label>
-            <select id="exp-mese" class="form-input" onchange="applicaPeriodoRapido()">
-              <option value="1">Gennaio</option><option value="2">Febbraio</option><option value="3">Marzo</option>
-              <option value="4">Aprile</option><option value="5">Maggio</option><option value="6">Giugno</option>
-              <option value="7">Luglio</option><option value="8">Agosto</option><option value="9">Settembre</option>
-              <option value="10">Ottobre</option><option value="11">Novembre</option><option value="12">Dicembre</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="exp-da" class="form-label">Da <span class="req" aria-hidden="true">*</span></label>
-            <input type="date" id="exp-da" class="form-input" onchange="onPeriodoManuale()" />
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="exp-a" class="form-label">A <span class="req" aria-hidden="true">*</span></label>
-            <input type="date" id="exp-a" class="form-input" onchange="onPeriodoManuale()" />
-          </div>
-        </div>
-
-        <div class="card-title" style="margin-top:6px">📦 Cosa esportare</div>
-        <div class="sezioni-box">
-          <label class="form-label-check"><input type="checkbox" id="exp-sec-vendite"  checked onchange="updateExportPreview()" /> <span>📤 Fatture di vendita</span></label>
-          <label class="form-label-check"><input type="checkbox" id="exp-sec-note"     checked onchange="updateExportPreview()" /> <span>↩️ Note di credito</span></label>
-          <label class="form-label-check"><input type="checkbox" id="exp-sec-acquisti" checked onchange="updateExportPreview()" /> <span>📥 Fatture d'acquisto</span></label>
-          <label class="form-label-check"><input type="checkbox" id="exp-sec-spese"    checked onchange="updateExportPreview()" /> <span>🧾 Spese e movimenti</span></label>
-        </div>
-
-        <div id="exp-preview" class="exp-preview"></div>
-
-        <div class="form-actions">
-          <button type="button" class="btn-primary" id="exp-xlsx-btn" onclick="exportExcel()">📊 Genera Excel (.xlsx)</button>
-          <button type="button" class="btn-secondary" id="exp-csv-btn" onclick="exportCsv()">📄 Genera CSV (uno per sezione)</button>
-        </div>
-
-        <div class="pacchetto-box">
-          <div class="pacchetto-titolo">📦 Pacchetto completo per il commercialista</div>
-          <p class="pacchetto-desc">
-            Un solo file ZIP con l&rsquo;Excel e <strong>tutti i giustificativi</strong>: ogni riga dell&rsquo;Excel
-            dice quale file le corrisponde. Il periodo è quello impostato qui sopra.
-          </p>
-
-          <!-- Avviso obbligatorio: qui si conta per data del DOCUMENTO -->
-          <div class="nota-cruscotto" style="margin-bottom:12px">
-            <span aria-hidden="true">📅</span>
-            <span>
-              Il pacchetto conta i documenti per <strong>data del documento</strong> (competenza),
-              come li registra il commercialista.
-              È l&rsquo;opposto del Cruscotto, che conta per data di pagamento: gli importi
-              possono quindi non coincidere, e non è un errore.
-            </span>
-          </div>
-
-          <div id="exp-zip-anteprima"></div>
-
-          <div class="form-actions" style="margin-top:12px">
-            <button type="button" class="btn-primary" id="exp-zip-btn" onclick="generaPacchetto()">
-              📦 Genera pacchetto completo (ZIP)
-            </button>
-            <button type="button" class="btn-secondary" id="exp-zip-annulla-btn"
-                    onclick="annullaPacchetto()" style="display:none">
-              Annulla
-            </button>
-          </div>
-
-          <div id="exp-zip-progresso" style="display:none">
-            <div class="progresso-testo" id="exp-zip-progresso-testo"></div>
-            <div class="progresso-barra-sfondo">
-              <div class="progresso-barra" id="exp-zip-progresso-barra" style="width:0%"></div>
-            </div>
-          </div>
-
-          <div id="exp-zip-banner" role="status" aria-live="polite"></div>
-        </div>
-        <div class="sql-tip" style="margin-top:14px">
-          L'Excel contiene un <strong>foglio per sezione</strong> (solo quelle spuntate e non vuote) più il
-          <strong>Riepilogo</strong>. «Spese e movimenti» include solo i movimenti <strong>classificati</strong>
-          (la «Regia · Da fatturare» non entra). Il CSV non supporta i fogli: scarica un file per sezione.
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">🔒 Consegna e blocco periodo</div>
-        <p style="font-size:13px; line-height:1.7; color:var(--text2); margin-bottom:14px">
-          Quando hai consegnato l'export, segna il periodo come <strong>consegnato</strong>: i movimenti diventano
-          di sola lettura (niente Riclassifica/Elimina) finché non lo riapri. Ogni cambiamento resta tracciato
-          nello storico (audit).
-        </p>
-        <div class="form-actions">
-          <button type="button" class="btn-primary" id="exp-lock-btn" onclick="lockPeriod()">🔒 Segna periodo come consegnato</button>
-          <button type="button" class="btn-secondary" id="exp-unlock-btn" onclick="unlockPeriod()">🔓 Sblocca periodo</button>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- ══ PAGINA: Fatture VENDITA (Fase 6) ════════════════════════════════ -->
-    <div id="page-fatture" class="page">
-
-      <!-- Vista 1: Lista -->
-      <div id="fatture-list-view">
-        <div class="page-header">
-          <div>
-            <div class="page-title">📤 Fatture vendita</div>
-            <div class="page-subtitle">
-              Emissione manuale. Numerazione progressiva per anno, assegnata all'emissione.
-              Dopo l'emissione la fattura è di sola lettura: si corregge con una nota di credito.
-            </div>
-          </div>
-          <button class="btn-primary" onclick="newFattura('fattura')">➕ Nuova fattura vendita</button>
-        </div>
-
-        <div id="fatture-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-        <div class="card">
-          <div class="card-title">📄 Elenco</div>
-          <div class="form-group" style="margin-bottom:12px">
-            <div class="search-wrap">
-              <input type="text" id="fatture-search" class="form-input" placeholder="🔍 Cerca fattura (numero, cliente, totale)…" oninput="renderFattureTable()" autocomplete="off" aria-label="Cerca fattura" />
-              <button type="button" class="search-clear" id="fatture-search-clear" onclick="clearFattureSearch()" aria-label="Svuota ricerca" title="Svuota" style="display:none">✕</button>
-            </div>
-          </div>
-          <div class="form-row" style="margin-bottom:12px">
-            <!-- Due filtri separati, non uno solo: lo stato del DOCUMENTO e lo
-                 stato dell'INCASSO sono due domande diverse. Prima erano
-                 schiacciate in un menu unico, dove l'incasso prendeva il posto
-                 di "Emessa" e non si poteva piu' sapere quale fosse quale.
-                 Ogni menu ha la sua etichetta sopra: mai la parola "Stato" da sola. -->
-            <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="fatture-filtro-stato" class="form-label">Stato documento</label>
-              <select id="fatture-filtro-stato" class="form-input" onchange="renderFattureTable()">
-                <option value="">Tutti</option>
-                <option value="bozza">Bozza</option>
-                <option value="emessa">Emessa</option>
-                <option value="annullata">Annullata</option>
-              </select>
-            </div>
-            <!-- Separazione visiva: il bordo a sinistra stacca i due menu, cosi'
-                 a colpo d'occhio non si scambia l'uno per l'altro. -->
-            <div class="form-group" style="flex:1; margin-bottom:0; padding-left:14px; border-left:1px solid var(--border)">
-              <label for="fatture-filtro-incasso" class="form-label">Stato incasso</label>
-              <select id="fatture-filtro-incasso" class="form-input" onchange="renderFattureTable()">
-                <option value="">Tutti</option>
-                <option value="aperto">🔵 Non incassato</option>
-                <option value="parziale">🟠 Incassato in parte</option>
-                <option value="pagato">✅ Incassato</option>
-              </select>
-            </div>
-            <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="fatture-filtro-anno" class="form-label">Anno</label>
-              <input type="number" id="fatture-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderFattureTable()" />
-            </div>
-          </div>
-          <div id="fatture-table"></div>
-        </div>
-      </div>
-
-      <!-- Vista 2: Editor (bozza) -->
-      <div id="fatture-edit-view" style="display:none">
-        <div class="page-header">
-          <div>
-            <div class="page-title" id="fatture-edit-title">Nuova fattura</div>
-            <div class="page-subtitle">Bozza modificabile. Il numero viene assegnato solo all'emissione.</div>
-          </div>
-          <button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>
-        </div>
-
-        <div id="fatture-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
-
-        <div id="fatture-nc-ref" class="nc-ref" style="display:none"></div>
-
-        <div class="card">
-          <div class="card-title">👤 Cliente</div>
-          <div class="form-group rubrica-pick">
-            <label for="f-cli-nome" class="form-label">Nome / Ragione sociale <span class="req" aria-hidden="true">*</span></label>
-            <div class="campo-con-bottone">
-              <input type="text" id="f-cli-nome" class="form-input" maxlength="200"
-                     autocomplete="off" placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
-                     oninput="rubricaSuggerisci('v')"
-                     onkeydown="rubricaTasti(event, 'v')"
-                     aria-autocomplete="list" aria-controls="f-cli-nome-suggest" />
-              <button type="button" class="btn-secondary" id="f-cli-sfoglia"
-                      onclick="rubricaSfoglia('v')"
-                      aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
-                📇 Scegli dalla rubrica
-              </button>
-            </div>
-            <div class="form-hint">
-              Scrivi due lettere per cercare, oppure premi &laquo;Scegli dalla rubrica&raquo;
-              per vedere l&rsquo;elenco completo.
-            </div>
-            <input type="hidden" id="f-cli-contatto-id" />
-            <div id="f-cli-nome-suggest" class="rubrica-suggest" role="listbox"
-                 aria-label="Contatti trovati in rubrica"></div>
-            <div id="f-cli-contatto-legato"></div>
-          </div>
-          <div class="form-group">
-            <label for="f-cli-indirizzo" class="form-label">Indirizzo</label>
-            <textarea id="f-cli-indirizzo" class="form-input" rows="2" maxlength="300" placeholder="Via, NPA, località"></textarea>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label for="f-cli-paese" class="form-label">Paese</label>
-              <select id="f-cli-paese" class="form-input"
-                      onchange="paeseFatturaModificato()"></select>
-            </div>
-            <div class="form-group" style="flex:2">
-              <label for="f-cli-iva" class="form-label">N. IVA cliente <span class="dim">(facoltativo)</span></label>
-              <input type="text" id="f-cli-iva" class="form-input" maxlength="40" placeholder="CHE-123.456.789 IVA" />
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label for="f-fat-data" class="form-label">Data emissione <span class="dim">(default: oggi all'emissione)</span></label>
-              <input type="date" id="f-fat-data" class="form-input" />
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="f-fat-valuta" class="form-label">Valuta</label>
-              <select id="f-fat-valuta" class="form-input">
-                <option value="CHF" selected>CHF</option>
-                <option value="EUR">EUR</option>
-                <option value="USD">USD</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-title">📦 Righe
-            <button type="button" class="link-btn" onclick="addRiga()">+ Aggiungi riga</button>
-            <!-- FASE 21 — una riga-titolo raggruppa le voci sotto di sé e non
-                 ha importi: come sulle fatture dei fornitori. -->
-            <button type="button" class="link-btn" onclick="addTitolo()">+ Aggiungi titolo</button>
-          </div>
-          <!-- Le unità più usate in carpenteria. È un elenco di SUGGERIMENTI:
-               il campo resta libero e accetta qualsiasi cosa. -->
-          <datalist id="unita-suggerite">
-            <option value="ml"></option>
-            <option value="m2"></option>
-            <option value="m3"></option>
-            <option value="kg"></option>
-            <option value="h"></option>
-            <option value="fr/h"></option>
-            <option value="ac."></option>
-            <option value="pz"></option>
-            <option value="forfait"></option>
-          </datalist>
-          <div class="table-wrap">
-            <table>
-              <thead><tr>
-                <th>Descrizione</th>
-                <th style="width:80px">Un.</th>
-                <th style="width:90px;text-align:right">Quantità</th>
-                <th style="width:120px;text-align:right">Prezzo unit.</th>
-                <th style="width:160px" id="th-riga-codiva">Codice IVA</th>
-                <th style="width:110px;text-align:right" id="th-riga-imponibile">Imponibile</th>
-                <th style="width:100px;text-align:right" id="th-riga-iva">IVA</th>
-                <th style="width:40px"></th>
-              </tr></thead>
-              <tbody id="fatture-righe"></tbody>
-            </table>
-          </div>
-
-          <div class="fattura-totali" id="fatture-totali">
-            <div id="fatture-tot-imponibile-row"><span class="ft-label">Imponibile</span> <span class="ft-val" id="fatture-tot-imponibile">0.00</span></div>
-            <div id="fatture-tot-iva-row"><span class="ft-label">IVA</span> <span class="ft-val" id="fatture-tot-iva">0.00</span></div>
-            <div class="ft-grand"><span class="ft-label">Totale</span> <span class="ft-val" id="fatture-tot-totale">0.00</span></div>
-          </div>
-        </div>
-
-        <div class="card" id="fatture-iban-card">
-          <div class="card-title">🏦 IBAN per l'incasso</div>
-          <div class="form-group">
-            <label for="f-fat-iban-select" class="form-label">IBAN della fattura</label>
-            <select id="f-fat-iban-select" class="form-input" onchange="onIbanSelectChange()"></select>
-          </div>
-          <div class="form-group" id="f-fat-iban-new-group" style="display:none">
-            <input type="text" id="f-fat-iban-manual" class="form-input" maxlength="40" placeholder="CH.. nuovo IBAN" oninput="updateEditorIbanState()" />
-            <label class="form-label-check" style="margin-top:8px">
-              <input type="checkbox" id="f-fat-iban-save" onchange="onIbanSaveToggle(this.checked)" />
-              <span>Salva questo IBAN in rubrica (per riusarlo)</span>
-            </label>
-            <input type="text" id="f-fat-iban-label" class="form-input" maxlength="100" placeholder="Etichetta (es. Cantiere Rossi)" style="margin-top:8px; display:none" />
-          </div>
-          <div class="form-hint">«Predefinito aziendale» usa l'IBAN di ⚙️ Impostazioni ditta. Gli IBAN per cantiere si gestiscono lì nella rubrica.</div>
-        </div>
-
-        <div class="card">
-          <div class="form-group">
-            <label for="f-fat-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
-            <textarea id="f-fat-note" class="form-input" rows="2" maxlength="500" placeholder="Condizioni di pagamento, riferimenti…"></textarea>
-          </div>
-          <div class="form-actions">
-            <button type="button" class="btn-secondary" id="btn-salva-bozza" onclick="saveBozza()">💾 Salva bozza</button>
-            <button type="button" class="btn-primary" id="btn-emetti" onclick="emettiFatturaCorrente()">📨 Emetti (assegna numero)</button>
-            <button type="button" class="btn-secondary" onclick="fattureBackToList()">Annulla</button>
-          </div>
-          <div class="sql-tip" style="margin-top:12px">
-            «Emetti» assegna il numero progressivo e rende la fattura definitiva (sola lettura). La fattura emessa
-            entra nel Registratore tra i movimenti «Da classificare» (lato ricavo).
-          </div>
-        </div>
-      </div>
-
-      <!-- Vista 3: Dettaglio / stampa -->
-      <div id="fatture-detail-view" style="display:none">
-        <div class="page-header no-print">
-          <div><div class="page-title">Dettaglio fattura vendita</div></div>
-          <button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>
-        </div>
-
-        <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-        <div class="card no-print" id="fatture-detail-actions"></div>
-        <div class="no-print" id="fatture-allegato-banner" role="status" aria-live="polite"></div>
-        <!-- FASE 8: pagamenti e rate della fattura -->
-        <div class="no-print" id="fatture-pagamenti"></div>
-        <div class="no-print" id="fatture-classificazione"></div>
-        <div class="no-print" id="fatture-allegati"></div>
-
-        <div class="card">
-          <div id="fatture-print"></div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- ══ PAGINA: Fatture d'acquisto (Fase 10) ════════════════════════════ -->
-    <div id="page-acquisti" class="page">
-
-      <!-- Lista -->
-      <div id="acquisti-list-view">
-        <div class="page-header">
-          <div>
-            <div class="page-title">📥 Fatture acquisto</div>
-            <div class="page-subtitle">Registrazione manuale dei documenti ricevuti dai fornitori. Modificabili ed eliminabili.</div>
-          </div>
-          <button class="btn-primary" onclick="newAcquisto()">➕ Nuova fattura d'acquisto</button>
-        </div>
-
-        <div id="acquisti-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-
-        <div class="card">
-          <div class="card-title">📄 Elenco</div>
-          <div class="form-group" style="margin-bottom:12px">
-            <div class="search-wrap">
-              <input type="text" id="acquisti-search" class="form-input" placeholder="🔍 Cerca (fornitore, numero, importo)…" oninput="renderAcquistiTable()" autocomplete="off" aria-label="Cerca fattura d'acquisto" />
-              <button type="button" class="search-clear" id="acquisti-search-clear" onclick="clearAcquistiSearch()" aria-label="Svuota ricerca" title="Svuota" style="display:none">✕</button>
-            </div>
-          </div>
-          <div class="form-row" style="margin-bottom:12px">
-            <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="acquisti-filtro-stato" class="form-label">Stato pagamento</label>
-              <select id="acquisti-filtro-stato" class="form-input" onchange="renderAcquistiTable()">
-                <option value="">Tutti</option>
-                <option value="aperto">⏳ Non pagato</option>
-                <option value="parziale">🟠 Pagato in parte</option>
-                <option value="pagato">✅ Pagato</option>
-              </select>
-            </div>
-            <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="acquisti-filtro-cantiere" class="form-label">Cantiere</label>
-              <select id="acquisti-filtro-cantiere" class="form-input" onchange="renderAcquistiTable()">
-                <option value="">Tutti</option>
-              </select>
-            </div>
-            <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="acquisti-filtro-anno" class="form-label">Anno</label>
-              <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
-            </div>
-          </div>
-          <div id="acquisti-table"></div>
-        </div>
-      </div>
-
-      <!-- Vista di sola lettura -->
-      <div id="acquisti-detail-view" style="display:none">
-        <div class="page-header">
-          <div>
-            <div class="page-title">📥 Dettaglio fattura d'acquisto</div>
-            <div class="page-subtitle">Sola lettura. Premi «Modifica» per cambiare i dati.</div>
-          </div>
-          <button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>
-        </div>
-        <div id="acquisti-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
-        <div class="card no-print" id="acquisti-detail-actions"></div>
-        <div class="card">
-          <div id="acquisti-detail-body"></div>
-        </div>
-        <!-- FASE 8: pagamenti e rate della fattura d'acquisto -->
-        <div id="acquisti-detail-conferma"></div>
-        <div id="acquisti-pagamenti"></div>
-        <div id="acquisti-classificazione"></div>
-        <div id="acquisti-allegati"></div>
-        <div style="display:none">
-        </div>
-      </div>
-
-      <!-- Editor -->
-      <div id="acquisti-edit-view" style="display:none">
-        <div class="page-header">
-          <div>
-            <div class="page-title" id="acquisti-edit-title">Nuova fattura d'acquisto</div>
-            <div class="page-subtitle">Documento ricevuto: si può modificare ed eliminare in seguito.</div>
-          </div>
-          <button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>
-        </div>
-
-        <div id="acquisti-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
-
-        <!-- ══ FASE 5A — Ponte copia/incolla verso Claude ═══════════════════ -->
-        <div class="card" id="ponte-ai">
-          <div class="card-title">📋 Lettura della fattura</div>
-          <div class="form-hint" style="margin-bottom:12px">
-            Invece di copiare i dati a mano: copia il prompt, aprilo in Claude allegando
-            la foto o il PDF, e riporta qui la risposta. I campi si compilano da soli.
-          </div>
-
-          <div class="form-actions" style="margin-top:0">
-            <!-- FASE 10B — compare solo su una fattura NUOVA e solo se
-                 l'indirizzo del Worker e' configurato. -->
-            <button type="button" class="btn-primary" id="btn-lettura-ai"
-                    style="display:none" onclick="apriSceltaFileLettura()">
-              📄 Leggi da PDF o foto
-            </button>
-            <input type="file" id="lettura-file" style="display:none"
-                   accept=".pdf,.jpg,.jpeg,.png,.webp,image/*" capture="environment"
-                   onchange="leggiFatturaDaFile(this)" />
-            <button type="button" class="btn-secondary" onclick="copiaPromptFattura()">
-              📋 Copia prompt
-            </button>
-            <button type="button" class="btn-secondary" onclick="apriIncollaRisposta()">
-              📥 Incolla risposta
-            </button>
-          </div>
-
-          <div id="ponte-ai-banner" role="status" aria-live="polite" style="margin-top:12px"></div>
-
-          <!-- Casella per la risposta: chiusa finché non serve -->
-          <div id="ponte-ai-incolla" style="display:none; margin-top:14px">
-            <div class="form-group">
-              <label for="ponte-ai-testo" class="form-label">
-                Risposta di Claude <span class="dim">(il testo JSON, anche con i backtick)</span>
-              </label>
-              <textarea id="ponte-ai-testo" class="form-input" rows="10"
-                        placeholder="Incolla qui tutta la risposta, così come te la dà Claude."
-                        aria-describedby="ponte-ai-aiuto"></textarea>
-              <div class="form-hint" id="ponte-ai-aiuto">
-                Non serve ripulirla: i backtick e il testo attorno vengono tolti da soli.
-              </div>
-            </div>
-            <div class="form-actions" style="margin-top:0">
-              <button type="button" class="btn-primary" onclick="applicaRispostaAI()">
-                ✅ Compila il modulo
-              </button>
-              <button type="button" class="btn-secondary" onclick="chiudiIncollaRisposta()">
-                Annulla
-              </button>
-            </div>
-          </div>
-
-          <!-- Segnalazioni della lettura: compaiono dopo aver compilato -->
-          <div id="ponte-ai-note" style="margin-top:12px"></div>
-          <div id="lettura-costo"></div>
-        </div>
-
-        <div id="a-classificazione-riga"></div>
-
-        <div class="card">
-          <div class="card-title">🏢 Fornitore e documento</div>
-          <div class="form-group rubrica-pick">
-            <label for="a-fornitore" class="form-label">Fornitore <span class="req" aria-hidden="true">*</span></label>
-            <div class="campo-con-bottone">
-              <input type="text" id="a-fornitore" class="form-input" maxlength="200"
-                     autocomplete="off" placeholder="🔍 Scrivi per cercare in rubrica&hellip;"
-                     oninput="rubricaSuggerisci('a')"
-                     onkeydown="rubricaTasti(event, 'a')"
-                     aria-autocomplete="list" aria-controls="a-fornitore-suggest" />
-              <button type="button" class="btn-secondary" id="a-fornitore-sfoglia"
-                      onclick="rubricaSfoglia('a')"
-                      aria-label="Apri l&rsquo;elenco completo dei contatti in rubrica">
-                📇 Scegli dalla rubrica
-              </button>
-            </div>
-            <input type="hidden" id="a-contatto-id" />
-            <div id="a-fornitore-suggest" class="rubrica-suggest" role="listbox"
-                 aria-label="Contatti trovati in rubrica"></div>
-            <div id="a-contatto-legato"></div>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:2">
-              <label for="a-numero" class="form-label">Numero fornitore</label>
-              <input type="text" id="a-numero" class="form-input" maxlength="80" placeholder="es. FT-2026/512" />
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="a-data" class="form-label">Data <span class="req" aria-hidden="true">*</span></label>
-              <input type="date" id="a-data" class="form-input" />
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:2">
-              <label for="a-importo" class="form-label">Importo <span class="req" aria-hidden="true">*</span></label>
-              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" onfocus="this.select()" oninput="onAcquistoImportoChange()" />
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="a-valuta" class="form-label">Valuta</label>
-              <select id="a-valuta" class="form-input">
-                <option value="CHF" selected>CHF</option>
-                <option value="EUR">EUR</option>
-                <option value="USD">USD</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-group">
-            <label for="a-codice-iva" class="form-label">Codice IVA <span class="dim">(opzionale — se vuoto si salva solo il totale)</span></label>
-            <select id="a-codice-iva" class="form-input" onchange="onAcquistoIvaCodeChange()"></select>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label for="a-imponibile" class="form-label">Imponibile</label>
-              <input type="number" id="a-imponibile" class="form-input" step="0.01" placeholder="—" onfocus="this.select()" oninput="onAcquistoIvaManual()" />
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="a-iva" class="form-label">IVA</label>
-              <input type="number" id="a-iva" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoIvaManual()" />
-            </div>
-            <div class="form-group" style="flex:0 0 auto; display:flex; align-items:flex-end">
-              <button type="button" class="btn-secondary" id="a-ricalcola-btn" onclick="recalcAcquistoIva()" title="Ricalcola imponibile e IVA dal totale">↻ Ricalcola</button>
-            </div>
-          </div>
-          <div id="a-iva-summary" class="iva-summary"></div>
-
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label for="a-gruppo" class="form-label">Gruppo di costo</label>
-              <select id="a-gruppo" class="form-input"></select>
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="a-scadenza" class="form-label">Scadenza <span class="dim">(opzionale)</span></label>
-              <input type="date" id="a-scadenza" class="form-input" />
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="a-stato" class="form-label">Stato pagamento</label>
-              <select id="a-stato" class="form-input" disabled aria-readonly="true">
-                <option value="aperto" selected>⏳ Non pagato</option>
-                <option value="parziale">🟠 Pagato in parte</option>
-                <option value="pagato">✅ Pagato</option>
-              </select>
-              <div class="form-hint">Lo stato si calcola dai pagamenti registrati.</div>
-            </div>
-          </div>
-
-          <!-- Se la fattura ha gia' dei pagamenti la spunta sparisce: si
-               gestiscono dalla scheda, dove si vedono tutti. -->
-          <div id="a-pagamenti-esistenti" class="rimando-box" style="display:none"></div>
-
-          <div id="a-gia-pagata-box">
-            <label class="check-riga" for="a-gia-pagata">
-              <input type="checkbox" id="a-gia-pagata" onchange="onAcquistoGiaPagata()" />
-              <span>Gi&agrave; pagata per intero</span>
-            </label>
-            <div class="form-hint">
-              Registra subito un pagamento dell&rsquo;intero importo. Per un acconto o
-              un pagamento in pi&ugrave; volte, salva e usa <strong>+ Registra pagamento</strong>
-              nella scheda.
-            </div>
-            <div class="form-row" id="a-gia-pagata-campi" style="display:none; margin-top:10px">
-              <div class="form-group" style="flex:1">
-                <label for="a-pag-data" class="form-label">Data del pagamento</label>
-                <input type="date" id="a-pag-data" class="form-input" />
-                <div class="form-hint">Proposta: la data della fattura.</div>
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="a-pag-metodo" class="form-label">Metodo</label>
-                <select id="a-pag-metodo" class="form-input">
-                  <option value="">&mdash; non indicato &mdash;</option>
-                  <option value="Bonifico">Bonifico</option>
-                  <option value="Contanti">Contanti</option>
-                  <option value="TWINT">TWINT</option>
-                  <option value="Carta / Bancomat">Carta / Bancomat</option>
-                  <option value="Addebito diretto (LSV)">Addebito diretto (LSV)</option>
-                  <option value="Altro">Altro</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <div class="rimando-box" id="a-pagamento-rimando">
-            💳 Pagamenti parziali o in pi&ugrave; volte: salva la fattura e usa
-            <strong>+ Registra pagamento</strong> nella scheda, dove scegli data,
-            metodo e riferimento di ogni versamento.
-          </div>
-          <div class="form-group">
-            <label for="a-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
-            <textarea id="a-note" class="form-input" rows="2" maxlength="500" placeholder="Riferimenti, cantiere, condizioni…"></textarea>
-          </div>
-          <div class="form-group">
-            <label for="a-allegato" class="form-label" id="a-allegato-label">Allegato documento <span class="dim">(opzionale)</span></label>
-            <div id="a-allegato-corrente" class="allegato-box" style="display:none"></div>
-            <input type="file" id="a-allegato" class="form-input-file" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
-            <div class="form-hint" id="a-allegato-hint">Caricato nel bucket <code>conta-allegati</code>. Se l'upload non riesce te lo dico esplicitamente: la fattura viene salvata comunque, l'allegato lo puoi riallegare modificandola.</div>
-          </div>
-          <div class="form-actions">
-            <button type="button" class="btn-primary" id="acq-save-btn" onclick="saveAcquisto()">💾 Salva</button>
-            <button type="button" class="btn-secondary" id="acq-annulla-btn" onclick="onAcquistoAnnulla()">Annulla</button>
-          </div>
-          <div class="sql-tip" style="margin-top:12px">
-            La fattura d'acquisto entra nel Registratore tra i movimenti «Da classificare» (lato costo), classificabile con conto + IVA.
-          </div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- ══ PAGINA: Impostazioni ditta (Fase 7) ═════════════════════════════ -->
-    <div id="page-impostazioni" class="page">
-
-      <div class="page-header">
-        <div>
-          <div class="page-title">⚙️ Impostazioni ditta</div>
-          <div class="page-subtitle">
-            Dati dell'azienda usati nelle fatture. Salvati in <code>tm_aziende</code> (condivisa con TimberMaster).
-          </div>
-        </div>
-      </div>
-
-      <div id="impostazioni-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
-
-      <div class="card">
-        <div class="card-title">🏢 Anagrafica</div>
-        <div class="form-group">
-          <label for="imp-ragione" class="form-label">Ragione sociale <span class="req" aria-hidden="true">*</span></label>
-          <input type="text" id="imp-ragione" class="form-input" maxlength="200" placeholder="es. Carpenteria Ticinese Sàgl" />
-        </div>
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="imp-forma" class="form-label">Forma giuridica</label>
-            <input type="text" id="imp-forma" class="form-input" maxlength="40" placeholder="Sàgl, SA, Ditta individuale…" />
-          </div>
-          <div class="form-group" style="flex:2">
-            <label for="imp-uid" class="form-label">IDI / UID</label>
-            <input type="text" id="imp-uid" class="form-input" maxlength="40" placeholder="CHE-489.567.138" />
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label-check">
-            <input type="checkbox" id="imp-soggetto-iva" onchange="toggleSoggettoIva(this.checked)" />
-            <span>Soggetto IVA (registrato AFC) — se attivo, le fatture calcolano e mostrano l'IVA</span>
-          </label>
-        </div>
-        <div class="form-group">
-          <label for="imp-iva" class="form-label">N. IVA <span class="dim">(attivo solo se soggetto IVA)</span></label>
-          <input type="text" id="imp-iva" class="form-input" maxlength="40" placeholder="CHE-489.567.138 IVA" disabled />
-        </div>
-        <div class="form-group">
-          <label for="imp-indirizzo" class="form-label">Indirizzo <span class="req" aria-hidden="true">*</span></label>
-          <input type="text" id="imp-indirizzo" class="form-input" maxlength="200" placeholder="Via e numero" />
-        </div>
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="imp-npa" class="form-label">NPA / CAP</label>
-            <input type="text" id="imp-npa" class="form-input" maxlength="10" placeholder="6500" />
-          </div>
-          <div class="form-group" style="flex:2">
-            <label for="imp-citta" class="form-label">Città</label>
-            <input type="text" id="imp-citta" class="form-input" maxlength="100" placeholder="Bellinzona" />
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="imp-paese" class="form-label">Paese</label>
-            <input type="text" id="imp-paese" class="form-input" maxlength="2" value="CH" />
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">💳 Pagamento e contatti</div>
-        <div class="form-group">
-          <label for="imp-iban" class="form-label">IBAN aziendale predefinito <span class="req" aria-hidden="true">*</span></label>
-          <input type="text" id="imp-iban" class="form-input" maxlength="40" placeholder="CH00 0000 0000 0000 0000 0" />
-          <div class="form-hint">Usato sulle fatture quando non scegli un IBAN per cantiere.</div>
-        </div>
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="imp-termini" class="form-label">Termine di pagamento (giorni)</label>
-            <input type="number" id="imp-termini" class="form-input" min="0" max="365" step="1" placeholder="30" />
-          </div>
-          <div class="form-group" style="flex:2">
-            <label for="imp-email" class="form-label">Email</label>
-            <input type="email" id="imp-email" class="form-input" maxlength="120" placeholder="info@esempio.ch" />
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="imp-telefono" class="form-label">Telefono</label>
-            <input type="text" id="imp-telefono" class="form-input" maxlength="40" placeholder="+41 91 000 00 00" />
-          </div>
-          <div class="form-group" style="flex:2">
-            <label for="imp-sito" class="form-label">Sito web</label>
-            <input type="text" id="imp-sito" class="form-input" maxlength="120" placeholder="www.esempio.ch" />
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="imp-logo" class="form-label">Logo (URL) <span class="dim">(opzionale — se vuoto usa img/logo.png)</span></label>
-          <input type="text" id="imp-logo" class="form-input" maxlength="300" placeholder="https://… oppure img/logo.png" />
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">👷 Costo orario della manodopera</div>
-        <div class="form-hint" style="margin-bottom:12px">
-          Serve a calcolare il margine dei cantieri. <strong>Non è la tariffa a cui vendi
-          un&rsquo;ora</strong>: è quello che un&rsquo;ora ti costa — salario lordo, oneri sociali e
-          assicurazioni, diviso le ore produttive dell&rsquo;anno.
-        </div>
-
-        <div class="form-group" style="max-width:260px">
-          <label for="imp-costo-orario" class="form-label">Costo orario</label>
-          <div class="form-row" style="align-items:center; gap:8px">
-            <input type="number" id="imp-costo-orario" class="form-input"
-                   min="0" max="500" step="0.01" placeholder="es. 52.00"
-                   oninput="onCostoOrarioCambiato()" style="flex:1" />
-            <span class="dim" style="white-space:nowrap">CHF/h</span>
-          </div>
-        </div>
-
-        <div id="imp-costo-stato" class="costo-stato"></div>
-
-        <label class="form-label-check" style="margin-top:10px">
-          <input type="checkbox" id="imp-costo-verificato" onchange="onCostoVerificatoCambiato()" />
-          <span>Verificato dal commercialista</span>
-        </label>
-        <div class="form-hint" id="imp-costo-verificato-hint" style="margin-top:4px">
-          Cambiando il costo orario la spunta si toglie da sola: un numero nuovo non è
-          quello che il commercialista aveva controllato.
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">⏰ Avvisi scadenze</div>
-        <div class="form-hint" style="margin-bottom:12px">
-          Riguardano la schermata «Scadenze» e il pallino rosso nel menu.
-          Sono salvati nel modulo contabilità, non nei dati della ditta.
-        </div>
-
-        <label class="form-label-check">
-          <input type="checkbox" id="imp-finestra-scadenze" checked />
-          <span>Mostra la finestra all&rsquo;apertura
-            <span class="dim">(una volta al giorno, e solo se c&rsquo;è qualcosa in sospeso)</span>
-          </span>
-        </label>
-
-        <div class="form-group" style="max-width:260px; margin-top:12px">
-          <label for="imp-giorni-preavviso" class="form-label">Giorni di preavviso</label>
-          <input type="number" id="imp-giorni-preavviso" class="form-input"
-                 min="0" max="365" step="1" placeholder="7" />
-          <div class="form-hint">
-            Giorni. Quanto prima della scadenza una fattura entra fra quelle «in scadenza».
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">🤖 Lettura automatica delle fatture</div>
-        <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
-          Con questa attiva, nel modulo di una fattura d&rsquo;acquisto nuova compare
-          <strong>📄 Leggi da PDF o foto</strong>: scegli il file (o scatti la foto
-          col telefono) e i campi si compilano da soli.
-        </p>
-
-        <div class="form-group">
-          <label for="imp-lettura-url" class="form-label">Indirizzo del Worker</label>
-          <input type="url" id="imp-lettura-url" class="form-input"
-                 placeholder="https://ct-lettura-fatture.xxx.workers.dev"
-                 autocomplete="off" spellcheck="false" />
-          <div class="form-hint">
-            Lo trovi su Cloudflare, nella pagina del Worker. Vedi
-            <code>ISTRUZIONI_CLOUDFLARE.md</code>.
-          </div>
-        </div>
-
-        <div class="form-actions" style="margin-top:0">
-          <button type="button" class="btn-secondary" id="imp-lettura-prova-btn"
-                  onclick="provaConnessioneWorker()">🔌 Prova la connessione</button>
-        </div>
-
-        <div style="margin-top:12px">
-          <span class="form-label" style="margin:0 8px 0 0">Stato:</span>
-          <span id="imp-lettura-stato"></span>
-        </div>
-
-        <div class="sql-tip" style="margin-top:12px">
-          🔒 La chiave API sta su Cloudflare, non in questo programma.
-          Qui va solo l&rsquo;indirizzo del Worker, che non &egrave; un segreto.
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="form-actions" style="margin-top:0">
-          <button type="button" class="btn-primary" id="imp-save-btn" onclick="saveImpostazioni()">💾 Salva impostazioni</button>
-          <button type="button" class="btn-secondary" onclick="initImpostazioniPage()">↺ Ricarica</button>
-        </div>
-        <div class="sql-tip" style="margin-top:12px">
-          I campi con <span class="req">*</span> (ragione sociale, indirizzo, N. IVA, IBAN) servono per una fattura completa.
-          Puoi salvare anche parzialmente: ti avviso se manca qualcosa.
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">
-          🏦 IBAN per cantiere
-          <button type="button" class="link-btn" onclick="openIbanForm()">+ Nuovo IBAN</button>
-        </div>
-        <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
-          Salva qui gli IBAN dei singoli cantieri: li scegli al volo quando emetti una fattura, senza ribatterli.
-          Quando chiudi un conto, segnalo «chiuso»: sparisce dalle scelte ma resta nello storico.
-        </p>
-
-        <div id="iban-form" class="nuovo-conto-box" style="display:none">
-          <div class="form-row">
-            <div class="form-group" style="flex:2">
-              <label for="iban-form-etichetta" class="form-label">Etichetta (cantiere/cliente)</label>
-              <input type="text" id="iban-form-etichetta" class="form-input" maxlength="100" placeholder="es. Cantiere Rossi — Bellinzona" />
-            </div>
-            <div class="form-group" style="flex:2">
-              <label for="iban-form-iban" class="form-label">IBAN</label>
-              <input type="text" id="iban-form-iban" class="form-input" maxlength="40" placeholder="CH00 0000 0000 0000 0000 0" />
-            </div>
-          </div>
-          <div class="form-actions" style="margin-top:6px">
-            <button type="button" class="btn-primary" id="iban-form-save-btn" onclick="saveIbanEntry()">💾 Salva IBAN</button>
-            <button type="button" class="btn-secondary" onclick="closeIbanForm()">Annulla</button>
-          </div>
-        </div>
-
-        <div id="iban-banner" role="alert" aria-live="assertive" style="margin:10px 0"></div>
-        <div id="iban-list"></div>
-        <label class="form-label-check" style="margin-top:12px">
-          <input type="checkbox" id="iban-show-closed" onchange="renderIbanRubrica()" />
-          <span>Mostra anche gli IBAN chiusi</span>
-        </label>
-      </div>
-
-    </div>
-
-  </main>
-
-  <!-- ══ MODALE: Storia modifiche (audit) — Fase 4 ════════════════════════ -->
-  <!-- ══ FINESTRELLA: riepilogo scadenze all'apertura (Fase 4C) ═══════════ -->
-  <div id="scadenze-overlay" class="modal-overlay" style="display:none"
-       role="dialog" aria-modal="true" aria-labelledby="scad-modal-title">
-    <div class="modal-card" style="max-width:480px">
-      <div class="modal-header">
-        <div class="modal-title" id="scad-modal-title">⏰ Scadenze da controllare</div>
-        <button class="modal-close" onclick="chiudiModaleConConferma('scadenze-overlay')" aria-label="Chiudi">✕</button>
-      </div>
-      <div class="modal-body">
-        <div id="scad-modal-body"></div>
-      </div>
-      <div class="modal-footer">
-        <div class="modal-footer-note">Ricompare domani. Si spegne da «Impostazioni ditta».</div>
-        <div class="modal-footer-actions">
-          <button type="button" class="btn-primary" onclick="vaiAlleScadenze()">Vedi le scadenze</button>
-          <button type="button" class="btn-secondary" onclick="chiudiFinestraScadenze()">Chiudi</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ MODALE: Registra pagamento (Fase 8B) ═══════════════════════════ -->
-  <!-- Nessun onclick sullo sfondo: qui si scrivono dati, un clic fuori non
-       deve farli sparire. Si chiude con la X, con Annulla o con Esc. -->
-  <div id="pagamento-overlay" class="modal-overlay" style="display:none"
-       role="dialog" aria-modal="true" aria-labelledby="pag-title">
-    <div class="modal-card" style="max-width:480px">
-      <div class="modal-header">
-        <div class="modal-title" id="pag-title">💳 Registra pagamento</div>
-        <button class="modal-close" onclick="chiudiModaleConConferma('pagamento-overlay')" aria-label="Chiudi">✕</button>
-      </div>
-      <div class="modal-body">
-        <div id="pag-riepilogo" class="pag-sommario"></div>
-        <div id="pag-banner"></div>
-
-        <div class="form-row" style="margin-top:12px">
-          <div class="form-group" style="flex:1">
-            <label for="pag-data" class="form-label">Data del pagamento</label>
-            <input type="date" id="pag-data" class="form-input" />
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="pag-importo" class="form-label">Importo <span class="dim">(CHF)</span></label>
-            <input type="number" id="pag-importo" class="form-input" step="0.01" min="0.01"
-                   oninput="controllaImportoPagamento()" />
-            <div class="form-hint">Proposto: il residuo. Correggilo se stai pagando meno.</div>
-          </div>
-        </div>
-
-        <div id="pag-avviso"></div>
-
-        <div class="form-row">
-          <div class="form-group" style="flex:1">
-            <label for="pag-metodo" class="form-label">Metodo</label>
-            <select id="pag-metodo" class="form-input">
-              <option value="">— non indicato —</option>
-              <option value="Bonifico">Bonifico</option>
-              <option value="Contanti">Contanti</option>
-              <option value="TWINT">TWINT</option>
-              <option value="Carta / Bancomat">Carta / Bancomat</option>
-              <option value="Addebito diretto (LSV)">Addebito diretto (LSV)</option>
-              <option value="Altro">Altro</option>
-            </select>
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="pag-riferimento" class="form-label">Riferimento <span class="dim">(facoltativo)</span></label>
-            <input type="text" id="pag-riferimento" class="form-input" maxlength="120"
-                   placeholder="ricevuta, riga dell&rsquo;estratto conto…" />
-          </div>
-        </div>
-
-        <div class="form-group" id="pag-rata-group" style="display:none">
-          <label for="pag-rata" class="form-label">Salda la rata</label>
-          <select id="pag-rata" class="form-input" onchange="onRataScelta()"></select>
-          <div class="form-hint">
-            Scegliendo una rata, l&rsquo;importo si propone da quella. La data resta quella del
-            versamento vero: la rata dice quando era prevista, il pagamento quando è avvenuto.
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <div class="modal-footer-note">Lo stato del documento si aggiorna da solo.</div>
-        <div class="modal-footer-actions">
-          <button type="button" class="btn-secondary" onclick="chiudiModaleConConferma('pagamento-overlay')">Annulla</button>
-          <button type="button" class="btn-primary" id="pag-salva-btn" onclick="salvaPagamento()">💾 Registra</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ MODALE: Aggiungi allegato (Fase 9A) ═════════════════ -->
-  <div id="allegato-overlay" class="modal-overlay" style="display:none"
-       role="dialog" aria-modal="true" aria-labelledby="alleg-title">
-    <div class="modal-card" style="max-width:480px">
-      <div class="modal-header">
-        <div class="modal-title" id="alleg-title">📎 Aggiungi allegato</div>
-        <button class="modal-close" onclick="chiudiModaleConConferma('allegato-overlay')" aria-label="Chiudi">✕</button>
-      </div>
-      <div class="modal-body">
-        <div id="alleg-riepilogo" class="cls-summary"></div>
-        <div id="alleg-banner"></div>
-
-        <div class="form-group" style="margin-top:12px">
-          <label for="alleg-tipo" class="form-label">Tipo di documento</label>
-          <select id="alleg-tipo" class="form-input">
-            <option value="fattura">📄 Fattura</option>
-            <option value="bolla">📋 Bolla</option>
-            <option value="ricevuta">🧾 Ricevuta</option>
-            <option value="altro">📎 Altro</option>
-          </select>
-          <div class="form-hint">Si pu&ograve; cambiare anche dopo, dall'elenco degli allegati.</div>
-        </div>
-
-        <div class="form-group">
-          <label for="alleg-file" class="form-label">File</label>
-          <input type="file" id="alleg-file" class="form-input-file"
-                 accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
-          <div class="form-hint">Massimo 10 MB. Caricato nel bucket <code>conta-allegati</code>.</div>
-        </div>
-
-        <div class="form-actions">
-          <button type="button" class="btn-secondary" onclick="chiudiModaleConConferma('allegato-overlay')">Annulla</button>
-          <button type="button" class="btn-primary" id="alleg-salva-btn" onclick="salvaAllegato()">💾 Allega</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ MODALE: Piano rateale (Fase 8C) ════════════════════════════════ -->
-  <!-- Nessun onclick sullo sfondo: e' la finestra dove si perdeva il lavoro. -->
-  <div id="rate-overlay" class="modal-overlay" style="display:none"
-       role="dialog" aria-modal="true" aria-labelledby="rate-title">
-    <div class="modal-card" style="max-width:560px">
-      <div class="modal-header">
-        <div class="modal-title" id="rate-title">📅 Piano rateale</div>
-        <button class="modal-close" onclick="chiudiModaleConConferma('rate-overlay')" aria-label="Chiudi">✕</button>
-      </div>
-      <div class="modal-body">
-        <div id="rate-riepilogo" class="pag-sommario"></div>
-        <div id="rate-banner"></div>
-
-        <div class="form-row" style="margin-top:12px">
-          <div class="form-group" style="flex:1">
-            <label for="rate-numero" class="form-label">Numero di rate</label>
-            <input type="number" id="rate-numero" class="form-input" min="1" max="60" step="1"
-                   value="4" oninput="generaAnteprimaRate()" />
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="rate-prima" class="form-label">Prima scadenza</label>
-            <input type="date" id="rate-prima" class="form-input" onchange="generaAnteprimaRate()" />
-          </div>
-          <div class="form-group" style="flex:1">
-            <label for="rate-ogni" class="form-label">Ogni</label>
-            <select id="rate-ogni" class="form-input" onchange="generaAnteprimaRate()">
-              <option value="settimana">settimana</option>
-              <option value="mese" selected>mese</option>
-              <option value="bimestre">bimestre (2 mesi)</option>
-              <option value="trimestre">trimestre (3 mesi)</option>
-              <option value="semestre">semestre (6 mesi)</option>
-              <option value="anno">anno</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-hint" style="margin-bottom:8px">
-          Ogni riga è modificabile a mano prima di salvare. La somma deve dare
-          esattamente l&rsquo;importo del documento.
-        </div>
-        <div id="rate-anteprima"></div>
-      </div>
-      <div class="modal-footer">
-        <div class="modal-footer-note">Le rate sono previsioni: non cambiano lo stato del documento.</div>
-        <div class="modal-footer-actions">
-          <button type="button" class="btn-secondary" onclick="chiudiModaleConConferma('rate-overlay')">Annulla</button>
-          <button type="button" class="btn-primary" id="rate-salva-btn" onclick="salvaPianoRateale()">💾 Salva il piano</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="storia-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="storia-title">
-    <div class="modal-card">
-      <div class="modal-header">
-        <div class="modal-title" id="storia-title">🕐 Storia modifiche</div>
-        <button class="modal-close" onclick="closeStoria()" aria-label="Chiudi">✕</button>
-      </div>
-      <div class="modal-body">
-        <div id="storia-summary" class="cls-summary"></div>
-        <div id="storia-body"></div>
-      </div>
-      <div class="modal-footer">
-        <div class="modal-footer-note">Registro automatico delle modifiche alla classificazione (chi, cosa, quando).</div>
-        <div class="modal-footer-actions">
-          <button type="button" class="btn-secondary" onclick="closeStoria()">Chiudi</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ MODALE: Classificazione (conto + IVA) — Fase 3 ═══════════════════ -->
-  <div id="classify-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="cls-title">
-    <div class="modal-card">
-
-      <div class="modal-header">
-        <div class="modal-title" id="cls-title">🏷 Classifica movimento</div>
-        <button class="modal-close" onclick="closeClassifyPanel()" aria-label="Chiudi">✕</button>
-      </div>
-
-      <div class="modal-body">
-
-        <div id="cls-banner" role="alert" aria-live="assertive"></div>
-
-        <!-- Riepilogo movimento/i -->
-        <div id="cls-summary" class="cls-summary"></div>
-
-        <!-- Proposta (banner suggerimento) -->
-        <div id="cls-suggest" class="cls-suggest" style="display:none"></div>
-
-        <!-- CONTO -->
-        <div class="form-group">
-          <label for="cls-conto" class="form-label">
-            Conto <span class="req" aria-hidden="true">*</span>
-            <button type="button" class="link-btn" onclick="toggleNuovoConto()" id="cls-nuovo-conto-toggle">+ Nuovo conto</button>
-          </label>
-          <input type="text" id="cls-conto-search" class="form-input" placeholder="🔍 Cerca conto (codice o descrizione)…" oninput="filterConti()" autocomplete="off" />
-          <select id="cls-conto" class="form-input" style="margin-top:8px" onchange="recalcIvaDisplay(); aggiornaGruppoDaConto()" size="6"></select>
-        </div>
-
-        <!-- Mini-form nuovo conto -->
-        <div id="cls-nuovo-conto" class="nuovo-conto-box" style="display:none">
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label for="nc-codice" class="form-label">Codice</label>
-              <input type="text" id="nc-codice" class="form-input" maxlength="10" placeholder="es. 6570" />
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="nc-tipo" class="form-label">Tipo</label>
-              <select id="nc-tipo" class="form-input">
-                <option value="costo">Costo</option>
-                <option value="ricavo">Ricavo</option>
-                <option value="attivo">Attivo</option>
-                <option value="passivo">Passivo</option>
-                <option value="patrimonio">Patrimonio</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-group">
-            <label for="nc-descrizione" class="form-label">Descrizione</label>
-            <input type="text" id="nc-descrizione" class="form-input" maxlength="200" placeholder="es. Spese veicoli aziendali" />
-          </div>
-          <div class="form-actions" style="margin-top:6px">
-            <button type="button" class="btn-primary" onclick="createCustomConto()" id="nc-save-btn">Crea conto</button>
-            <button type="button" class="btn-secondary" onclick="toggleNuovoConto()">Annulla</button>
-          </div>
-        </div>
-
-        <!-- CODICE IVA -->
-        <div class="form-group" id="cls-gruppo-group">
-          <label for="cls-gruppo" class="form-label">Gruppo di costo</label>
-          <select id="cls-gruppo" class="form-input" onchange="onClsGruppoChange()"></select>
-          <div id="cls-gruppo-nota"></div>
-          <div id="cls-gruppo-avviso"></div>
-        </div>
-
-        <div class="form-group">
-          <label for="cls-iva" class="form-label">Codice IVA <span class="req" aria-hidden="true">*</span></label>
-          <select id="cls-iva" class="form-input" onchange="recalcIvaDisplay()"></select>
-        </div>
-
-        <!-- TOGGLE IVA inclusa / esclusa -->
-        <div class="form-group">
-          <label class="form-label">Importo</label>
-          <div class="toggle-group" role="group" aria-label="IVA inclusa o esclusa">
-            <button type="button" class="toggle-opt active" id="cls-incl-on"  onclick="setIvaInclusa(true)">IVA inclusa</button>
-            <button type="button" class="toggle-opt"        id="cls-incl-off" onclick="setIvaInclusa(false)">IVA esclusa</button>
-          </div>
-        </div>
-
-        <!-- CALCOLO -->
-        <div id="cls-calc" class="cls-calc"></div>
-
-        <!-- CANTIERE -->
-        <div class="form-group" id="cls-cantiere-group">
-          <label for="cls-cantiere" class="form-label">Cantiere <span class="dim">(facoltativo)</span></label>
-          <select id="cls-cantiere" class="form-input"></select>
-          <!-- FASE 20 — se l'elenco è vuoto qui compare il perché: un menu
-               vuoto e muto sembra un guasto del programma. -->
-          <div id="cls-cantiere-vuoto"></div>
-          <div class="form-hint">Vuoto = «Ditta (generale)». Per le spese da App Cantieri è precompilato.</div>
-        </div>
-
-        <!-- CANTIERE in blocco -->
-        <div class="form-group" id="cls-cantiere-bulk-group" style="display:none">
-          <label class="form-label-check">
-            <input type="checkbox" id="cls-cantiere-comune-chk" onchange="toggleCantiereComune(this.checked)" />
-            <span>Applica un cantiere comune a tutti (altrimenti ognuno mantiene il suo)</span>
-          </label>
-          <select id="cls-cantiere-comune" class="form-input" style="margin-top:8px; display:none"></select>
-          <div id="cls-cantiere-bulk-vuoto"></div>
-        </div>
-
-        <!-- NOTE -->
-        <div class="form-group">
-          <label for="cls-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
-          <textarea id="cls-note" class="form-input" rows="2" maxlength="500" placeholder="Annotazione interna…"></textarea>
-        </div>
-
-      </div>
-
-      <div class="modal-footer">
-        <div class="modal-footer-note">Proposta modificabile — la validazione finale spetta al commercialista.</div>
-        <div class="modal-footer-actions">
-          <button type="button" class="btn-secondary" onclick="closeClassifyPanel()">Annulla</button>
-          <button type="button" class="btn-primary" onclick="saveClassificazione()" id="cls-save-btn">✅ Conferma classificazione</button>
-        </div>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- ══ MODALE: Conferma emissione fattura (Fase 10) ═════════════════════ -->
-  <div id="emit-confirm-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="emit-confirm-title" >
-    <div class="modal-card" style="max-width:440px">
-      <div class="modal-header">
-        <div class="modal-title" id="emit-confirm-title">📨 Confermi l'emissione?</div>
-        <button class="modal-close" onclick="closeEmitConfirm()" aria-label="Chiudi">✕</button>
-      </div>
-      <div class="modal-body">
-        <div id="emit-confirm-summary" class="emit-summary"></div>
-        <div class="fase-banner warn" style="margin-top:14px">
-          <span class="icon" aria-hidden="true">⚠️</span>
-          <div class="msg">Dopo l'emissione la fattura non sarà più modificabile. Confermi?</div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <div class="modal-footer-actions">
-          <button type="button" class="btn-secondary" onclick="closeEmitConfirm()">Annulla</button>
-          <button type="button" class="btn-primary" id="emit-confirm-btn" onclick="confirmEmitNow()">✅ Conferma ed emetti</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-</div><!-- fine #app -->
-
-<!-- Supabase JS v2 — UMD da CDN -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=40"></script>
-
-</body>
-</html>
+/* TimberMaster — Pre-Contabilità | Stile base */
+
+:root {
+  --bg:           #f4f6f8;
+  --surface:      #ffffff;
+  --sidebar-bg:   #1a2b1c;
+  --sidebar-text: #b8c9ba;
+  --sidebar-hi:   #ffffff;
+  --sidebar-act:  #2d6a4f;
+  --primary:      #2d6a4f;
+  --primary-lt:   #e8f5ee;
+  --gold:         #c8960c;
+  --gold-lt:      #fef9ec;
+  --text:         #111827;
+  --text2:        #6b7280;
+  --text3:        #9ca3af;
+  --border:       #e5e7eb;
+  --ok:           #059669;
+  --ok-bg:        #d1fae5;
+  --warn:         #d97706;
+  --warn-bg:      #fef3c7;
+  --err:          #dc2626;
+  --err-bg:       #fee2e2;
+  --info:         #2563eb;
+  --info-bg:      #dbeafe;
+  --radius:       8px;
+  --shadow:       0 1px 3px rgba(0,0,0,.10), 0 1px 2px rgba(0,0,0,.06);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.5;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+#app {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+#sidebar {
+  width: 220px;
+  min-height: 100vh;
+  background: var(--sidebar-bg);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.sidebar-logo {
+  padding: 20px 16px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: .02em;
+}
+
+.sidebar-logo span {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--sidebar-text);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  margin-top: 3px;
+}
+
+.sidebar-section {
+  padding: 14px 16px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.3);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 16px;
+  color: var(--sidebar-text);
+  text-decoration: none;
+  font-size: 13px;
+  border-radius: 0;
+  transition: background .15s, color .15s;
+  cursor: pointer;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+
+.nav-item:hover:not(.disabled) {
+  background: rgba(255,255,255,.07);
+  color: var(--sidebar-hi);
+}
+
+.nav-item.active {
+  background: var(--sidebar-act);
+  color: #fff;
+  font-weight: 600;
+}
+
+.nav-item.disabled {
+  opacity: .35;
+  cursor: not-allowed;
+}
+
+.nav-badge {
+  margin-left: auto;
+  background: var(--gold);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 12px 16px;
+  font-size: 11px;
+  color: rgba(255,255,255,.25);
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+
+/* ── Contenuto principale ─────────────────────────────────────────────── */
+#content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 28px;
+}
+
+.page { display: none; }
+.page.active { display: block; }
+
+/* ── Intestazione pagina ────────────────────────────────────────────────── */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.page-subtitle {
+  font-size: 13px;
+  color: var(--text2);
+  margin-top: 2px;
+}
+
+/* ── Card ────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Grid ────────────────────────────────────────────────────────────────── */
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+
+/* ── Badge stato ──────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge-ok   { background: var(--ok-bg);   color: var(--ok);   }
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
+.badge-err  { background: var(--err-bg);  color: var(--err);  }
+.badge-info { background: var(--info-bg); color: var(--info); }
+.badge-gold { background: var(--gold-lt); color: var(--gold); }
+
+/* ── Check list ──────────────────────────────────────────────────────────── */
+.check-list { display: flex; flex-direction: column; gap: 8px; }
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.check-row.ok   { background: var(--ok-bg); }
+.check-row.err  { background: var(--err-bg); }
+.check-row.warn { background: var(--warn-bg); }
+
+.check-icon { font-size: 15px; flex-shrink: 0; }
+.check-name { font-weight: 600; flex: 1; }
+.check-detail { font-size: 12px; color: var(--text2); margin-left: auto; }
+.check-row.ok  .check-detail { color: var(--ok); }
+.check-row.err .check-detail { color: var(--err); }
+
+/* ── Tabella ─────────────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+thead th {
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--bg);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--bg); }
+
+tbody td {
+  padding: 9px 12px;
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.cod  { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: var(--primary); font-weight: 600; }
+.dim  { color: var(--text2); font-size: 12px; }
+.num  { text-align: right; font-family: monospace; }
+
+/* ── Classe separatori nella tabella piano dei conti ─────────────────────── */
+.class-header td {
+  background: var(--primary-lt);
+  color: var(--primary);
+  font-weight: 700;
+  font-size: 12px;
+  padding: 6px 12px;
+  letter-spacing: .03em;
+}
+
+/* ── Stato generale Fase ─────────────────────────────────────────────────── */
+.fase-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  border-radius: var(--radius);
+  margin-bottom: 24px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fase-banner.ok   { background: var(--ok-bg);   color: var(--ok);   border: 1px solid #a7f3d0; }
+.fase-banner.warn { background: var(--warn-bg);  color: var(--warn); border: 1px solid #fcd34d; }
+.fase-banner.err  { background: var(--err-bg);   color: var(--err);  border: 1px solid #fca5a5; }
+
+.fase-banner .icon { font-size: 22px; }
+.fase-banner .msg  { flex: 1; }
+.fase-banner .msg small { display: block; font-size: 12px; font-weight: 400; opacity: .8; margin-top: 2px; }
+
+/* ── Stat card ───────────────────────────────────────────────────────────── */
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: var(--shadow);
+}
+
+.stat-label  { font-size: 11px; color: var(--text2); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+.stat-value  { font-size: 28px; font-weight: 700; color: var(--text); margin-top: 4px; line-height: 1; }
+.stat-detail { font-size: 12px; color: var(--text3); margin-top: 4px; }
+
+/* ── Loading spinner ──────────────────────────────────────────────────────── */
+.spinner {
+  display: inline-block;
+  width: 18px; height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text2);
+  padding: 14px 0;
+  font-size: 13px;
+}
+
+/* ── Istruzione tecnica ───────────────────────────────────────────────────── */
+.sql-tip {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 12px;
+}
+
+.sql-tip code {
+  background: #e5e7eb;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--primary);
+}
+
+/* ── Sidebar utente (Fase 2) ──────────────────────────────────────────────── */
+/* Voce Impostazioni ditta: staccata, in fondo alla sidebar (Fase 7) */
+.nav-settings {
+  margin-top: auto;
+  border-top: 1px solid rgba(255,255,255,.08);
+}
+
+.sidebar-user {
+  padding: 10px 12px 4px;
+  border-top: 1px solid rgba(255,255,255,.08);
+}
+
+.sidebar-user-email {
+  display: block;
+  font-size: 11px;
+  color: rgba(255,255,255,.45);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 6px;
+}
+
+.logout-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 5px;
+  color: rgba(255,255,255,.55);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.logout-btn:hover { background: rgba(255,255,255,.12); color: #fff; }
+
+/* ── Login page ───────────────────────────────────────────────────────────── */
+.login-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 40px 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+}
+
+.login-logo   { font-size: 36px; text-align: center; margin-bottom: 8px; }
+.login-title  { font-size: 18px; font-weight: 700; text-align: center; color: var(--text); margin-bottom: 4px; }
+.login-subtitle { font-size: 13px; color: var(--text2); text-align: center; margin-bottom: 24px; }
+
+/* ── Form (Fase 2 — Canale B) ─────────────────────────────────────────────── */
+.form-group { margin-bottom: 16px; }
+
+.form-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+
+.form-label-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.form-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+  font-family: inherit;
+}
+.form-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(45,106,79,.12); }
+
+.form-input-file {
+  width: 100%;
+  font-size: 13px;
+  color: var(--text2);
+  padding: 6px 0;
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 5px;
+  line-height: 1.5;
+}
+.form-hint code { background: var(--bg); border-radius: 3px; padding: 1px 5px; font-size: 11px; }
+.form-hint a    { color: var(--primary); }
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.req { color: var(--err); }
+
+/* ── Bottoni ──────────────────────────────────────────────────────────────── */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: opacity .15s;
+}
+.btn-primary:hover   { opacity: .9; }
+.btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+
+/* ── FASE 21 — LA BUSTA ──────────────────────────────────────────────────
+   Tutto in millimetri: quello che si vede in anteprima e' la stessa identica
+   busta della stampa, solo rimpicciolita con una scala. Le zone rispettano le
+   specifiche della Posta Svizzera (vedi il commento in app.js). */
+.busta {
+  position: relative;
+  background: #fff;
+  color: #111;
+  overflow: hidden;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.busta-contenuto { position: absolute; inset: 0; }
+
+/* Mittente in alto a sinistra, con il logo. */
+.busta-mitt {
+  position: absolute; left: 8mm; top: 7mm;
+  display: flex; align-items: flex-start; gap: 3mm;
+  max-width: 85mm;
+}
+.busta-logo { height: 11mm; width: auto; }
+.busta-mitt-testo { font-size: 8pt; line-height: 1.3; white-space: pre-line; }
+
+/* Il destinatario: posato dentro la zona di lettura. */
+.busta-dest {
+  position: absolute;
+  font-size: 12pt; line-height: 1.45;
+  white-space: pre-line;
+  overflow: hidden;
+}
+
+/* Il codice DigitalStamp, nella zona di affrancatura in alto a destra. */
+.busta-digital {
+  position: absolute; right: 0; top: 0;
+  height: 38mm;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1mm; text-align: center;
+}
+.busta-digital-et  { font-size: 7pt; letter-spacing: .06em; text-transform: uppercase; color: #444; }
+.busta-digital-cod { font-size: 13pt; font-weight: 700; font-family: monospace; letter-spacing: .06em; }
+
+/* I riquadri delle zone: si vedono in anteprima e sulla stampa di prova,
+   MAI sulla busta vera. */
+.bz { position: absolute; border: 0.4mm dashed #b45309; }
+.bz > span {
+  position: absolute; left: 1mm; top: 0.6mm;
+  font-size: 6pt; color: #b45309; letter-spacing: .02em;
+}
+.bz-franc   { right: 0; top: 0; }
+.bz-codif   { right: 0; bottom: 0; border-color: #dc2626; }
+.bz-codif > span { color: #dc2626; }
+.bz-lettura { right: 0; left: 0; border-style: dotted; border-color: #9ca3af; }
+.bz-lettura > span { color: #6b7280; }
+
+/* L'anteprima a schermo: la busta vera, rimpicciolita. */
+.busta-scala {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 10px;
+}
+.busta-scala .busta {
+  transform: scale(.62);
+  transform-origin: top left;
+  box-shadow: 0 2px 10px rgba(0,0,0,.18);
+  margin-bottom: -38%;
+}
+.busta-prova-nota { font-size: 9pt; color: #444; margin-bottom: 4mm; font-family: Arial, sans-serif; }
+
+/* Il foglio vero sta fuori vista finche' non si stampa. */
+#busta-foglio { display: none; }
+
+/* ── FASE 21 — Il foglio dei codici ─────────────────────────────────────── */
+.cod-foglio {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 26px;
+  max-width: 860px;
+  color: #222;
+}
+.cod-testata {
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 10px;
+  margin-bottom: 18px;
+}
+.cod-ditta  { font-weight: 700; font-size: 15px; color: var(--ink); }
+.cod-titolo { font-size: 22px; font-weight: 800; color: var(--accent); letter-spacing: .02em; }
+.cod-data   { font-size: 12px; color: #666; margin-top: 2px; }
+.cod-sezione {
+  font-size: 15px; font-weight: 700; color: var(--ink);
+  margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line);
+}
+.cod-sottotitolo { font-size: 13px; font-weight: 700; color: #444; margin: 14px 0 6px; }
+.cod-quanti { font-weight: 400; color: #777; }
+.cod-tabella { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.cod-tabella th {
+  text-align: left; background: var(--beige); color: var(--ink);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .03em;
+  padding: 6px 8px; border-bottom: 1px solid var(--accent);
+}
+.cod-tabella td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.cod-tabella td.cod-num, .cod-tabella th.cod-num {
+  width: 82px; white-space: nowrap; font-family: monospace; font-weight: 600;
+}
+.cod-esempi { font-size: 11.5px; color: #666; }
+
+/* FASE 21 — bottone di eliminazione. Rosso, ma non un blocco pieno: e' una
+   azione rara e definitiva, deve farsi riconoscere senza dominare la scheda. */
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--surface);
+  color: var(--err);
+  border: 1px solid var(--err);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  min-height: 38px;
+}
+.btn-danger:hover:not(:disabled) { background: var(--err); color: #fff; }
+.btn-danger:disabled { opacity: .55; cursor: default; }
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background .15s;
+}
+.btn-secondary:hover { background: var(--bg); }
+
+/* ── Movimenti «Da classificare» ──────────────────────────────────────────── */
+.mov-desc {
+  font-size: 13px;
+  color: var(--text);
+  max-width: 340px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.origin-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+.origin-label { font-weight: 500; }
+
+/* ── Recenti inseriti (Canale B) ──────────────────────────────────────────── */
+.recent-list { display: flex; flex-direction: column; gap: 1px; }
+
+.recent-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.recent-item:last-child { border-bottom: none; }
+
+.recent-meta   { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.recent-date   { font-size: 11px; }
+.recent-desc   { font-size: 13px; color: var(--text); font-weight: 500; margin-bottom: 1px; }
+.recent-amount { font-size: 13px; color: var(--primary); font-weight: 600; margin-top: 4px; font-family: monospace; }
+
+/* ── Modale classificazione (Fase 3) ─────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, .55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 20px;
+  z-index: 1000;
+  overflow-y: auto;
+}
+
+.modal-card {
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0,0,0,.30);
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 80px);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-title { font-size: 16px; font-weight: 700; color: var(--text); }
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: var(--text2);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.modal-close:hover { background: var(--bg); color: var(--text); }
+
+.modal-body {
+  padding: 18px 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 0 0 12px 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.modal-footer-note { font-size: 11px; color: var(--text2); flex: 1; min-width: 160px; }
+.modal-footer-actions { display: flex; gap: 10px; }
+
+/* Riepilogo movimento dentro la modale */
+.cls-summary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+.cls-summary .cls-sum-desc { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.cls-summary .cls-sum-meta { font-size: 12px; color: var(--text2); display: flex; gap: 12px; flex-wrap: wrap; }
+.cls-summary .cls-sum-amount { font-family: monospace; font-weight: 700; color: var(--primary); }
+.cls-summary .cls-sum-list { margin-top: 8px; max-height: 130px; overflow-y: auto; font-size: 12px; }
+.cls-summary .cls-sum-list-item { padding: 3px 0; border-top: 1px dashed var(--border); display: flex; justify-content: space-between; gap: 10px; }
+
+/* Banner suggerimento */
+.cls-suggest {
+  background: var(--info-bg);
+  border: 1px solid #bfdbfe;
+  color: var(--info);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+.cls-suggest strong { font-weight: 700; }
+
+/* Calcolo IVA */
+.cls-calc {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.cls-calc .calc-box {
+  flex: 1;
+  min-width: 100px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: center;
+}
+.cls-calc .calc-label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text2); font-weight: 600; }
+.cls-calc .calc-value { font-size: 16px; font-weight: 700; font-family: monospace; color: var(--text); margin-top: 3px; }
+.cls-calc .calc-box.tot { background: var(--primary-lt); border-color: #a7d3bd; }
+.cls-calc .calc-box.tot .calc-value { color: var(--primary); }
+
+/* Toggle IVA inclusa/esclusa */
+.toggle-group { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.toggle-opt {
+  padding: 8px 18px;
+  background: var(--surface);
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text2);
+  cursor: pointer;
+  font-family: inherit;
+}
+.toggle-opt + .toggle-opt { border-left: 1px solid var(--border); }
+.toggle-opt.active { background: var(--primary); color: #fff; }
+
+/* Mini-form nuovo conto */
+.nuovo-conto-box {
+  background: var(--gold-lt);
+  border: 1px solid #f0dca0;
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 8px;
+  font-family: inherit;
+}
+.link-btn:hover { text-decoration: underline; }
+
+/* Etichetta conto proprio nelle option */
+.mio-tag {
+  display: inline-block;
+  background: var(--gold-lt);
+  color: var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  margin-left: 6px;
+}
+
+/* ── Barra modalità modifica (Canale B) ──────────────────────────────────── */
+.edit-mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--info-bg);
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--info);
+  font-weight: 600;
+}
+.edit-mode-msg { flex: 1; }
+.edit-mode-msg small { display: block; font-size: 11px; font-weight: 400; opacity: .85; }
+.edit-mode-exit {
+  background: var(--surface);
+  border: 1px solid #bfdbfe;
+  color: var(--info);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.edit-mode-exit:hover { background: #eff6ff; }
+
+/* ── Barra azioni in blocco + checkbox riga ──────────────────────────────── */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.bulk-bar label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.bulk-bar .bulk-spacer { flex: 1; }
+
+.row-actions { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+
+.icon-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 8px;
+  font-family: inherit;
+  color: var(--text2);
+  line-height: 1;
+}
+.icon-btn:hover { background: var(--bg); color: var(--text); }
+.icon-btn.classify { color: var(--primary); border-color: #a7d3bd; font-weight: 600; }
+.icon-btn.classify:hover { background: var(--primary-lt); }
+.icon-btn.danger:hover { background: var(--err-bg); color: var(--err); border-color: #fca5a5; }
+
+.row-check { width: 16px; height: 16px; cursor: pointer; }
+
+tbody tr.row-clickable { cursor: pointer; }
+
+/* ── Storia modifiche (audit — Fase 4) ───────────────────────────────────── */
+.storia-list { display: flex; flex-direction: column; gap: 10px; }
+
+.storia-item {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--surface);
+}
+.storia-field {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text2);
+  margin-bottom: 4px;
+}
+.storia-change { font-size: 14px; color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.storia-prima  { color: var(--text2); text-decoration: line-through; opacity: .8; }
+.storia-dopo   { color: var(--primary); font-weight: 600; }
+.storia-arrow  { color: var(--text3); font-weight: 700; }
+.storia-meta   { font-size: 11px; color: var(--text3); margin-top: 6px; }
+
+/* ── Export & consegna (Fase 5) ──────────────────────────────────────────── */
+.exp-preview {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 6px 0 14px;
+  font-size: 13px;
+  color: var(--text2);
+}
+.exp-preview strong { color: var(--text); font-size: 22px; font-weight: 700; }
+.exp-preview .exp-amount { font-family: monospace; color: var(--primary); font-weight: 700; }
+
+.lock-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+/* ── Fatture (Fase 6) ────────────────────────────────────────────────────── */
+.cell-input {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+}
+.cell-input:focus { border-color: var(--primary); outline: none; }
+.cell-input.num { text-align: right; font-family: monospace; }
+
+/* FASE 20 — la descrizione della riga fattura: campo multiriga che cresce con
+   il testo. overflow nascosto perche' l'altezza la decide autoGrowRiga(): con
+   la barra di scorrimento il campo resterebbe alto una riga e il testo dentro.
+   resize verticale lasciato: se qualcuno vuole allargarlo a mano, puo'. */
+textarea.cell-desc {
+  display: block;
+  min-height: 34px;
+  overflow: hidden;
+  resize: vertical;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+/* La descrizione e' la colonna larga: le altre hanno una larghezza fissa in
+   index.html, questa si prende quello che resta. */
+#fatture-righe td:first-child { min-width: 180px; }
+
+/* FASE 21 — la riga-titolo nell'editor: si deve riconoscere a colpo d'occhio
+   che non e' una voce con l'importo dimenticato, ma un'altra cosa. */
+#fatture-righe tr.riga-titolo { background: var(--bg); }
+#fatture-righe textarea.cell-titolo { font-weight: 700; }
+.cell-input.cell-unita { text-align: center; }
+
+.fattura-totali {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.fattura-totali > div { display: flex; gap: 14px; align-items: baseline; min-width: 240px; justify-content: space-between; }
+.ft-label { font-size: 12px; color: var(--text2); }
+.ft-val   { font-family: monospace; font-weight: 600; font-size: 14px; }
+.ft-grand .ft-label { font-weight: 700; color: var(--text); font-size: 14px; }
+.ft-grand .ft-val   { font-size: 18px; font-weight: 700; color: var(--primary); }
+
+/* ── Documento fattura — stile carta intestata (Fase 9) ─────────────────────
+   Colori documento fissi (aspetto "carta", indipendente dal tema):
+   accento marrone #8B2500 · testo scuro #4A1B0C · header tabella beige #F1EFE8 */
+.inv {
+  --ink:    #4A1B0C;
+  --accent: #8B2500;
+  --beige:  #F1EFE8;
+  --line:   #E4DACE;
+  max-width: 800px;
+  margin: 0 auto;
+  background: #fff;
+  color: #333;
+  font-family: Arial, Helvetica, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Intestazione: logo+azienda a sinistra, titolo+meta a destra */
+.inv-head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 24px;
+  padding-bottom: 14px; margin-bottom: 20px;
+  border-bottom: 3px solid var(--accent);
+}
+.inv-brand { display: flex; gap: 16px; align-items: flex-start; }
+.inv-logo { height: 76px; width: auto; max-width: 210px; object-fit: contain; display: block; }
+.inv-azienda-nome { font-size: 18px; font-weight: 700; color: var(--ink); }
+.inv-forma { font-weight: 400; font-size: 13px; color: var(--accent); }
+.inv-azienda-addr { font-size: 12px; color: #555; margin-top: 5px; white-space: pre-line; }
+
+.inv-meta { text-align: right; min-width: 190px; }
+.inv-title { font-size: 26px; font-weight: 800; color: var(--accent); letter-spacing: .04em; margin-bottom: 8px; }
+.inv-meta-tbl { margin-left: auto; border-collapse: collapse; font-size: 12px; }
+.inv-meta-tbl td { padding: 2px 0 2px 14px; text-align: right; white-space: nowrap; }
+.inv-meta-tbl td:first-child { color: #888; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; }
+.inv-meta-tbl td:last-child { color: var(--ink); font-weight: 600; }
+.inv-meta-tbl .inv-num-cell { font-size: 15px; font-weight: 700; color: var(--accent); }
+
+/* Dati cliente, allineati a destra sotto l'intestazione */
+.inv-cliente { margin: 0 0 22px auto; width: 62%; max-width: 330px; }
+.inv-cliente-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; margin-bottom: 4px; }
+.inv-cliente-nome { font-weight: 700; color: var(--ink); font-size: 14px; }
+.inv-cliente div { color: #444; }
+.inv-rif { font-size: 12px; color: #666; margin-top: 3px; }
+
+/* Tabella righe: header beige, testo marrone scuro */
+.inv-table { width: 100%; border-collapse: collapse; margin: 4px 0 14px; }
+.inv-table thead th {
+  background: var(--beige); color: var(--ink);
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .03em;
+  padding: 8px 10px; border-bottom: 2px solid var(--accent);
+}
+.inv-table th.num, .inv-table td.num { text-align: right; }
+.inv-table tbody td { padding: 8px 10px; border-bottom: 1px solid var(--line); color: #333; vertical-align: top; }
+/* FASE 20 — gli a capo scritti nella descrizione si vedono anche sul
+   documento. Si fa col CSS e non sostituendo i ritorni a capo con <br>: cosi'
+   esc() resta l'unica difesa contro l'HTML, intatta. Negli elenchi non serve
+   niente: l'HTML gli a capo li fa gia' collassare in uno spazio da solo. */
+.inv-table td.inv-desc { white-space: pre-line; }
+/* FASE 21 — stessa cosa per l'indirizzo del cliente: la rubrica lo compone su
+   due righe (via, poi NPA e localita') e su una riga sola non e' un indirizzo
+   postale. Anche qui col CSS, non con dei <br> costruiti a mano. */
+.inv-cliente .inv-cli-addr { white-space: pre-line; }
+
+/* FASE 21 — la colonna «Pos» e la colonna «Un.» sul documento stampato.
+   Strette e fisse: la descrizione resta la colonna che si allarga. */
+.inv-table th.inv-pos, .inv-table td.inv-pos {
+  width: 42px; white-space: nowrap; color: #555; font-variant-numeric: tabular-nums;
+}
+.inv-table th.inv-un, .inv-table td.inv-un { width: 46px; text-align: center; }
+/* La riga-titolo: in grassetto, senza importi, staccata da quella sopra. */
+.inv-table tbody tr.inv-riga-titolo td {
+  font-weight: 700; color: var(--ink); padding-top: 12px; border-bottom: none;
+}
+.inv-table tbody tr:last-child td { border-bottom: 1px solid var(--accent); }
+
+/* Riepilogo IVA per aliquota */
+.inv-ivasum { width: 330px; margin-left: auto; }
+.inv-ivasum table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.inv-ivasum th, .inv-ivasum td { padding: 4px 10px; text-align: right; border-bottom: 1px solid var(--line); }
+.inv-ivasum th:first-child, .inv-ivasum td:first-child { text-align: left; }
+.inv-ivasum th { color: var(--ink); text-transform: uppercase; font-size: 10px; background: var(--beige); }
+
+/* Totali a destra */
+.inv-tot { margin-left: auto; width: 330px; margin-top: 10px; }
+.inv-tot div { display: flex; justify-content: space-between; padding: 4px 10px; font-size: 13px; }
+.inv-tot .inv-grand { border-top: 2px solid var(--accent); margin-top: 4px; padding-top: 8px; font-weight: 700; font-size: 16px; color: var(--accent); }
+
+/* Riquadro pagamento */
+.inv-pay {
+  margin-top: 22px; padding: 12px 14px; max-width: 400px;
+  background: var(--beige); border-left: 3px solid var(--accent);
+  font-size: 12px;
+}
+.inv-pay-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); font-weight: 700; }
+.inv-pay-row { display: flex; gap: 10px; justify-content: space-between; padding: 2px 0; color: #333; }
+.inv-scad { font-weight: 700; color: var(--ink); }
+.inv-qrnote { margin-top: 6px; font-size: 11px; color: #777; font-style: italic; }
+
+.inv-note { margin-top: 16px; font-size: 12px; color: #666; white-space: pre-line; }
+
+/* Piè di pagina centrato */
+.inv-footer {
+  margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--accent);
+  text-align: center; font-size: 10.5px; color: #777; line-height: 1.6;
+}
+.inv-footer strong { color: var(--ink); font-weight: 700; }
+
+/* Nota di credito — riga info nell'editor (storno totale/parziale) */
+.nc-ref {
+  background: var(--info-bg);
+  border: 1px solid #bfdbfe;
+  color: var(--info);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+.nc-ref strong { font-weight: 700; }
+.nc-ref.nc-ref-over { background: var(--warn-bg); border-color: #fcd34d; color: var(--warn); }
+.nc-ref-warn { margin-top: 6px; font-weight: 600; }
+
+/* Export: selettori rapidi di periodo + caselle sezioni */
+.periodo-modi { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.modo-btn {
+  padding: 9px 14px; min-height: 40px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text2); cursor: pointer; font-family: inherit;
+}
+.modo-btn:hover { background: var(--bg); }
+.modo-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+.sezioni-box {
+  display: grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap: 8px 20px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.sezioni-box .form-label-check { margin: 0; }
+
+.exp-preview .exp-riga { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 13px; }
+.exp-preview .exp-riga span:last-child { font-family: monospace; color: var(--text); font-weight: 600; }
+.exp-preview .exp-vuoto { color: var(--text3); }
+
+@media (max-width: 900px) {
+  .modo-btn { min-height: 44px; flex: 1 1 45%; }
+  .sezioni-box { grid-template-columns: 1fr; }
+  .sezioni-box .form-label-check { min-height: 44px; }
+}
+
+/* Allegati: box "allegato corrente" nei form + pulsanti apri/rimuovi */
+.allegato-box {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 10px; font-size: 13px;
+}
+.allegato-nome { font-weight: 600; color: var(--text); word-break: break-all; }
+.allegato-box .allegato-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Vista di sola lettura: coppie etichetta/valore */
+.ro-grid { display: grid; grid-template-columns: 190px 1fr; gap: 8px 16px; font-size: 14px; }
+.ro-lbl { color: var(--text2); }
+.ro-val { color: var(--text); font-weight: 600; word-break: break-word; }
+.ro-val.mono { font-family: monospace; }
+.ro-sep { grid-column: 1 / -1; border-top: 1px solid var(--border); margin: 6px 0; }
+.ro-section { grid-column: 1 / -1; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--primary); font-weight: 700; margin-top: 6px; }
+@media (max-width: 900px) {
+  .ro-grid { grid-template-columns: 1fr; gap: 2px 0; }
+  .ro-lbl { margin-top: 8px; font-size: 12px; }
+  .allegato-box .allegato-actions { margin-left: 0; width: 100%; }
+  .allegato-box .btn-secondary, .allegato-box .btn-primary { min-height: 44px; flex: 1; justify-content: center; }
+}
+
+/* IVA + pagamento fatture d'acquisto (Fase 10b) */
+.iva-summary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  padding: 9px 12px;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+  color: var(--text2);
+}
+.iva-summary strong { color: var(--text); font-family: monospace; }
+.iva-summary .iva-nota { display: block; margin-top: 4px; font-size: 11.5px; color: var(--text3); }
+
+.pagamento-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  background: var(--surface);
+}
+.pagamento-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+.pagamento-box.pay-dim { opacity: .6; background: var(--bg); }
+
+/* riga secondaria compatta dentro le celle della tabella */
+.cell-sub { display: block; font-size: 11px; color: var(--text2); margin-top: 2px; }
+
+/* Riepilogo conferma emissione (Fase 10) */
+.emit-summary { font-size: 14px; }
+.emit-summary .emit-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.emit-summary .emit-row:last-child { border-bottom: none; }
+.emit-summary .emit-lbl { color: var(--text2); }
+.emit-summary .emit-val { font-weight: 600; color: var(--text); text-align: right; }
+.emit-summary .emit-val.big { font-size: 16px; color: var(--primary); font-family: monospace; }
+
+/* Ricerca fatture */
+.search-wrap { position: relative; }
+.search-wrap .form-input { padding-right: 40px; }
+.search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 30px; min-width: 30px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text2); font-size: 13px; cursor: pointer; line-height: 1;
+}
+.search-clear:hover { background: var(--border); color: var(--text); }
+@media (max-width: 900px) {
+  .search-clear { width: 36px; height: 36px; min-width: 36px; }
+}
+
+/* Rubrica IBAN per cantiere (Fase 8) */
+.iban-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 8px; background: var(--surface); font-size: 13px;
+}
+.iban-row.chiuso { opacity: .6; }
+.iban-etichetta { font-weight: 600; color: var(--text); }
+.iban-mask { font-family: monospace; color: var(--text2); }
+.iban-row .iban-actions { margin-left: auto; display: flex; gap: 6px; }
+
+/* Stampa: solo il documento fattura */
+@media print {
+  body * { visibility: hidden; }
+  #fatture-print, #fatture-print * { visibility: visible; }
+  #fatture-print { position: absolute; left: 0; top: 0; width: 100%; padding: 0; }
+  /* FASE 21 — l'elenco codici si stampa con la stessa regola della fattura:
+     tutto nascosto tranne il foglio. Le due pagine non sono mai visibili
+     insieme, quindi non si pestano i piedi. */
+  /* FASE 21 — la busta: si stampa solo quando il corpo ha la classe messa da
+     stampaBusta(), altrimenti stampando una fattura uscirebbe anche lei. */
+  body.stampa-busta #busta-foglio { display: block; }
+  body.stampa-busta #busta-foglio, body.stampa-busta #busta-foglio * { visibility: visible; }
+  body.stampa-busta #busta-foglio {
+    position: absolute; left: 0; top: 0; padding: 0;
+  }
+  /* Sulla busta vera i riquadri delle zone non si stampano: sono guide. */
+  body.stampa-busta:not(.stampa-busta-prova) .bz { display: none; }
+  /* Sulla prova su A4 il contorno della busta si vede, per appoggiarci sopra. */
+  body.stampa-busta-prova .busta { outline: 0.4mm solid #111; }
+  body.stampa-busta #fatture-print, body.stampa-busta #codici-foglio { display: none; }
+
+  #codici-foglio, #codici-foglio * { visibility: visible; }
+  #codici-foglio { position: absolute; left: 0; top: 0; width: 100%; padding: 0; }
+  #codici-foglio .cod-foglio { border: none; padding: 0; max-width: 100%; }
+  /* Una riga non si spezza fra due pagine, e l'intestazione della tabella si
+     ripete in cima a ogni foglio: un elenco lungo resta leggibile. */
+  .cod-tabella tr { break-inside: avoid; page-break-inside: avoid; }
+  .cod-tabella thead { display: table-header-group; }
+  .cod-sezione, .cod-sottotitolo { break-after: avoid; page-break-after: avoid; }
+  .no-print { display: none !important; }
+  /* Stampa fedele dei colori del documento (beige header, accento marrone, logo) */
+  #fatture-print, #fatture-print * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #fatture-print .inv { max-width: 100%; }
+  #fatture-print .inv-logo { height: 68px; }
+
+  /* FASE 20 — Il piè di pagina va in fondo al FOGLIO, non sotto l'ultima riga
+     scritta: su una fattura corta restava a due terzi di pagina, con un terzo
+     di bianco sotto, e su carta intestata quella riga deve stare sempre nello
+     stesso punto.
+
+     Come funziona, in due mosse che vanno INSIEME:
+     1. il margine inferiore della pagina sale a 30mm: quella fascia e' spazio
+        riservato, il testo del documento non ci entra mai;
+     2. il piè di pagina è `position: fixed` e scende DENTRO quella fascia con
+        un bottom negativo. Fisso in stampa vuol dire ripetuto su ogni foglio.
+
+     Senza il punto 1 il piè di pagina finirebbe SOPRA le ultime righe di una
+     fattura lunga: e' l'errore da non fare. */
+  @page { size: A4; margin: 15mm 15mm 30mm 15mm; }
+
+  #fatture-print .inv-footer {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: -20mm;          /* dentro i 30mm riservati */
+    margin: 0;
+    padding-top: 3mm;
+    background: #fff;
+  }
+  /* Un dito di aria fra l'ultima riga e la fascia del piè di pagina. */
+  #fatture-print .inv { padding-bottom: 6mm; }
+}
+
+/* ── Mobile: barra + overlay (nascosti su desktop) ───────────────────────── */
+#mobile-topbar { display: none; }
+#sidebar-overlay { display: none; }
+
+/* Sicurezza desktop: sopra i 900px la sidebar resta fissa e l'overlay mai visibile */
+@media (min-width: 901px) {
+  #sidebar { transform: none !important; }
+  #sidebar-overlay { display: none !important; }
+}
+
+/* ── Responsive (<= 900px): menu a scomparsa off-canvas ──────────────────── */
+@media (max-width: 900px) {
+
+  /* Barra superiore con hamburger */
+  #mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 52px;
+    padding: 0 8px;
+    background: var(--sidebar-bg);
+    color: #fff;
+    z-index: 900;
+    box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  }
+  #hamburger-btn {
+    min-width: 44px; min-height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: none; color: #fff;
+    font-size: 24px; line-height: 1; cursor: pointer; border-radius: 8px;
+  }
+  #hamburger-btn:active { background: rgba(255,255,255,.14); }
+  .mobile-title { font-size: 15px; font-weight: 700; letter-spacing: .02em; }
+  .mobile-title-sub {
+    font-size: 10px; font-weight: 400; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--sidebar-text); margin-left: 4px;
+  }
+
+  /* Sidebar off-canvas: nascosta di default, scorre da sinistra */
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: 260px;
+    max-width: 84vw;
+    height: 100vh;
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+    z-index: 999;
+  }
+  #sidebar.open { transform: translateX(0); }
+
+  /* Overlay scuro quando la sidebar è aperta (display gestito da JS) */
+  #sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.5);
+    z-index: 998;
+  }
+
+  /* Contenuto a tutta larghezza, spazio per la barra superiore */
+  #content {
+    width: 100%;
+    padding: 16px;
+    padding-top: 68px;      /* 52 barra + 16 */
+  }
+
+  /* Una colonna, form impilati */
+  .grid-3, .grid-2 { grid-template-columns: 1fr; }
+  .form-row { flex-direction: column; gap: 0; }
+  .mov-desc { max-width: 180px; }
+  .page-header { flex-wrap: wrap; gap: 12px; }
+  .page-title { font-size: 18px; }
+
+  /* Aree toccabili adeguate al dito (>= 44px) */
+  .btn-primary, .btn-secondary { min-height: 44px; }
+  .form-input, .form-input-file, select.form-input { min-height: 44px; }
+  .form-actions { flex-wrap: wrap; }
+  .nav-item { padding: 13px 16px; }
+  .icon-btn { min-height: 40px; padding: 8px 10px; }
+  .modal-overlay { padding: 16px 10px; }
+  .modal-card { max-height: calc(100vh - 32px); }
+}
+
+/* ══ FASE 2 — Rubrica contatti ═══════════════════════════════════════════ */
+
+/* ── Schede Clienti / Fornitori / Collaboratori ──────────────────────────
+   Ogni scheda porta il nome per esteso e il numero di contatti: chi legge
+   non deve contare le righe ne' indovinare quale scheda e' attiva dal solo
+   colore (c'e' anche il bordo inferiore e aria-selected). */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text2);
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  white-space: nowrap;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.tab:hover { background: var(--bg); color: var(--text); }
+.tab[aria-selected="true"] {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  background: var(--primary-lt);
+}
+.tab-count {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--border);
+  color: var(--text2);
+}
+.tab[aria-selected="true"] .tab-count { background: var(--primary); color: #fff; }
+
+/* ── Barra ricerca in alto a destra ──────────────────────────────────── */
+.rubrica-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.rubrica-toolbar .spacer { flex: 1; min-width: 12px; }
+.rubrica-search { min-width: 240px; }
+
+/* ── Elenco contatti ─────────────────────────────────────────────────── */
+.contatto-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.contatto-row:hover { border-color: var(--primary); background: var(--primary-lt); }
+.contatto-row.inattivo { opacity: .6; }
+.contatto-main { flex: 1; min-width: 0; }
+.contatto-nome { font-weight: 600; color: var(--text); }
+.contatto-sub {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contatto-azioni { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* FASE 18 — avviso doppione al salvataggio di un contatto nuovo.
+   E' un avviso: le tre strade stanno tutte dentro, nessuna è nascosta. */
+.dop-lista { margin: 10px 0 4px; }
+.dop-riga {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin-bottom: 6px;
+}
+.dop-chi { flex: 1; min-width: 160px; }
+.dop-chi .dim { font-size: 12px; margin-top: 2px; }
+.dop-azioni { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+@media (max-width: 560px) {
+  .dop-riga > .btn-secondary,
+  .dop-azioni > .btn-primary,
+  .dop-azioni > .btn-secondary { flex: 1 1 100%; min-height: 44px; }
+}
+
+/* FASE 18 — riquadro dentro la scheda contatto (le sue fatture di vendita) */
+.card-sub {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: var(--bg);
+}
+.card-sub .card-title { margin-bottom: 10px; }
+.contatto-fatt-testa {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text2);
+  margin-bottom: 10px;
+}
+.contatto-fatt-somma { color: var(--text); }
+.contatto-fatt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.contatto-fatt-row:hover { border-color: var(--primary); background: var(--primary-lt); }
+.contatto-fatt-main { flex: 1; min-width: 0; }
+.contatto-fatt-num { font-weight: 600; color: var(--text); }
+.contatto-fatt-sub { font-size: 12px; color: var(--text2); margin-top: 3px; }
+.contatto-fatt-tot { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.contatto-fatt-tot.nc { color: var(--text2); }
+.card-sub .form-hint { margin-top: 10px; }
+
+/* FASE 18 — in quale scheda sta il contatto. Si vede solo nella vista «Tutti»,
+   dove clienti e fornitori stanno mescolati e il nome da solo non basta. */
+.contatto-cat {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--primary);
+  margin-top: 3px;
+}
+
+/* Azioni rapide: icona SEMPRE con etichetta testuale accanto */
+.azione-rapida {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+  min-height: 34px;
+}
+.azione-rapida:hover { background: var(--bg); border-color: var(--primary); color: var(--primary); }
+
+/* ── Campo con ricerca in rubrica (form movimento e acquisto) ────────── */
+.rubrica-pick { position: relative; }
+
+/* FASE 18 — campo di ricerca + bottone «Scegli dalla rubrica» sulla stessa
+   riga. Su schermo stretto il bottone va a capo e resta largo quanto il campo:
+   sul telefono un bottone stretto accanto a un campo largo non si centra. */
+.campo-con-bottone {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.campo-con-bottone > .form-input { flex: 1 1 220px; margin: 0; }
+.campo-con-bottone > .btn-secondary { flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 560px) {
+  .campo-con-bottone > .btn-secondary { flex: 1 1 100%; min-height: 44px; }
+}
+/* Riga di cortesia quando la rubrica è vuota: non è una voce cliccabile. */
+.suggest-vuoto { padding: 10px 12px; font-size: 13px; }
+.rubrica-suggest {
+  position: absolute;
+  z-index: 60;
+  left: 0; right: 0;
+  top: calc(100% + 2px);
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 16px rgba(0,0,0,.12);
+}
+.rubrica-suggest:empty { display: none; }
+.suggest-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.suggest-item:last-child { border-bottom: none; }
+.suggest-item:hover, .suggest-item.hi { background: var(--primary-lt); }
+.suggest-item .s-sub { display: block; font-size: 11px; color: var(--text2); margin-top: 1px; }
+.suggest-item.suggest-new { color: var(--primary); font-weight: 600; }
+
+/* Riquadro «contatto collegato», sotto il campo */
+.contatto-legato {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  background: var(--primary-lt);
+  border: 1px solid var(--primary);
+  font-size: 12px;
+  color: var(--text);
+}
+.contatto-legato .cl-x {
+  margin-left: auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text2);
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+/* Campo compilato automaticamente: si vede che e' stato proposto,
+   e resta modificabile. Il testo lo dice, non solo il colore. */
+.auto-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--gold);
+  background: var(--gold-lt);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+@media (max-width: 900px) {
+  .contatto-row { flex-wrap: wrap; }
+  .contatto-azioni { width: 100%; }
+  .rubrica-search { min-width: 100%; }
+  .tab { padding: 9px 12px; font-size: 13px; }
+}
+
+/* ══ FASE 3 — Cruscotto ══════════════════════════════════════════════════ */
+
+/* ── Note in chiaro sotto i controlli ─────────────────────────────────────
+   Non sono decorazioni: dicono su quale data e' calcolato il periodo e che
+   cosa NON e' compreso nei totali. Un numero senza queste due frasi si presta
+   a essere letto come se fosse tutto il conto dell'azienda. */
+.nota-cruscotto {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.5;
+}
+.nota-cruscotto.avviso {
+  background: var(--gold-lt);
+  border-color: var(--gold);
+  color: var(--text);
+  font-weight: 600;
+}
+.nota-cruscotto strong { color: var(--text); }
+
+/* ── I quattro riquadri ──────────────────────────────────────────────────
+   Due colonne su desktop, una su telefono. Ogni riquadro porta etichetta,
+   importo con la valuta scritta, e il numero di documenti: mai un numero nudo. */
+.cru-riquadri {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.cru-box {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  font-family: inherit;
+}
+.cru-box:hover  { border-color: var(--primary); background: var(--primary-lt); }
+.cru-box:focus  { outline: 3px solid rgba(45,106,79,.35); outline-offset: 2px; }
+.cru-box.vuoto  { cursor: default; opacity: .85; }
+.cru-box.vuoto:hover { border-color: var(--border); background: var(--surface); }
+
+.cru-box.uscita  { border-left-color: var(--err); }
+.cru-box.entrata { border-left-color: var(--ok); }
+.cru-box.attesa-uscita  { border-left-color: var(--warn); }
+.cru-box.attesa-entrata { border-left-color: var(--info); }
+
+.cru-box-etichetta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+.cru-box-importo {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+.cru-box-valuta { font-size: 14px; font-weight: 600; color: var(--text2); margin-left: 3px; }
+.cru-box-conta  { font-size: 12px; color: var(--text2); margin-top: 4px; }
+.cru-box-nota   { font-size: 11px; color: var(--ok); margin-top: 6px; font-weight: 600; }
+
+/* ── Barre dei gruppi ────────────────────────────────────────────────────
+   La barra e' un supporto alla lettura, non l'informazione: importo e
+   percentuale sono sempre scritti in cifre accanto al nome. */
+.gruppo-riga {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 9px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+}
+.gruppo-riga:hover { background: var(--bg); }
+.gruppo-riga:focus { outline: 2px solid rgba(45,106,79,.35); outline-offset: 1px; }
+.gruppo-riga.non-assegnato { cursor: pointer; }
+.gruppo-riga-testa {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.gruppo-nome { font-weight: 600; color: var(--text); }
+.gruppo-cod {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--text2);
+}
+.gruppo-importo { margin-left: auto; font-weight: 700; color: var(--text); }
+.gruppo-perc { font-size: 12px; color: var(--text2); min-width: 52px; text-align: right; }
+.gruppo-barra-sfondo {
+  height: 9px;
+  border-radius: 5px;
+  background: var(--border);
+  overflow: hidden;
+}
+.gruppo-barra {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--primary);
+  min-width: 2px;
+}
+.gruppo-riga.non-assegnato .gruppo-nome,
+.gruppo-riga.non-assegnato .gruppo-importo { color: var(--text2); }
+.gruppo-riga.non-assegnato .gruppo-barra { background: var(--text3); }
+
+/* ── Stato vuoto: dice che zero e' un risultato, non un guasto ─────────── */
+.cru-vuoto {
+  padding: 18px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cru-vuoto strong { color: var(--text); }
+
+/* ── Riga IVA ───────────────────────────────────────────────────────────── */
+.cru-iva-riga {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 13px 16px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+}
+.cru-iva-riga .link-conf { margin-left: auto; }
+
+/* ── Elenco filtrato ────────────────────────────────────────────────────── */
+.cru-elenco-riga {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.cru-elenco-riga:last-child { border-bottom: none; }
+.cru-elenco-nome { font-weight: 600; flex: 1; min-width: 140px; }
+.cru-elenco-meta { font-size: 12px; color: var(--text2); }
+.cru-elenco-imp  { font-weight: 700; margin-left: auto; }
+.cru-tag-ripiego {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* ── FASE 3.2 — gruppo proposto dal conto, nella classificazione ────────── */
+.gruppo-proposto {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold);
+  background: var(--gold-lt);
+  border-radius: 4px;
+  padding: 2px 7px;
+  margin-top: 6px;
+}
+.gruppo-discorde {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .cru-riquadri { grid-template-columns: 1fr; }
+  .cru-box-importo { font-size: 21px; }
+  .gruppo-importo { margin-left: 0; }
+}
+
+/* ══ FASE 4 — Scadenze ═══════════════════════════════════════════════════ */
+
+/* Il badge delle scadenze e' rosso, non oro come quello «Da classificare»:
+   sono due avvisi diversi e non devono sembrare lo stesso.
+   A zero non esiste proprio (display:none dal JS): un pallino con lo 0 e'
+   rumore, non informazione. */
+.nav-badge.badge-scadenze { background: var(--err); }
+
+/* ── I blocchi ───────────────────────────────────────────────────────────
+   Ogni blocco ha SEMPRE icona e titolo scritto. Un blocco vuoto resta al suo
+   posto e dice «nessuna scadenza»: se sparisse, sembrerebbe un guasto. */
+.scad-blocco {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.scad-blocco.rosso  { border-left-color: var(--err); }
+.scad-blocco.arancio{ border-left-color: var(--warn); }
+.scad-blocco.blu    { border-left-color: var(--info); }
+.scad-blocco.grigio { border-left-color: var(--text3); }
+
+.scad-testa {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.scad-titolo { font-weight: 700; font-size: 14px; color: var(--text); }
+.scad-conta  { font-size: 12px; color: var(--text2); }
+.scad-somma  { margin-left: auto; font-weight: 700; color: var(--text); }
+
+.scad-corpo { padding: 4px 16px 12px; }
+.scad-vuoto { padding: 14px 4px; color: var(--text2); font-size: 13px; }
+
+/* ── La singola riga ─────────────────────────────────────────────────────── */
+.scad-riga {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.scad-riga:last-child { border-bottom: none; }
+.scad-riga-icona { font-size: 16px; line-height: 1.3; }
+.scad-riga-main  { flex: 1; min-width: 190px; }
+.scad-nome { font-weight: 600; color: var(--text); }
+.scad-doc  { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+/* I giorni sono scritti a parole: «scaduto da 4 giorni», mai «-4». */
+.scad-quando { font-size: 12px; margin-top: 3px; font-weight: 600; }
+.scad-quando.ritardo  { color: var(--err); }
+.scad-quando.vicino   { color: var(--warn); }
+.scad-quando.oggi     { color: var(--err); }
+.scad-quando.assente  { color: var(--text2); font-weight: 400; }
+
+.scad-riga-imp {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text);
+  text-align: right;
+  min-width: 118px;
+}
+.scad-riga-azioni { display: flex; gap: 7px; flex-wrap: wrap; width: 100%; }
+
+/* ── Riepilogo dentro la finestrella ─────────────────────────────────────── */
+.scad-sommario-riga {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.scad-sommario-riga:last-child { border-bottom: none; }
+.scad-sommario-testo { flex: 1; }
+.scad-sommario-imp { font-weight: 700; }
+
+@media (max-width: 900px) {
+  .scad-riga-imp { text-align: left; min-width: 0; }
+  .scad-somma { margin-left: 0; width: 100%; }
+}
+
+/* ══ FASE 5A — Ponte copia/incolla ═══════════════════════════════════════ */
+
+/* Le segnalazioni della lettura. Icona SEMPRE accompagnata dal testo: qui si
+   dice all utente che cosa non e stato scritto nel modulo e perche, e un
+   colore da solo non lo direbbe. */
+.lettura-nota {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 13px;
+  margin-bottom: 10px;
+  border-radius: var(--radius);
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.lettura-nota.avviso {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+.lettura-nota strong { font-weight: 700; }
+.lettura-nota ul { margin: 5px 0 0 18px; }
+.lettura-nota li { margin-bottom: 3px; }
+
+/* La casella dove si incolla la risposta: a tutta larghezza e in carattere
+   a spaziatura fissa, cosi si vede subito se il testo e stato tagliato. */
+#ponte-ai-testo {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+/* == FASE 6 - Cantieri ==================================================== */
+
+/* I blocchi della scheda cantiere */
+.cant-blocco { margin-bottom: 14px; }
+
+.cant-riga {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  width: 100%;
+  text-align: left;
+  padding: 10px 6px;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  border-left: none; border-right: none; border-top: none;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text);
+}
+.cant-riga:last-of-type { border-bottom: none; }
+.cant-riga.cliccabile { cursor: pointer; border-radius: var(--radius); }
+.cant-riga.cliccabile:hover { background: var(--primary-lt); }
+.cant-riga.cliccabile:focus { outline: 2px solid rgba(45,106,79,.35); outline-offset: 1px; }
+
+.cant-et  { flex: 1; min-width: 150px; }
+.cant-imp { font-weight: 700; min-width: 130px; text-align: right; }
+.cant-n   { font-size: 12px; color: var(--text2); min-width: 110px; text-align: right; }
+.cant-sub { font-size: 12px; color: var(--text2); padding: 0 6px 8px; margin-top: -4px; }
+
+/* Il riquadro del risultato */
+.cant-risultato { border-left: 5px solid var(--primary); }
+.cant-margine {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 6px 4px;
+}
+.cant-margine-et {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text2);
+  width: 100%;
+}
+.cant-margine-imp { font-size: 26px; font-weight: 700; color: var(--text); }
+.cant-margine-perc { font-size: 13px; color: var(--text2); }
+.cant-formula { font-size: 11px; color: var(--text3); padding: 0 6px 6px; }
+
+/* Elenco di confronto (6C) */
+.th-ordina {
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: inherit;
+}
+.th-ordina:hover { color: var(--primary); text-decoration: underline; }
+
+.riga-totale td {
+  border-top: 2px solid var(--border);
+  background: var(--bg);
+}
+
+/* Margine basso: icona E parola, mai il solo colore */
+.margine-basso {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  white-space: nowrap;
+}
+.senza-mano {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+/* Stato del costo orario in Impostazioni */
+.costo-stato { margin-top: 8px; }
+.costo-riga {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text2);
+  padding: 3px 0;
+}
+.costo-riga strong { color: var(--text); }
+
+@media (max-width: 900px) {
+  .cant-imp, .cant-n { text-align: left; min-width: 0; }
+  .cant-margine-imp { font-size: 22px; }
+}
+
+/* == FASE 7 - Pacchetto commercialista ==================================== */
+
+.pacchetto-box {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.pacchetto-titolo { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+.pacchetto-desc { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 12px; }
+
+/* Barra di avanzamento: il testo dice a che punto siamo, la barra e solo un
+   supporto. Una barra senza numeri non dice quanto manca. */
+.progresso-testo {
+  font-size: 13px;
+  color: var(--text);
+  margin: 10px 0 6px;
+  font-weight: 600;
+}
+.progresso-barra-sfondo {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--border);
+  overflow: hidden;
+}
+.progresso-barra {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--primary);
+  transition: width .25s ease;
+}
+
+/* Spia del PDF non ancora allegato nell elenco fatture: icona E parola. */
+.pdf-mancante {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+/* Il bottone del blocco periodo quando lo si propone dopo lo ZIP */
+.evidenzia {
+  animation: pulsa 1.3s ease-in-out 2;
+  box-shadow: 0 0 0 3px rgba(200,150,12,.45);
+}
+@keyframes pulsa {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(200,150,12,.45); }
+  50%      { box-shadow: 0 0 0 8px rgba(200,150,12,.15); }
+}
+
+/* == Saldo del periodo (Situazione) ======================================= */
+/* Il riquadro piu importante della schermata: si legge per primo. */
+.saldo-box {
+  padding: 18px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-left: 6px solid var(--text3);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.saldo-box.utile   { border-left-color: var(--ok); }
+.saldo-box.perdita { border-left-color: var(--err); }
+.saldo-box.pari    { border-left-color: var(--text3); }
+
+.saldo-etichetta {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+.saldo-importo {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text);
+}
+.saldo-box.utile   .saldo-segno { color: var(--ok); }
+.saldo-box.perdita .saldo-segno { color: var(--err); }
+.saldo-valuta { font-size: 16px; font-weight: 600; color: var(--text2); }
+
+/* Il calcolo in chiaro: serve a poter rifare il conto a mano. */
+.saldo-calcolo {
+  font-size: 13px;
+  color: var(--text2);
+  margin-top: 6px;
+}
+
+.saldo-avviso {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: var(--radius);
+  background: var(--err-bg);
+  border: 1px solid var(--err);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+@media (max-width: 900px) {
+  .saldo-importo { font-size: 25px; }
+}
+
+/* == FASE 8 - Pagamenti e rate ============================================ */
+
+/* Il sommario: documento, pagato, residuo. Il residuo e sempre scritto, mai
+   da calcolare a mente. */
+.pag-sommario { margin-bottom: 12px; }
+.pag-riga {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 2px;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.pag-riga:last-child { border-bottom: none; }
+.pag-riga.forte {
+  font-weight: 700;
+  font-size: 16px;
+  border-top: 2px solid var(--border);
+  padding-top: 9px;
+  margin-top: 3px;
+}
+.pag-stato-riga { padding: 8px 2px 0; }
+
+/* Elenco dei pagamenti registrati */
+.pag-elenco-riga {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.pag-elenco-riga:last-child { border-bottom: none; }
+.pag-data { min-width: 88px; color: var(--text2); }
+.pag-imp  { font-weight: 700; min-width: 105px; }
+.pag-meta { flex: 1; color: var(--text2); font-size: 12px; min-width: 120px; }
+.pag-rata-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+/* Piano rateale: anteprima modificabile */
+.rata-riga {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+.rata-n {
+  min-width: 26px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--text2);
+}
+.rata-data { flex: 1; min-width: 130px; }
+.rata-imp  { width: 110px; text-align: right; }
+.rata-chf  { color: var(--text2); font-size: 12px; }
+
+/* Il totale delle rate: verde se torna, rosso se no. Con la parola scritta,
+   non il solo colore: un piano che non somma e un piano sbagliato. */
+.rata-totale {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+}
+.rata-totale.ok  { background: var(--ok-bg);  border: 1px solid var(--ok);  }
+.rata-totale.err { background: var(--err-bg); border: 1px solid var(--err); }
+
+/* Elenco rate nella scheda */
+.rate-elenco { margin-top: 4px; }
+.rata-elenco-riga {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.rata-elenco-riga:last-child { border-bottom: none; }
+.rata-data-txt { min-width: 90px; color: var(--text2); }
+.rata-imp-txt  { font-weight: 700; min-width: 100px; }
+.rata-stato    { flex: 1; font-size: 12px; }
+
+/* Il residuo totale accanto alla rata, nelle Scadenze */
+.scad-residuo-tot {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text2);
+  margin-top: 2px;
+}
+
+@media (max-width: 900px) {
+  .rata-imp { width: 90px; }
+  .pag-imp, .pag-data { min-width: 0; }
+}
+
+/* == Riquadro «Classificazione» nelle schede di dettaglio ================= */
+.class-riga {
+  display: flex;
+  gap: 12px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.class-riga:last-of-type { border-bottom: none; }
+.class-et  { min-width: 92px; color: var(--text2); }
+.class-val { flex: 1; color: var(--text); font-weight: 500; }
+.class-stato { padding: 9px 2px 0; }
+
+/* Classificazione nella riga dell'elenco «Ultimi inseriti» */
+.class-riga-compatta {
+  font-size: 12px;
+  color: var(--text2);
+  padding: 4px 0 0;
+}
+
+/* Rimando ai pagamenti nel form: i dati stanno sulla scheda, non qui */
+.rimando-box {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.rimando-box .dim { display: block; margin-top: 4px; font-size: 12px; }
+
+/* Riga «Classificazione: 6600 · … [Riclassifica]» in cima al form */
+.class-riga-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+/* Nota nella finestra del pagamento: rata collegata, avvisi */
+.pag-nota {
+  background: var(--bg2);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Spunta con etichetta a fianco, nei form */
+.check-riga {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 2px 0;
+}
+.check-riga input[type="checkbox"] { width: 17px; height: 17px; cursor: pointer; margin: 0; }
+
+/* == Riquadro «Allegati» (FASE 9A) ======================================== */
+.alleg-riga {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+.alleg-riga:last-of-type { border-bottom: none; }
+.alleg-tipo {
+  flex: 0 0 auto;
+  min-width: 118px;
+  padding: 4px 6px;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.alleg-nome {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.alleg-azioni { flex: 0 0 auto; display: flex; gap: 6px; }
+@media (max-width: 620px) {
+  .alleg-riga { flex-wrap: wrap; }
+  .alleg-nome { flex: 1 0 100%; order: -1; font-weight: 500; }
+}
+
+/* «Nessun allegato» negli elenchi: si vede, ma non urla. */
+.alleg-nessuno {
+  display: inline-block;
+  font-size: 11.5px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--bg2);
+  color: var(--text3);
+  white-space: nowrap;
+}
+/* «⚠️ Doppione?»: si preme, e porta all'altra fattura. */
+.spia-doppione {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.spia-doppione:hover { filter: brightness(0.95); }
+
+/* == FASE 10 — lettura automatica e «da confermare» ======================= */
+
+/* Il costo stimato, sotto i campi appena compilati */
+.lettura-costo {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg2);
+  border-left: 3px solid var(--accent);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.lettura-costo .dim { margin-left: 6px; font-size: 11.5px; }
+
+/* Lo stato del Worker nelle Impostazioni */
+.lettura-stato { font-size: 13.5px; font-weight: 600; }
+.lettura-stato.ok   { color: var(--ok); }
+.lettura-stato.warn { color: var(--warn); }
+.lettura-stato.dim  { color: var(--text3); font-weight: 500; }
+
+/* La spia «Da confermare» nell'elenco */
+.spia-conferma {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  white-space: nowrap;
+  margin-left: 6px;
+}
+
+/* La riga di una fattura non ancora confermata: si distingue senza gridare */
+.riga-da-confermare > td { background: var(--warn-bg); }
+.riga-da-confermare:hover > td { filter: brightness(0.98); }
+
+/* Il bottone Conferma */
+.icon-btn.conferma {
+  border-color: var(--ok);
+  color: var(--ok);
+  font-weight: 600;
+}
+
+/* Il riquadro nella scheda del documento */
+.avviso-conferma {
+  border-left: 4px solid var(--warn);
+}
+
+/* Il badge nel menu */
+.nav-badge.badge-conferma { background: var(--warn); color: #fff; }
