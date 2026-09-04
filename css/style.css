@@ -1287,6 +1287,77 @@ textarea.cell-desc {
 .iban-mask { font-family: monospace; color: var(--text2); }
 .iban-row .iban-actions { margin-left: auto; display: flex; gap: 6px; }
 
+/* ── FASE 24 — LA DIFFERENZA IVA (indicatore, pagina Situazione) ──────────
+   Due riquadri affiancati, che su schermo stretto si impilano. Il verso del
+   risultato non e' MAI dato dal solo colore: accanto c'e' sempre scritto a
+   parole «da versare» o «a credito», con la sua icona. */
+.iva-conti {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: stretch;
+}
+.iva-conto {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  background: var(--surface);
+}
+.iva-conto-et    { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.iva-conto-val   { font-size: 24px; font-weight: 700; color: var(--ink); line-height: 1.2; }
+.iva-conto-val.dim { font-size: 16px; font-weight: 600; color: var(--text2); }
+.iva-conto-verso { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.iva-conto-spieg { font-size: 12px; color: var(--text2); margin-top: 8px; line-height: 1.45; }
+
+/* Da versare: si deve tirare fuori dei soldi. A credito: si riprendono. */
+.iva-conto.da-versare { border-left-color: #b45309; }
+.iva-conto.da-versare .iva-conto-verso { color: #b45309; }
+.iva-conto.a-credito  { border-left-color: #15803d; }
+.iva-conto.a-credito  .iva-conto-verso { color: #15803d; }
+.iva-conto.neutro     .iva-conto-verso { color: var(--text2); }
+/* Il conto che non si puo' fare: si vede che c'e' e che manca un dato, invece
+   di sparire lasciando un buco senza spiegazione. */
+.iva-conto.mancante {
+  border-style: dashed;
+  border-left-style: dashed;
+  background: var(--bg);
+}
+
+/* La nota sull'equivoco piu' comune dell'aliquota saldo. Sta attaccata al suo
+   conto, non in fondo alla pagina: e' li' che serve leggerla. */
+.iva-nota-fattura {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-top: -2px;
+}
+.iva-confronto {
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.iva-base {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+
+@media (max-width: 900px) {
+  .iva-conti { grid-template-columns: 1fr; }
+}
+
 /* Stampa: solo il documento fattura */
 @media print {
   body * { visibility: hidden; }
