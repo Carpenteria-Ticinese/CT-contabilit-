@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=42" />
+  <link rel="stylesheet" href="css/style.css?v=43" />
 </head>
-<body data-versione="42">
+<body data-versione="43">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -281,6 +281,10 @@
 
       <!-- ── RIGA 2: IVA ─────────────────────────────────────────────────── -->
       <div id="cru-iva"></div>
+
+      <!-- FASE 24 — la differenza IVA come INDICATORE. Usa il periodo scelto
+           qui sopra: nessun secondo selettore da tenere allineato. -->
+      <div id="cru-iva-differenza"></div>
 
       <!-- ── RIGA 3: i nove gruppi ───────────────────────────────────────── -->
       <div class="card">
@@ -1872,8 +1876,31 @@
           </div>
         </div>
         <div class="form-group">
-          <label for="imp-logo" class="form-label">Logo (URL) <span class="dim">(opzionale — se vuoto usa img/logo.png)</span></label>
+          <label for="imp-logo" class="form-label">Logo (URL) <span class="dim">(opzionale — se vuoto usa quello incorporato nel programma)</span></label>
           <input type="text" id="imp-logo" class="form-input" maxlength="300" placeholder="https://… oppure img/logo.png" />
+          <div class="form-hint">
+            Il programma ha gi&agrave; il logo dentro di s&eacute;: in stampa non deve chiederlo
+            alla rete, e cos&igrave; non pu&ograve; arrivare tardi. Questo campo serve solo se
+            vuoi usarne un altro.
+          </div>
+        </div>
+
+        <!-- FASE 24 — il logo congelato in un data URI: niente rete in stampa. -->
+        <div class="form-group">
+          <span class="form-label">Logo preparato per la stampa</span>
+          <div id="imp-logo-stato" style="margin-bottom:8px"></div>
+          <div class="form-actions" style="margin-top:0">
+            <button type="button" class="btn-secondary" id="imp-logo-prep-btn"
+                    onclick="preparaLogoPerStampa()">🖼️ Prepara il logo per la stampa</button>
+            <button type="button" class="btn-secondary" id="imp-logo-tog-btn"
+                    onclick="togliLogoPreparato()">🗑️ Togli quello preparato</button>
+          </div>
+          <div class="form-hint">
+            Scarica una volta sola l&rsquo;immagine dell&rsquo;indirizzo qui sopra, la
+            rimpicciolisce a 800&nbsp;px e la salva dentro le impostazioni. Da quel momento
+            fattura e busta la stampano senza chiedere niente a internet.
+            Serve solo se hai messo un indirizzo tuo nel campo Logo&nbsp;(URL).
+          </div>
         </div>
       </div>
 
@@ -1911,6 +1938,50 @@
         <div class="form-actions" style="margin-top:0">
           <button type="button" class="btn-primary" id="imp-pwd-btn" onclick="cambiaPassword()">
             🔑 Cambia la password</button>
+        </div>
+      </div>
+
+      <!-- FASE 24 — le due aliquote della differenza IVA. Impostazioni, non
+           numeri scritti nel codice: le aliquote cambiano, ed è già successo. -->
+      <div class="card">
+        <div class="card-title">🧾 Aliquote IVA <span class="dim">(per l&rsquo;indicatore in Situazione)</span></div>
+        <div class="form-hint" style="margin-top:0; margin-bottom:12px">
+          Servono solo al riquadro <strong>Differenza IVA</strong> della pagina Situazione, che
+          &egrave; un&rsquo;ipotesi per capire come staresti messo da soggetto IVA.
+          <strong>Non cambiano niente nelle fatture</strong>: finch&eacute; non sei registrato
+          si continua a fatturare senza IVA, esattamente come adesso.
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="imp-iva-ordinaria" class="form-label">Aliquota ordinaria (%)</label>
+            <input type="number" id="imp-iva-ordinaria" class="form-input"
+                   min="0" max="100" step="0.1" placeholder="8.1" onfocus="this.select()" />
+            <div class="form-hint">Oggi 8,1%. &Egrave; qui e non nel codice perch&eacute; cambia.</div>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="imp-iva-saldo" class="form-label">Aliquota saldo (%)</label>
+            <input type="number" id="imp-iva-saldo" class="form-input"
+                   min="0" max="100" step="0.1" placeholder="lasciala vuota se non la sai"
+                   onfocus="this.select()" />
+            <div class="form-hint">
+              La assegna l&rsquo;AFC quando ti registri e dipende dal ramo: <strong>per la
+              carpenteria non &egrave; 8,1</strong>. Se la lasci vuota, quel conto non viene
+              mostrato invece di inventarsi un numero.
+            </div>
+          </div>
+        </div>
+
+        <div class="fase-banner warn" role="status" style="margin-top:4px">
+          <span class="icon" aria-hidden="true">📌</span>
+          <div class="msg">Con il metodo dell&rsquo;aliquota saldo <strong>al cliente si fattura
+            sempre l&rsquo;aliquota ordinaria</strong>: quella saldo &egrave; solo quella che
+            versi all&rsquo;AFC. &Egrave; l&rsquo;equivoco pi&ugrave; comune di quel metodo.</div>
+        </div>
+
+        <div class="form-actions" style="margin-top:12px">
+          <button type="button" class="btn-secondary" id="imp-iva-salva-btn"
+                  onclick="salvaAliquoteIva()">💾 Salva le aliquote</button>
         </div>
       </div>
 
@@ -2434,7 +2505,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=42"></script>
+<script src="js/app.js?v=43"></script>
 
 </body>
 </html>
