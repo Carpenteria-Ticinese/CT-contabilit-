@@ -31,6 +31,10 @@ let utentiEmailCache = {}     // id utente -> email (best-effort, per la Storia)
 
 // Fase 5 — export + blocco periodo
 let classByKey = {}           // "origine_tipo:origine_id" -> riga classificazione (con stato)
+// FASE 25 — l'elenco COMPLETO delle righe per documento. classByKey resta la
+// sintesi (una riga per documento, importi sommati): le due si riempiono
+// sempre insieme, con indicizzaClassificazioni().
+let classRigheByKey = {}
 let exportPeriodRows = []     // righe export calcolate per il periodo corrente
 let exportModo       = 'anno' // 'anno' | 'trimestre' | 'mese' | 'custom'
 let exportDataset    = null   // cache dati export (fatture, acquisti, movimenti, classificazioni)
@@ -1246,7 +1250,7 @@ function notaCantieriVuoti() {
 function buildCantiereOptions(selectedId, includeGenerale) {
   // FASE 6A — «nessun cantiere» e' una risposta valida, non un campo lasciato
   // vuoto per distrazione: il testo lo dice.
-  var out = includeGenerale ? '<option value="">— nessun cantiere (spesa aziendale) —</option>' : ''
+  var out = includeGenerale ? '<option value="">— nessun cantiere: magazzino / generale —</option>' : ''
   var list = cantieriOrdinati()
   var found = false
   for (var i = 0; i < list.length; i++) {
@@ -1273,6 +1277,18 @@ function getSelectedAliquota() {
   if (!sel || sel.selectedIndex < 0) return null
   var opt = sel.options[sel.selectedIndex]
   return opt ? safeNum(opt.getAttribute('data-aliquota')) : null
+}
+
+// FASE 25 — l'aliquota di un codice IVA preso per id, dalla cache invece che
+// dal menu a tendina. Dividendo, ogni riga ha il SUO codice: leggere sempre
+// quello del menu in alto avrebbe applicato l'8,1% anche alla riga esente.
+function aliquotaDiCodiceIva(idCodice) {
+  if (!idCodice) return null
+  var lista = ivaCache || []
+  for (var i = 0; i < lista.length; i++) {
+    if (lista[i].id === idCodice) return safeNum(lista[i].aliquota)
+  }
+  return null
 }
 
 function setIvaInclusa(v) {
@@ -1372,6 +1388,7 @@ async function openSingleClassify(m, prefill) {
   el('cls-conto-search').value = ''
   el('cls-cantiere-group').style.display = 'block'
   el('cls-cantiere-bulk-group').style.display = 'none'
+  var bDiv1 = el('cls-dividi-btn'); if (bDiv1) bDiv1.style.display = 'inline-flex'
 
   el('cls-summary').innerHTML =
     '<div class="cls-sum-desc">' + esc(m.descrizione) + '</div>' +
@@ -1396,6 +1413,21 @@ async function openSingleClassify(m, prefill) {
   el('cls-cantiere').innerHTML = buildCantiereOptions(prefill ? prefill.cantiere_id : m.cantiere_id, true)
   html('cls-cantiere-vuoto', notaCantieriVuoti())
   setIvaInclusa(prefill ? (prefill.iva_inclusa !== false) : true)
+
+  // FASE 25 — un documento gia' diviso si riapre diviso, con le sue righe.
+  // Un documento con UNA riga sola si apre come sempre: chi non ha mai diviso
+  // non vede nessuna differenza, ed e' la regola che protegge dal disorientarlo.
+  divisioneAttiva = false
+  divisioneRighe = []
+  mostraDivisione(false)
+  var esistenti = classificazioniDi(m.origine_tipo, m.origine_id)
+  if (esistenti.length > 1) {
+    attivaDivisione(esistenti.map(function (c) {
+      return nuovaRigaDivisione(
+        round2((safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0)),
+        c.conto_id, c.codice_iva_id, c.cantiere_id, c.note)
+    }))
+  }
 
   // Suggerimento solo per una classificazione nuova (non in riclassifica)
   if (!prefill) {
@@ -1437,6 +1469,12 @@ async function openBulkPanel() {
   el('cls-cantiere-bulk-group').style.display = 'block'
   el('cls-cantiere-comune-chk').checked = false
   el('cls-cantiere-comune').style.display = 'none'
+  // FASE 25 — in blocco non si divide: si stanno classificando N documenti
+  // diversi, e una ripartizione avrebbe un totale solo per tutti.
+  divisioneAttiva = false
+  divisioneRighe = []
+  mostraDivisione(false)
+  var bDiv = el('cls-dividi-btn'); if (bDiv) bDiv.style.display = 'none'
 
   var listHtml = classifyTargets.map(function (m) {
     return '<div class="cls-sum-list-item"><span>' + esc(fmtDate(m.data) + ' · ' + m.descrizione) + '</span><span>' + fmtImporto(m.importo, m.valuta) + '</span></div>'
@@ -1462,6 +1500,11 @@ function closeClassifyPanel() {
   var o = el('classify-overlay')
   if (o) o.style.display = 'none'
   classifyTargets = []
+  // FASE 25 — la divisione non deve sopravvivere alla chiusura: riaprendo un
+  // altro documento si troverebbero le righe del precedente.
+  divisioneAttiva = false
+  divisioneRighe = []
+  mostraDivisione(false)
 }
 
 function toggleCantiereComune(checked) {
@@ -1669,6 +1712,264 @@ function applySuggestion(s) {
 }
 
 // ── Salvataggio classificazione (singolo o blocco) ───────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// FASE 25 — DIVIDERE UN DOCUMENTO SU PIU' CANTIERI
+//
+// IL CASO VERO. Una fattura del legname: una tegola per la riparazione a
+// Camorino, due listoni per il magazzino. Un documento solo, due destinazioni.
+// Non e' un caso raro, e' la norma: e' per questo che sulle bolle si scrive il
+// nome del cantiere.
+//
+// COSA CAMBIAVA SENZA. La schermata accettava una riga e un importo solo, e
+// nella pagina Cantieri la colonna COSTI era 0,00 su tutte le righe. Non era un
+// difetto di calcolo: era che nessun costo poteva atterrare su un cantiere.
+//
+// LA REGOLA CHE PROTEGGE, E CHE VIENE PRIMA DI TUTTE LE ALTRE:
+// la somma delle righe deve fare ESATTAMENTE il totale del documento. Si vede
+// mentre si scrive, e se non torna non si salva. E' l'unica cosa che sta fra
+// una divisione e un documento classificato male.
+//
+// QUELLO CHE NON DEVE CAMBIARE: chi non divide. Il caso di sempre — tutto su
+// un cantiere solo — resta una riga e due clic. La divisione e' dietro un
+// bottone, e finche' non lo si preme la schermata e' identica a prima.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Le righe in corso di modifica. Vuoto = non si sta dividendo.
+var divisioneRighe = []
+var divisioneAttiva = false
+
+// Il totale del documento aperto: e' il numero con cui deve quadrare la somma.
+function totaleDocumentoAperto() {
+  var m = classifyTargets[0]
+  return m ? (safeNum(m.importo) || 0) : 0
+}
+
+function nuovaRigaDivisione(importo, contoId, ivaId, cantiere, note) {
+  return {
+    importo: (importo == null ? '' : importo),
+    conto_id: contoId || '',
+    codice_iva_id: ivaId || '',
+    cantiere_id: cantiere || '',
+    note: note || ''
+  }
+}
+
+// ── Accendere e spegnere la divisione ───────────────────────────────────────
+
+function attivaDivisione(righeIniziali) {
+  if (classifyMode !== 'single') {
+    showClsBanner('warn', 'La divisione si fa su un documento per volta: chiudi, apri il documento da solo e dividilo li\u2019.')
+    return
+  }
+  divisioneAttiva = true
+  if (righeIniziali && righeIniziali.length) {
+    divisioneRighe = righeIniziali
+  } else {
+    // La prima riga eredita quello che c'e' gia' nei campi semplici e prende
+    // TUTTO l'importo: da li' si toglie quello che va altrove. Cosi' il primo
+    // passo di una divisione non chiede di ridigitare niente.
+    divisioneRighe = [
+      nuovaRigaDivisione(totaleDocumentoAperto(),
+        el('cls-conto') ? el('cls-conto').value : '',
+        el('cls-iva') ? el('cls-iva').value : '',
+        el('cls-cantiere') ? el('cls-cantiere').value : '',
+        el('cls-note') ? el('cls-note').value.trim() : ''),
+      nuovaRigaDivisione('', el('cls-conto') ? el('cls-conto').value : '',
+        el('cls-iva') ? el('cls-iva').value : '', '', '')
+    ]
+  }
+  mostraDivisione(true)
+  disegnaDivisione()
+}
+
+function annullaDivisione() {
+  divisioneAttiva = false
+  divisioneRighe = []
+  mostraDivisione(false)
+  html('cls-div-quadratura', '')
+}
+
+function mostraDivisione(on) {
+  var box = el('cls-divisione')
+  if (box) box.style.display = on ? 'block' : 'none'
+  // I campi semplici spariscono: due posti dove scrivere la stessa cosa sono
+  // due numeri che un giorno diranno cose diverse.
+  ;['cls-cantiere-group'].forEach(function (id) {
+    var e = el(id); if (e) e.style.display = on ? 'none' : 'block'
+  })
+  var btn = el('cls-dividi-btn')
+  if (btn) btn.style.display = on ? 'none' : 'inline-flex'
+}
+
+// ── Il disegno ──────────────────────────────────────────────────────────────
+
+function disegnaDivisione() {
+  var cont = el('cls-div-righe')
+  if (!cont) return
+  var ivaOpts = buildIvaOptions(null)
+  var contoOpts = buildContoOptions('', null)
+
+  var righe = divisioneRighe.map(function (r, i) {
+    return '<div class="cls-div-riga">' +
+      '<div class="cls-div-num">' + (i + 1) + '</div>' +
+      '<div class="cls-div-campi">' +
+        '<div class="form-row">' +
+          '<div class="form-group" style="flex:0 0 130px">' +
+            '<label class="form-label" for="divimp' + i + '">Importo (CHF)</label>' +
+            '<input type="number" step="0.05" class="form-input" id="divimp' + i + '" ' +
+              'value="' + esc(String(r.importo)) + '" onfocus="this.select()" ' +
+              'oninput="aggiornaRigaDivisione(' + i + ')">' +
+          '</div>' +
+          '<div class="form-group" style="flex:2">' +
+            '<label class="form-label" for="divcant' + i + '">Cantiere</label>' +
+            '<select class="form-input" id="divcant' + i + '" onchange="aggiornaRigaDivisione(' + i + ')">' +
+              buildCantiereOptions(r.cantiere_id, true) + '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div class="form-row">' +
+          '<div class="form-group" style="flex:2">' +
+            '<label class="form-label" for="divconto' + i + '">Conto</label>' +
+            '<select class="form-input" id="divconto' + i + '" onchange="aggiornaRigaDivisione(' + i + ')">' +
+              contoOpts + '</select>' +
+          '</div>' +
+          '<div class="form-group" style="flex:1">' +
+            '<label class="form-label" for="diviva' + i + '">Codice IVA</label>' +
+            '<select class="form-input" id="diviva' + i + '" onchange="aggiornaRigaDivisione(' + i + ')">' +
+              ivaOpts + '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div class="form-group" style="margin-bottom:0">' +
+          '<label class="form-label" for="divnote' + i + '">Note <span class="dim">(facoltative)</span></label>' +
+          '<input type="text" class="form-input" id="divnote' + i + '" maxlength="300" ' +
+            'value="' + esc(r.note || '') + '" oninput="aggiornaRigaDivisione(' + i + ')">' +
+        '</div>' +
+      '</div>' +
+      '<div class="cls-div-azioni">' +
+        (divisioneRighe.length > 1
+          ? '<button type="button" class="icon-btn danger" title="Togli questa riga" ' +
+            'onclick="togliRigaDivisione(' + i + ')">\uD83D\uDDD1\uFE0F Togli</button>'
+          : '') +
+        (i === divisioneRighe.length - 1
+          ? '<button type="button" class="icon-btn" onclick="assegnaIlResto(' + i + ')">' +
+            '\u2935\uFE0F Assegna il resto</button>'
+          : '') +
+      '</div>' +
+    '</div>'
+  }).join('')
+
+  html('cls-div-righe', righe)
+
+  // I <select> si riempiono DOPO l'inserimento nel DOM: impostare il valore
+  // dentro la stringa HTML funziona per il cantiere (le option le costruisce
+  // buildCantiereOptions con il selected) ma non per conto e IVA, che
+  // riusano un elenco unico.
+  divisioneRighe.forEach(function (r, i) {
+    if (el('divconto' + i)) el('divconto' + i).value = r.conto_id || ''
+    if (el('diviva' + i))   el('diviva' + i).value   = r.codice_iva_id || ''
+  })
+
+  aggiornaQuadratura()
+}
+
+// Rilegge dai campi: la fonte della verita' sono gli input, non l'array.
+function aggiornaRigaDivisione(i) {
+  var r = divisioneRighe[i]
+  if (!r) return
+  if (el('divimp' + i))  r.importo = el('divimp' + i).value
+  if (el('divcant' + i)) r.cantiere_id = el('divcant' + i).value
+  if (el('divconto' + i)) r.conto_id = el('divconto' + i).value
+  if (el('diviva' + i))  r.codice_iva_id = el('diviva' + i).value
+  if (el('divnote' + i)) r.note = el('divnote' + i).value
+  aggiornaQuadratura()
+}
+
+function aggiungiRigaDivisione() {
+  divisioneRighe.forEach(function (_, i) { aggiornaRigaDivisione(i) })
+  var ultima = divisioneRighe[divisioneRighe.length - 1] || {}
+  // Conto e IVA si ereditano: nove volte su dieci la merce e' la stessa e
+  // cambia solo la destinazione.
+  divisioneRighe.push(nuovaRigaDivisione('', ultima.conto_id, ultima.codice_iva_id, '', ''))
+  disegnaDivisione()
+}
+
+function togliRigaDivisione(i) {
+  divisioneRighe.forEach(function (_, k) { aggiornaRigaDivisione(k) })
+  divisioneRighe.splice(i, 1)
+  if (!divisioneRighe.length) { annullaDivisione(); return }
+  disegnaDivisione()
+}
+
+// Il bottone che fa la differenza fra usare la divisione e non usarla.
+function assegnaIlResto(i) {
+  divisioneRighe.forEach(function (_, k) { aggiornaRigaDivisione(k) })
+  var q = quadraturaDivisione()
+  var r = divisioneRighe[i]
+  if (!r) return
+  var mio = safeNum(r.importo) || 0
+  r.importo = round2(mio + q.resto)
+  disegnaDivisione()
+  if (el('divimp' + i)) el('divimp' + i).focus()
+}
+
+// ── La quadratura ───────────────────────────────────────────────────────────
+
+function quadraturaDivisione() {
+  var tot = totaleDocumentoAperto()
+  var assegnato = 0
+  for (var i = 0; i < divisioneRighe.length; i++) {
+    assegnato += safeNum(divisioneRighe[i].importo) || 0
+  }
+  assegnato = round2(assegnato)
+  return { totale: tot, assegnato: assegnato, resto: round2(tot - assegnato) }
+}
+
+function aggiornaQuadratura() {
+  var q = quadraturaDivisione()
+  var box = el('cls-div-quadratura')
+  if (!box) return
+  var quadra = Math.abs(q.resto) < 0.005
+  var testo
+  if (quadra) {
+    testo = '<span aria-hidden="true">\u2705</span> <strong>Assegnato ' + fmtNum2(q.assegnato) +
+            ' CHF</strong> su ' + fmtNum2(q.totale) + ' \u2014 torna.'
+  } else if (q.resto > 0) {
+    testo = '<span aria-hidden="true">\u26A0\uFE0F</span> Assegnato ' + fmtNum2(q.assegnato) +
+            ' CHF su ' + fmtNum2(q.totale) + ' \u00b7 <strong>resta ' + fmtNum2(q.resto) +
+            ' CHF da assegnare.</strong>'
+  } else {
+    testo = '<span aria-hidden="true">\u26A0\uFE0F</span> Assegnato ' + fmtNum2(q.assegnato) +
+            ' CHF su ' + fmtNum2(q.totale) + ' \u00b7 <strong>sono ' + fmtNum2(-q.resto) +
+            ' CHF di troppo.</strong>'
+  }
+  html('cls-div-quadratura',
+    '<div class="cls-quadra ' + (quadra ? 'ok' : 'no') + '">' + testo + '</div>')
+}
+
+// Le righe pronte da salvare, oppure il motivo per cui non si puo'.
+function righeDivisioneValidate() {
+  divisioneRighe.forEach(function (_, i) { aggiornaRigaDivisione(i) })
+  var q = quadraturaDivisione()
+
+  for (var i = 0; i < divisioneRighe.length; i++) {
+    var r = divisioneRighe[i]
+    var imp = safeNum(r.importo)
+    if (imp == null || Math.abs(imp) < 0.005) {
+      return { errore: 'La riga ' + (i + 1) + ' non ha un importo. Scrivilo, oppure togli la riga.' }
+    }
+    if (!r.conto_id) return { errore: 'La riga ' + (i + 1) + ' non ha un conto.' }
+    if (!r.codice_iva_id) return { errore: 'La riga ' + (i + 1) + ' non ha un codice IVA.' }
+  }
+
+  if (Math.abs(q.resto) >= 0.005) {
+    return { errore: q.resto > 0
+      ? 'Le righe non arrivano al totale del documento: mancano ' + fmtNum2(q.resto) +
+        ' CHF. Assegnali a una riga, o usa \u00ab\u2935\ufe0f Assegna il resto\u00bb.'
+      : 'Le righe superano il totale del documento di ' + fmtNum2(-q.resto) +
+        ' CHF. Togli quello che avanza prima di salvare.' }
+  }
+  return { righe: divisioneRighe }
+}
+
 function buildClassRow(m, contoId, ivaId, calc, inclusa, cantiere, note) {
   return {
     azienda_id:    currentAziendaId,
@@ -1697,15 +1998,37 @@ async function saveClassificazione() {
   var contoId = el('cls-conto') ? el('cls-conto').value : ''
   var ivaId   = el('cls-iva') ? el('cls-iva').value : ''
   var note    = el('cls-note') ? el('cls-note').value.trim() : ''
-  if (!contoId) { showClsBanner('err', 'Seleziona un conto (proposta modificabile).'); return }
-  if (!ivaId)   { showClsBanner('err', 'Seleziona un codice IVA.'); return }
+  // FASE 25 — con la divisione attiva conto e IVA stanno sulle righe, non nei
+  // campi in alto: la validazione e' quella di righeDivisioneValidate().
+  var righeDiv = null
+  if (divisioneAttiva) {
+    var esito = righeDivisioneValidate()
+    if (esito.errore) { showClsBanner('err', esito.errore); return }
+    righeDiv = esito.righe
+  } else {
+    if (!contoId) { showClsBanner('err', 'Seleziona un conto (proposta modificabile).'); return }
+    if (!ivaId)   { showClsBanner('err', 'Seleziona un codice IVA.'); return }
+  }
   var alq = getSelectedAliquota()
 
   var btn = el('cls-save-btn')
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
     var rows = []
-    if (classifyMode === 'single') {
+    if (divisioneAttiva && classifyMode === 'single') {
+      // FASE 25 — una riga per destinazione. L'aliquota si prende dal codice
+      // IVA DELLA RIGA, non da quello in alto: due righe possono avere codici
+      // diversi (materiale all'8,1% e trasporto esente).
+      var md = classifyTargets[0]
+      for (var d = 0; d < righeDiv.length; d++) {
+        var rd = righeDiv[d]
+        var alqRiga = aliquotaDiCodiceIva(rd.codice_iva_id)
+        rows.push(buildClassRow(md, rd.conto_id, rd.codice_iva_id,
+          calcolaIva(safeNum(rd.importo), alqRiga, ivaInclusaState),
+          ivaInclusaState, rd.cantiere_id || null,
+          rd.note || note || null))
+      }
+    } else if (classifyMode === 'single') {
       var m = classifyTargets[0]
       var cantiere = el('cls-cantiere') ? (el('cls-cantiere').value || null) : null
       rows.push(buildClassRow(m, contoId, ivaId, calcolaIva(m.importo, alq, ivaInclusaState), ivaInclusaState, cantiere, note))
@@ -1719,16 +2042,87 @@ async function saveClassificazione() {
       }
     }
 
-    const { data, error } = await sb
-      .from('tm_conta_classificazioni')
-      .upsert(rows, { onConflict: 'origine_tipo,origine_id' })
-      .select()
-    if (error) throw error
+    // ═══════════════════════════════════════════════════════════════════════
+    // FASE 25 — COME SI SCRIVE, E PERCHE' NON E' PIU' UN UPSERT
+    //
+    // L'upsert si reggeva sul vincolo UNIQUE (origine_tipo, origine_id), che
+    // SQL_FASE25 toglie proprio per poter avere piu' righe per documento.
+    //
+    // Ma sostituirlo con «cancella e reinserisci» sempre avrebbe rotto una cosa
+    // che non si vede: su tm_conta_classificazioni c'e' un trigger di audit
+    // AFTER UPDATE, ed e' lui che riempie la «Storia» delle riclassificazioni.
+    // Un DELETE seguito da un INSERT non e' un UPDATE: il trigger non
+    // scatterebbe, e lo storico smetterebbe di registrare in silenzio.
+    //
+    // Percio' due strade:
+    //   UNA riga che ne sostituisce UNA  -> UPDATE sulla riga esistente. E' il
+    //       caso di sempre, il trigger scatta e la Storia continua identica.
+    //   tutto il resto (si divide, o si torna da tre righe a una) -> cancella e
+    //       reinserisci: e' l'unico modo di non lasciare orfana una riga che
+    //       continuerebbe a pesare sui costi di un cantiere.
+    // ═══════════════════════════════════════════════════════════════════════
+    var chiaviToccate = {}
+    rows.forEach(function (r) {
+      var kk = r.origine_tipo + '|' + r.origine_id
+      if (!chiaviToccate[kk]) chiaviToccate[kk] = []
+      chiaviToccate[kk].push(r)
+    })
+
+    var scritte = []
+    for (var ck in chiaviToccate) {
+      if (!Object.prototype.hasOwnProperty.call(chiaviToccate, ck)) continue
+      var pezzi = ck.split('|')
+      var nuoveRighe = chiaviToccate[ck]
+
+      const { data: esistenti, error: eSel } = await sb.from('tm_conta_classificazioni')
+        .select('id')
+        .eq('azienda_id', currentAziendaId)
+        .eq('origine_tipo', pezzi[0])
+        .eq('origine_id', pezzi[1])
+      if (eSel) throw eSel
+      var vecchie = esistenti || []
+
+      if (vecchie.length === 1 && nuoveRighe.length === 1) {
+        // Il caso di sempre: si modifica, e la Storia lo registra.
+        var campi = {}
+        Object.keys(nuoveRighe[0]).forEach(function (c) {
+          if (c !== 'azienda_id' && c !== 'origine_tipo' && c !== 'origine_id' && c !== 'created_by') {
+            campi[c] = nuoveRighe[0][c]
+          }
+        })
+        const { data: dUpd, error: eUpd } = await sb.from('tm_conta_classificazioni')
+          .update(campi).eq('id', vecchie[0].id).select()
+        if (eUpd) throw eUpd
+        scritte = scritte.concat(dUpd || [])
+        continue
+      }
+
+      if (vecchie.length) {
+        const { error: eDel } = await sb.from('tm_conta_classificazioni')
+          .delete()
+          .eq('azienda_id', currentAziendaId)
+          .eq('origine_tipo', pezzi[0])
+          .eq('origine_id', pezzi[1])
+        if (eDel) throw eDel
+      }
+      const { data: dIns, error: eIns } = await sb.from('tm_conta_classificazioni')
+        .insert(nuoveRighe).select()
+      if (eIns) throw eIns
+      scritte = scritte.concat(dIns || [])
+    }
+
+    // (le righe scritte stanno in `scritte`: nessuno le rilegge, ma servono a
+    // far fallire il salvataggio se il database rifiuta.)
 
     // L'override del gruppo si scrive DOPO: la classificazione e' gia' salvata,
     // e un errore qui non deve farla perdere.
     await salvaOverrideGruppo(classifyMode === 'single' ? [classifyTargets[0]] : classifyTargets)
 
+    // FASE 25 — le mappe delle classificazioni sono cambiate: chi le tiene in
+    // cache deve rileggerle, altrimenti la pagina Cantieri mostra i costi di
+    // prima della divisione.
+    classCantiereMap = null
+    exportDataset = null
     closeClassifyPanel()
     if (currentPage === 'movimenti') await loadDaClassificare()
     await refreshDaClassificareCount()
@@ -1747,7 +2141,17 @@ async function saveClassificazione() {
                                               'a-classificazione-riga')
     }
   } catch (e) {
-    showClsBanner('err', 'Salvataggio: ' + e.message)
+    console.error('Salvataggio classificazione:', e)
+    // FASE 25 — 23505 vuol dire che il vincolo UNIQUE c'e' ancora, cioe' che
+    // SQL_FASE25 non e' stato lanciato. Si dice cosa fare, non il testo inglese
+    // del database — e si dice anche che il resto continua a funzionare.
+    if (String(e.code) === '23505' || /duplicate key|unique constraint/i.test(String(e.message || ''))) {
+      showClsBanner('err', 'Il database non accetta ancora più righe per lo stesso documento: ' +
+        'manca la migrazione. Lancia SQL_FASE25.sql dal SQL Editor di Supabase, poi riprova. ' +
+        'Intanto la classificazione su un cantiere solo funziona come sempre.')
+    } else {
+      showClsBanner('err', 'Salvataggio: ' + e.message)
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '✅ Conferma classificazione' }
   }
@@ -2120,12 +2524,15 @@ async function getClassificatiNelPeriodo(da, a) {
   try {
     const { data, error } = await sb
       .from('tm_conta_classificazioni')
-      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato')
+      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato, created_at')
       .eq('azienda_id', currentAziendaId)
     if (error) throw error
-    for (var k = 0; k < (data || []).length; k++) {
-      classMap[data[k].origine_tipo + ':' + data[k].origine_id] = data[k]
-    }
+    // FASE 25 — un documento puo' avere piu' righe: si indicizza con il motore
+    // unico, che somma imponibile e IVA invece di lasciare vincere l'ultima
+    // riga letta. Su un documento non diviso il risultato e' identico a prima.
+    var idx = indicizzaClassificazioni(data || [])
+    Object.keys(idx.sintesi).forEach(function (k) { classMap[k] = idx.sintesi[k] })
+    classRigheByKey = idx.righe
   } catch (e) {
     throw new Error('Lettura classificazioni: ' + e.message)
   }
@@ -2255,12 +2662,15 @@ async function loadExportDataset(force) {
   try {
     const { data, error } = await sb
       .from('tm_conta_classificazioni')
-      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato')
+      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato, created_at')
       .eq('azienda_id', currentAziendaId)
     if (error) throw error
-    for (var k = 0; k < (data || []).length; k++) {
-      classMap[data[k].origine_tipo + ':' + data[k].origine_id] = data[k]
-    }
+    // FASE 25 — un documento puo' avere piu' righe: si indicizza con il motore
+    // unico, che somma imponibile e IVA invece di lasciare vincere l'ultima
+    // riga letta. Su un documento non diviso il risultato e' identico a prima.
+    var idx = indicizzaClassificazioni(data || [])
+    Object.keys(idx.sintesi).forEach(function (k) { classMap[k] = idx.sintesi[k] })
+    classRigheByKey = idx.righe
   } catch (e) { throw new Error('Lettura classificazioni: ' + e.message) }
 
   classByKey = classMap
@@ -4367,14 +4777,35 @@ function clearAcquistiSearch() {
 // Il dato sta nella classificazione, non sulla fattura: si legge dalla mappa
 // caricata da loadMappaCantieri(). Se la mappa non c'e' ancora, si risponde
 // «non so» invece di «nessuno»: sono due cose diverse.
+// FASE 25 — la mappa contiene ora un ELENCO di quote, non un id: una fattura
+// puo' essere divisa su piu' cantieri. Qui serve un id solo (c'e' una colonna
+// sola nella tabella), quindi si risponde con l'id quando la quota e' una, e
+// con l'elenco quando sono di piu' — cosi' chi disegna la riga puo' dirlo.
+function quoteDiAcquisto(idAcquisto) {
+  if (!classCantiereMap) return []
+  return classCantiereMap['acquisto:' + idAcquisto] || []
+}
+
 function cantiereDiAcquisto(idAcquisto) {
-  if (!classCantiereMap) return null
-  return classCantiereMap['acquisto:' + idAcquisto] || null
+  var q = quoteDiAcquisto(idAcquisto)
+  if (q.length !== 1) return null
+  return q[0].cantiere_id || null
 }
 
 // Una riga senza cantiere non resta vuota: «aziendale» in grigio dice che e'
 // una spesa della ditta, non un dato mancante.
-function etichettaCantiereRiga(cantiereId) {
+// FASE 25 — e una divisa lo dice: una cella vuota su una fattura ripartita fra
+// due cantieri sembrerebbe un dato che manca, mentre e' un dato che non ci sta.
+function etichettaCantiereRiga(cantiereId, idAcquisto) {
+  if (idAcquisto) {
+    var q = quoteDiAcquisto(idAcquisto)
+    if (q.length > 1) {
+      var conCantiere = q.filter(function (x) { return !!x.cantiere_id }).length
+      return '<span class="cant-diviso" title="Apri la fattura per vedere la ripartizione">' +
+             '\u2702\uFE0F divisa su ' + (conCantiere || q.length) +
+             (conCantiere === 1 ? ' cantiere' : ' cantieri') + '</span>'
+    }
+  }
   if (!cantiereId) return '<span class="dim">aziendale</span>'
   return esc(cantiereLabel(cantiereId))
 }
@@ -4386,8 +4817,13 @@ function riempiFiltroCantieriAcquisti() {
   if (!sel) return
   var usati = {}, senza = false
   ;(acquistiList || []).forEach(function (a) {
-    var c = cantiereDiAcquisto(a.id)
-    if (c) usati[c] = true; else senza = true
+    // FASE 25 — TUTTE le quote, non solo la prima: una fattura divisa fra due
+    // cantieri deve comparire nel filtro di tutti e due.
+    var quote = quoteDiAcquisto(a.id)
+    if (!quote.length) { senza = true; return }
+    quote.forEach(function (q) {
+      if (q.cantiere_id) usati[q.cantiere_id] = true; else senza = true
+    })
   })
   var prec = sel.value
   var opts = '<option value="">Tutti</option>'
@@ -4412,9 +4848,18 @@ function renderAcquistiTable() {
     if (stato && a.stato_pagamento !== stato) return false
     if (anno && (!a.data || String(a.data).slice(0, 4) !== String(anno))) return false
     if (cantF) {
-      var ca = cantiereDiAcquisto(a.id)
-      if (cantF === '__nessuno__') { if (ca) return false }
-      else if (ca !== cantF) return false
+      // FASE 25 — una fattura divisa appartiene a piu' cantieri: si mostra
+      // filtrando su uno QUALSIASI dei suoi. Filtrare sulla sola prima quota
+      // l'avrebbe fatta sparire dagli altri.
+      var quote = quoteDiAcquisto(a.id)
+      if (cantF === '__nessuno__') {
+        // «aziendale» vuol dire: non classificata, oppure con almeno una quota
+        // senza cantiere (la parte che va a magazzino o alle spese generali).
+        var haSenza = !quote.length || quote.some(function (q) { return !q.cantiere_id })
+        if (!haSenza) return false
+      } else {
+        if (!quote.some(function (q) { return q.cantiere_id === cantF })) return false
+      }
     }
     return true
   })
@@ -4453,7 +4898,7 @@ function renderAcquistiTable() {
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
       '<td>' + statoAcquistoBadge(a.stato_pagamento) + paySub + '</td>' +
-      '<td>' + etichettaCantiereRiga(cantiereDiAcquisto(a.id)) + '</td>' +
+      '<td>' + etichettaCantiereRiga(cantiereDiAcquisto(a.id), a.id) + '</td>' +
       '<td class="row-actions">' + acquistiRowActions(a) + '</td>' +
     '</tr>'
   }).join('')
@@ -5489,15 +5934,19 @@ async function loadRecentiInseriti() {
       var ids = data.map(function (m) { return m.id })
       const { data: cls, error: clsErr } = await sb
         .from('tm_conta_classificazioni')
-        .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, cantiere_id, note, stato')
+        .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, cantiere_id, note, stato, created_at')
         .eq('azienda_id', currentAziendaId)
         .eq('origine_tipo', 'proprio')
         .in('origine_id', ids)
       if (!clsErr && cls) {
-        for (var ci = 0; ci < cls.length; ci++) {
-          statoById[cls[ci].origine_id] = cls[ci].stato
-          classByKey['proprio:' + cls[ci].origine_id] = cls[ci]
-        }
+        // FASE 25 — anche qui passa dal motore: con un movimento diviso in due
+        // righe, l'assegnamento diretto avrebbe tenuto solo la seconda.
+        var idxR = indicizzaClassificazioni(cls)
+        Object.keys(idxR.sintesi).forEach(function (k) {
+          classByKey[k] = idxR.sintesi[k]
+          statoById[idxR.sintesi[k].origine_id] = idxR.sintesi[k].stato
+        })
+        Object.keys(idxR.righe).forEach(function (k) { classRigheByKey[k] = idxR.righe[k] })
       }
       // I conti servono per scrivere il nome accanto al numero.
       await ensureContiIva()
@@ -10037,17 +10486,33 @@ async function loadGiornate(force) {
 // Il collegamento documento → cantiere sta nelle classificazioni, non nella
 // vista: v_conta_flussi non espone cantiere_id e modificarla e' fuori perimetro.
 // Si carica la mappa e si incrocia qui.
+//
+// FASE 25 — NON PIU' UN CANTIERE PER DOCUMENTO, MA UN ELENCO DI QUOTE.
+// Prima la mappa teneva `documento -> cantiere_id`: con una fattura divisa fra
+// Camorino e il magazzino, la seconda riga sovrascriveva la prima e l'INTERO
+// importo del documento finiva su un cantiere solo — quello letto per ultimo.
+// Adesso ogni documento porta l'elenco delle sue quote, e ogni quota sa quanto
+// vale: la somma delle quote e' il totale del documento, e nessun franco viene
+// contato due volte.
 async function loadMappaCantieri(force) {
   if (classCantiereMap && !force) return classCantiereMap
   classCantiereMap = {}
   if (!currentAziendaId) return classCantiereMap
   try {
     const { data, error } = await sb.from('tm_conta_classificazioni')
-      .select('origine_tipo, origine_id, cantiere_id')
+      .select('origine_tipo, origine_id, cantiere_id, imponibile, iva_importo')
       .eq('azienda_id', currentAziendaId)
     if (error) throw error
     ;(data || []).forEach(function (c) {
-      classCantiereMap[c.origine_tipo + ':' + c.origine_id] = c.cantiere_id || null
+      var k = chiaveClassificazione(c.origine_tipo, c.origine_id)
+      if (!classCantiereMap[k]) classCantiereMap[k] = []
+      classCantiereMap[k].push({
+        cantiere_id: c.cantiere_id || null,
+        // La quota e' imponibile + IVA, cioe' la fetta di TOTALE assegnata a
+        // questa riga. Non l'imponibile da solo: Umberto non e' soggetto IVA,
+        // e per lui l'IVA sugli acquisti e' costo a tutti gli effetti.
+        quota: (safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0)
+      })
     })
   } catch (e) {
     console.warn('Collegamento cantieri non letto:', e.message || e)
@@ -10055,10 +10520,49 @@ async function loadMappaCantieri(force) {
   return classCantiereMap
 }
 
-function cantiereDelFlusso(r) {
-  if (!classCantiereMap) return null
-  return classCantiereMap[r.origine_tipo + ':' + r.id_origine] || null
+// Le quote di un documento della vista. Se il documento non e' classificato,
+// nessuna quota: non finisce su nessun cantiere, come prima.
+function quoteCantieriDelFlusso(r) {
+  if (!classCantiereMap) return []
+  return classCantiereMap[chiaveClassificazione(r.origine_tipo, r.id_origine)] || []
 }
+
+// Quanta parte di questo documento appartiene a questo cantiere.
+//
+// La proporzione conta, e non e' un dettaglio: le colonne `incassato` e
+// `residuo` della vista sono riferite al documento INTERO. Su un documento
+// diviso vanno ripartite con la stessa percentuale della quota, altrimenti un
+// cantiere che porta un terzo della fattura si vedrebbe attribuire tutto
+// l'incasso.
+function quotaCantiere(r, cantiereId) {
+  var quote = quoteCantieriDelFlusso(r)
+  if (!quote.length) return null
+  var totQuote = 0, mia = 0, trovato = false
+  for (var i = 0; i < quote.length; i++) {
+    totQuote += quote[i].quota
+    if (quote[i].cantiere_id === cantiereId) { mia += quote[i].quota; trovato = true }
+  }
+  if (!trovato) return null
+  var imp = safeNum(r.importo_totale) || 0
+  // Se le quote non tornano col totale (documento vecchio, o modificato a mano
+  // nel database) si ripiega sulla proporzione fra le quote stesse: meglio una
+  // ripartizione coerente che un numero fuori scala.
+  var frazione = (Math.abs(totQuote) > 0.005) ? (mia / totQuote) : 0
+  return { importo: (Math.abs(imp) > 0.005 ? imp * frazione : mia), frazione: frazione }
+}
+
+// Compatibilita': il cantiere del documento quando ce n'e' UNO SOLO. Serve agli
+// elenchi che mostrano una colonna «cantiere» per riga, dove tre nomi non ci
+// starebbero. Con un documento diviso torna null, e chi la usa lo dice.
+function cantiereDelFlusso(r) {
+  var quote = quoteCantieriDelFlusso(r)
+  if (quote.length !== 1) return null
+  return quote[0].cantiere_id || null
+}
+
+// Vero se il documento e' diviso su piu' righe: serve a scriverlo negli elenchi
+// invece di mostrare una colonna vuota che sembra un dato mancante.
+function flussoDiviso(r) { return quoteCantieriDelFlusso(r).length > 1 }
 
 // ── Il calcolo, per un cantiere ──────────────────────────────────────────────
 // Un cantiere non ha «periodo»: si guarda tutto, dall'inizio alla fine.
@@ -10079,14 +10583,21 @@ function contiCantiere(cantiereId) {
   // ── Entrate e fatture fornitori: dalla vista, incrociata con le classificazioni
   ;(flussiCache || []).forEach(function (r) {
     if (!confermata(r)) return                       // le da_confermare non contano, come ovunque
-    if (cantiereDelFlusso(r) !== cantiereId) return
-    var imp = safeNum(r.importo_totale) || 0
+    // FASE 25 — la QUOTA di questo documento che tocca a questo cantiere.
+    // Prima si prendeva l'importo intero se il documento nominava il cantiere;
+    // adesso un documento puo' essere diviso, e prendere tutto vorrebbe dire
+    // gonfiare i costi del cantiere di quello che appartiene a un altro.
+    var q = quotaCantiere(r, cantiereId)
+    if (!q) return
+    var imp = q.importo
 
     // FASE 8 — incassato e residuo vengono dai pagamenti veri, non dallo stato:
     // una fattura incassata a meta' contribuisce per meta' a entrambi.
-    var pagato = safeNum(r.importo_pagato) || 0
+    // Ripartiti con la stessa frazione della quota: sono riferiti al documento
+    // intero, e su un documento diviso vanno divisi anche loro.
+    var pagato = (safeNum(r.importo_pagato) || 0) * q.frazione
     var res = safeNum(r.residuo)
-    if (res == null) res = imp - pagato
+    res = (res == null) ? (imp - pagato) : (res * q.frazione)
 
     if (r.verso === 'entrata') {
       // Il FATTURATO conta il documento emesso, a prescindere dall'incasso:
@@ -10142,6 +10653,245 @@ function contiCantiere(cantiereId) {
   c.vuoto = !c.fatturato.righe.length && !c.fornitori.righe.length &&
             !c.spese.righe.length && !c.regiaAperta.righe.length && !c.ore
   return c
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FASE 25 / P2 — ELIMINARE UN CANTIERE, MA SOLO SE E' VUOTO
+//
+// La regola e' la stessa gia' usata per i contatti, e non e' una formalita':
+// un cantiere vuoto non fa male a nessuno, uno con dentro dei dati si'. Una
+// fattura deve continuare a dire a quale lavoro si riferisce, e le giornate
+// dicono cosa e' stato fatto e quando.
+//
+// LE TABELLE NON SONO SCRITTE A MANO. La tabella `cantieri` e' dell'App
+// Cantieri, che domani puo' aggiungerne un'altra con un `cantiere_id` dentro:
+// un elenco cablato qui invecchierebbe in silenzio, e il primo cantiere
+// cancellato dopo quel giorno si porterebbe via dei dati. Si legge percio' il
+// catalogo vero, dalla descrizione OpenAPI che PostgREST pubblica su /rest/v1/.
+//
+// I LEGAMI INDIRETTI vanno aggiunti a mano, perche' una colonna non li dice:
+// `voci_lavoro` non ha `cantiere_id`, e' appesa alle giornate e alle
+// lavorazioni del cantiere. Si contano tutte e due le vie.
+//
+// I FILE NELLO STORAGE non se ne vanno con la riga del database, e il loro
+// percorso e' costruito sul NOME del cantiere: dopo la cancellazione non
+// sarebbero piu' rintracciabili. Percio' si contano PRIMA e si dicono, cosi'
+// Umberto puo' scaricarli.
+//
+// NESSUNA CANCELLAZIONE FORZATA. Se un giorno servisse portarsi via anche i
+// dati collegati, quella si fa una volta con SQL_CANTIERI_pulizia.sql, sotto
+// gli occhi di chi la lancia — non con un bottone.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// I bucket dell'App Cantieri che contengono file di un cantiere.
+var BUCKET_CANTIERE = ['cantiere-foto', 'cantiere-spese', 'cantiere-docs']
+
+// Le tabelle con una colonna cantiere_id, lette dal catalogo. Si chiedono una
+// volta per sessione: e' una descrizione dello schema, non cambia mentre si usa
+// il programma.
+var tabelleCantiereCache = null
+
+async function tabelleConCantiereId() {
+  if (tabelleCantiereCache) return tabelleCantiereCache
+  if (!currentAziendaId) return null           // senza sessione non si chiede niente
+  try {
+    // PostgREST pubblica su /rest/v1/ la descrizione OpenAPI di tutto lo schema:
+    // e' il catalogo, visto da fuori. Nessuna query su information_schema, che
+    // da qui non e' raggiungibile.
+    var risposta = await fetch(SUPABASE_URL + '/rest/v1/', {
+      headers: { apikey: SUPABASE_KEY, Accept: 'application/openapi+json' }
+    })
+    if (!risposta.ok) throw new Error('HTTP ' + risposta.status)
+    var api = await risposta.json()
+    var def = api.definitions || (api.components && api.components.schemas) || {}
+    var trovate = []
+    Object.keys(def).forEach(function (nome) {
+      var props = def[nome] && def[nome].properties
+      if (props && Object.prototype.hasOwnProperty.call(props, 'cantiere_id')) trovate.push(nome)
+    })
+    tabelleCantiereCache = trovate.sort()
+    return tabelleCantiereCache
+  } catch (e) {
+    console.warn('Catalogo delle tabelle non letto:', e.message || e)
+    return null                                 // null = «non lo so», non «nessuna»
+  }
+}
+
+// Il nome leggibile di una tabella, per il messaggio.
+var NOMI_TABELLE_CANTIERE = {
+  giornate: 'giornate', spese: 'spese', regia: 'righe di regia',
+  voci_regia: 'voci di regia', materiali: 'materiali',
+  materiali_cantiere: 'materiali di cantiere', foto: 'foto',
+  bolle_consegna: 'bolle di consegna', piano_giorno: 'righe di piano',
+  preventivi_cantiere: 'preventivi', cantiere_figure: 'figure assegnate',
+  pagamenti_ricevuti: 'pagamenti ricevuti', sal_pagamenti: 'pagamenti SAL',
+  tiri_gru: 'tiri di gru', assenze: 'assenze', lavorazioni: 'lavorazioni',
+  tm_conta_classificazioni: 'documenti contabili'
+}
+function nomeTabellaLeggibile(t) { return NOMI_TABELLE_CANTIERE[t] || t }
+
+// Conta tutto quello che nomina questo cantiere. Torna anche `incerto`: quando
+// non si e' riusciti a controllare qualcosa, la cancellazione NON si offre.
+async function contaAttaccatoAlCantiere(cantiereId, nomeCantiereTesto) {
+  var esito = { totale: 0, pezzi: [], file: 0, fileBucket: [], incerto: [], tabelleViste: 0 }
+  if (!currentAziendaId) throw new Error('sessione non attiva, il controllo non è possibile')
+
+  var tabelle = await tabelleConCantiereId()
+  if (!tabelle) {
+    esito.incerto.push('non sono riuscito a leggere l’elenco delle tabelle dal database')
+  } else {
+    esito.tabelleViste = tabelle.length
+    for (var i = 0; i < tabelle.length; i++) {
+      var t = tabelle[i]
+      try {
+        const { count, error } = await sb.from(t)
+          .select('cantiere_id', { count: 'exact', head: true })
+          .eq('cantiere_id', cantiereId)
+        if (error) throw error
+        var n = count || 0
+        if (n > 0) { esito.totale += n; esito.pezzi.push(n + ' ' + nomeTabellaLeggibile(t)) }
+      } catch (e) {
+        // Una tabella che non si riesce a leggere e' un «non lo so»: si annota
+        // e la cancellazione si blocca. Meglio non cancellare che cancellare
+        // sopra un dato che non si e' potuto vedere.
+        esito.incerto.push(t)
+      }
+    }
+  }
+
+  // I due legami che una colonna non dice. `voci_lavoro` e' appesa alle
+  // giornate e alle lavorazioni, non al cantiere.
+  var vie = [
+    { padre: 'giornate',    campo: 'giornata_id' },
+    { padre: 'lavorazioni', campo: 'lavorazione_id' }
+  ]
+  for (var v = 0; v < vie.length; v++) {
+    try {
+      const { data: padri, error: ePadri } = await sb.from(vie[v].padre)
+        .select('id').eq('cantiere_id', cantiereId).limit(1000)
+      if (ePadri) throw ePadri
+      var ids = (padri || []).map(function (x) { return x.id })
+      if (!ids.length) continue
+      const { count, error } = await sb.from('voci_lavoro')
+        .select(vie[v].campo, { count: 'exact', head: true })
+        .in(vie[v].campo, ids)
+      if (error) throw error
+      if (count) { esito.totale += count; esito.pezzi.push(count + ' voci di lavoro') }
+    } catch (e) {
+      // voci_lavoro potrebbe non avere quella colonna: non e' un guasto, e' che
+      // quella via non esiste. Si prova l'altra.
+      if (!/column|does not exist|42703|PGRST/i.test(String(e.message || ''))) {
+        esito.incerto.push('voci_lavoro via ' + vie[v].padre)
+      }
+    }
+  }
+
+  // I file: il percorso e' costruito sul NOME del cantiere.
+  if (nomeCantiereTesto) {
+    for (var b = 0; b < BUCKET_CANTIERE.length; b++) {
+      try {
+        const { data, error } = await sb.storage.from(BUCKET_CANTIERE[b])
+          .list(nomeCantiereTesto, { limit: 100 })
+        if (error) throw error
+        if (data && data.length) {
+          esito.file += data.length
+          esito.fileBucket.push(data.length + ' in ' + BUCKET_CANTIERE[b])
+        }
+      } catch (e) {
+        // Un bucket che non esiste o non si legge non blocca: i file non stanno
+        // nel database e la loro presenza si segnala, non si impone.
+        console.warn('Bucket ' + BUCKET_CANTIERE[b] + ' non controllato:', e.message || e)
+      }
+    }
+  }
+
+  return esito
+}
+
+function esitoEliminaCantiere(tipo, msg) {
+  showFattureBanner('cant-elimina-esito', tipo, msg)
+}
+
+async function chiediEliminaCantiere() {
+  var id = cantiereApertoId
+  if (!id) return
+  var cant = (cantieriCache || []).filter(function (x) { return x.id === id })[0]
+  var nome = cant ? (cant.nome || '') : ''
+
+  var btn = el('cant-elimina-btn')
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Controllo in corso…' }
+  html('cant-elimina-esito', loadingRow('Guardo cosa c’è attaccato a questo cantiere…'))
+  try {
+    var uso = await contaAttaccatoAlCantiere(id, nome)
+
+    if (uso.incerto.length) {
+      esitoEliminaCantiere('err',
+        'Non elimino: non sono riuscito a controllare tutto (' + uso.incerto.join(', ') + '). ' +
+        'Senza quel controllo cancellare vorrebbe dire farlo alla cieca. Riprova fra un momento.')
+      return
+    }
+
+    if (uso.totale > 0) {
+      html('cant-elimina-esito',
+        '<div class="fase-banner warn" role="status">' +
+          '<span class="icon" aria-hidden="true">🔒</span>' +
+          '<div class="msg"><strong>Non si può eliminare: dentro c’è del lavoro registrato.</strong>' +
+            '<small>' + esc(uso.pezzi.join(' · ')) + '.<br>' +
+            'Questi dati dicono cosa è stato fatto, e se il cantiere è su una fattura quella ' +
+            'deve continuare a dire a quale lavoro si riferisce. ' +
+            'Un lavoro finito si <strong>chiude</strong>: mettilo su «Completato» nell’App ' +
+            'Cantieri e sparisce dai lavori in corso, senza perdere niente.' +
+            (uso.file ? '<br>Ci sono anche ' + uso.file + ' file (' + esc(uso.fileBucket.join(', ')) + ').' : '') +
+            '</small></div></div>')
+      return
+    }
+
+    // Vuoto: si può. Ma se ha dei file, si dice PRIMA della conferma.
+    var avvisoFile = uso.file
+      ? '\n\nATTENZIONE: nello Storage ci sono ' + uso.file + ' file di questo cantiere (' +
+        uso.fileBucket.join(', ') + ').\nNON vengono cancellati, ma il loro percorso è ' +
+        'costruito sul nome del cantiere: dopo non sarebbero più rintracciabili.\n' +
+        'Se ti servono, scaricali PRIMA da Supabase.'
+      : ''
+    if (!window.confirm('Vuoi eliminare definitivamente il cantiere «' + nome + '»?\n\n' +
+        'Non c’è niente attaccato: nessuna giornata, nessuna spesa, nessun documento.\n' +
+        'L’operazione non si annulla.' + avvisoFile)) {
+      html('cant-elimina-esito', '')
+      return
+    }
+    await eliminaCantiereConfermato(id, nome)
+  } catch (e) {
+    console.error('Controllo cantiere:', e)
+    esitoEliminaCantiere('err', 'Controllo non riuscito: ' + (e.message || e) +
+      ' — non elimino niente.')
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔎 Controlla se si può eliminare' }
+  }
+}
+
+async function eliminaCantiereConfermato(id, nome) {
+  try {
+    const { error } = await sb.from('cantieri').delete().eq('id', id).select()
+    if (error) throw error
+    // Via dalla cache e dalle tendine, senza ricaricare la pagina.
+    cantieriCache = (cantieriCache || []).filter(function (c) { return c.id !== id })
+    cantiereApertoId = null
+    classCantiereMap = null
+    tornaElencoCantieri()
+    renderElencoCantieri()
+    riempiTendinaCantieri()
+    showCantieriBanner('ok', 'Cantiere «' + nome + '» eliminato.')
+  } catch (e) {
+    console.error('Eliminazione cantiere:', e)
+    if (eRifiutoPolicy(e)) {
+      esitoEliminaCantiere('err',
+        'Il database non permette a questo programma di eliminare cantieri. ' +
+        'È un permesso da aggiungere una volta sola: lancia SQL_FASE25.sql dal SQL Editor ' +
+        'di Supabase. Intanto non è stato cancellato niente.')
+    } else {
+      esitoEliminaCantiere('err', 'Cantiere non eliminato: ' + (e.message || e))
+    }
+  }
 }
 
 // ── La pagina ────────────────────────────────────────────────────────────────
@@ -12184,6 +12934,94 @@ async function trovaDocumento(tabella, idDoc) {
   return data
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// FASE 25 — UN DOCUMENTO PUO' AVERE PIU' CLASSIFICAZIONI
+//
+// Una fattura del legname copre tre cantieri: una tegola per Camorino, due
+// listoni per il magazzino. Da questa fase il documento si divide in piu'
+// righe, una per destinazione.
+//
+// IL RISCHIO VERO NON E' LA DIVISIONE: E' CONTARE DUE VOLTE.
+// Tutto il programma indicizzava le classificazioni in una mappa
+// `origine_tipo:origine_id -> riga`, cioe' UNA riga per documento. Con tre
+// righe l'ultima letta avrebbe sovrascritto le altre in silenzio: il documento
+// sarebbe risultato classificato col conto e il cantiere dell'ultima, e le
+// altre due sarebbero sparite dai conti senza un errore da nessuna parte.
+//
+// La cura e' tenere DUE mappe, costruite qui in un posto solo:
+//   classByKey       -> una riga di SINTESI per documento, con imponibile e IVA
+//                       SOMMATI e il conto della riga prevalente. Tutto il
+//                       codice che leggeva la mappa continua a funzionare, e su
+//                       un documento non diviso il risultato e' identico a prima.
+//   classRigheByKey  -> l'elenco COMPLETO delle righe, per chi ha bisogno del
+//                       dettaglio: i costi per cantiere e la schermata di
+//                       classificazione.
+//
+// La riga di sintesi porta `_righe` (quante sono) e `_diviso` (vero da due in
+// su), cosi' chi mostra una scheda puo' dirlo invece di far finta di niente.
+// ═════════════════════════════════════════════════════════════════════════════
+
+function chiaveClassificazione(origineTipo, origineId) {
+  return String(origineTipo) + ':' + String(origineId)
+}
+
+// La riga che "rappresenta" il documento: quella che pesa di piu'. E' la stessa
+// regola del LATERAL nella vista (SQL_FASE25), e le due devono restare uguali:
+// se divergessero, la scheda dell'acquisto e il cruscotto direbbero due conti
+// diversi per lo stesso documento.
+function rigaPrevalente(righe) {
+  var best = null
+  for (var i = 0; i < righe.length; i++) {
+    var r = righe[i]
+    if (!best) { best = r; continue }
+    var a = Math.abs(safeNum(r.imponibile) || 0)
+    var b = Math.abs(safeNum(best.imponibile) || 0)
+    if (a > b) best = r
+    else if (a === b && String(r.created_at || '') < String(best.created_at || '')) best = r
+  }
+  return best
+}
+
+// Da un elenco piatto di classificazioni alle due mappe.
+function indicizzaClassificazioni(righe) {
+  var perDoc = {}
+  ;(righe || []).forEach(function (c) {
+    var k = chiaveClassificazione(c.origine_tipo, c.origine_id)
+    if (!perDoc[k]) perDoc[k] = []
+    perDoc[k].push(c)
+  })
+
+  var sintesi = {}
+  Object.keys(perDoc).forEach(function (k) {
+    var lista = perDoc[k]
+    var capo = rigaPrevalente(lista)
+    var impTot = 0, ivaTot = 0
+    for (var i = 0; i < lista.length; i++) {
+      impTot += safeNum(lista[i].imponibile) || 0
+      ivaTot += safeNum(lista[i].iva_importo) || 0
+    }
+    // Copia del capo con i totali sommati: chi legge un solo numero legge il
+    // totale del documento, non la quota della riga piu' grande.
+    var r = {}
+    Object.keys(capo).forEach(function (campo) { r[campo] = capo[campo] })
+    // round2: sommando decimali il virgola mobile lascia code tipo
+    // 53.190000000000005, e quel numero finirebbe nell export come sta.
+    r.imponibile  = round2(impTot)
+    r.iva_importo = round2(ivaTot)
+    r._righe      = lista.length
+    r._diviso     = lista.length > 1
+    sintesi[k] = r
+  })
+
+  return { sintesi: sintesi, righe: perDoc }
+}
+
+// Le righe di un documento, sempre un array (anche vuoto).
+function classificazioniDi(origineTipo, origineId) {
+  if (!classRigheByKey) return []
+  return classRigheByKey[chiaveClassificazione(origineTipo, origineId)] || []
+}
+
 // Le classificazioni servono anche fuori dalla schermata «Da classificare»:
 // senza questa lettura le schede mostrerebbero «non classificato» per tutto.
 async function assicuraClassificazioni(force) {
@@ -12191,11 +13029,13 @@ async function assicuraClassificazioni(force) {
   if (!currentAziendaId) return classByKey
   try {
     const { data, error } = await sb.from('tm_conta_classificazioni')
-      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato')
+      .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at')
       .eq('azienda_id', currentAziendaId)
     if (error) throw error
-    classByKey = {}
-    ;(data || []).forEach(function (c) { classByKey[c.origine_tipo + ':' + c.origine_id] = c })
+    // FASE 25 — le due mappe si riempiono sempre insieme.
+    var idx = indicizzaClassificazioni(data || [])
+    classByKey = idx.sintesi
+    classRigheByKey = idx.righe
   } catch (e) {
     console.warn('Classificazioni non lette:', e.message || e)
   }
@@ -13262,7 +14102,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '43'
+var VERSIONE = '44'
 
 function controllaVersionePagina() {
   try {
