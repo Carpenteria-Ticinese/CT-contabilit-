@@ -1358,6 +1358,61 @@ textarea.cell-desc {
   .iva-conti { grid-template-columns: 1fr; }
 }
 
+/* ── FASE 25 — DIVIDERE UN DOCUMENTO SU PIU' CANTIERI ─────────────────────
+   Le righe stanno dentro la modale di classificazione, che e' gia' stretta:
+   ogni riga e' un blocchetto con il suo numero a sinistra e i suoi bottoni a
+   destra, e i campi vanno a capo da soli quando lo spazio finisce. */
+.cls-div-testata {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 10px;
+}
+.cls-div-riga {
+  display: flex; gap: 10px; align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--surface);
+}
+.cls-div-num {
+  flex: 0 0 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--bg); border: 1px solid var(--border);
+  font-size: 12px; font-weight: 700; color: var(--text2);
+}
+.cls-div-campi { flex: 1 1 auto; min-width: 0; }
+.cls-div-campi .form-group { margin-bottom: 8px; }
+.cls-div-azioni {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; gap: 6px; align-items: stretch;
+}
+
+/* La quadratura. E' l'unica cosa che sta fra una divisione e un documento
+   classificato male, quindi si vede sempre e dice il numero, non un colore. */
+.cls-quadra {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 13px; line-height: 1.5;
+  border: 1px solid;
+}
+.cls-quadra.ok { background: #f0fdf4; border-color: #86efac; color: #15803d; }
+.cls-quadra.no { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+
+/* Negli elenchi, una fattura divisa lo dice invece di lasciare la cella vuota:
+   una cella vuota sembra un dato che manca, non un dato che non ci sta. */
+.cant-diviso {
+  font-size: 12px; color: #7c3aed;
+  background: #f5f3ff; border: 1px solid #ddd6fe;
+  border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .cls-div-riga { flex-wrap: wrap; }
+  .cls-div-azioni { flex-direction: row; width: 100%; }
+}
+
 /* Stampa: solo il documento fattura */
 @media print {
   body * { visibility: hidden; }
