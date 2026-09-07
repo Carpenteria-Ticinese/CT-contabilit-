@@ -2415,13 +2415,35 @@ async function openStoria(idx) {
   await loadCantieri()
 
   try {
-    const { data, error } = await sb
-      .from('tm_conta_audit')
-      .select('campo, valore_prima, valore_dopo, utente, timestamp')
-      .eq('classificazione_id', classId)
-      .order('timestamp', { ascending: false })
-    if (error) throw error
-    var rows = data || []
+    // FASE 26 — la storia si legge per DOCUMENTO, non per riga.
+    //
+    // Con un documento diviso ogni riga ha il suo id, e la riga cancellata
+    // perde il legame (ON DELETE SET NULL): filtrando su classificazione_id la
+    // storia di una divisione sarebbe frammentata e le rimozioni invisibili.
+    //
+    // Se le colonne della FASE 26 non ci sono ancora (SQL non lanciato), si
+    // ripiega sul modo di prima: si vede meno, ma non si rompe niente.
+    var rows = []
+    var perDocumento = false
+    if (m && m.origine_tipo && m.origine_id) {
+      var rDoc = await sb
+        .from('tm_conta_audit')
+        .select('campo, valore_prima, valore_dopo, utente, timestamp, azione')
+        .eq('origine_tipo', m.origine_tipo)
+        .eq('origine_id', m.origine_id)
+        .order('timestamp', { ascending: false })
+      if (!rDoc.error) { rows = rDoc.data || []; perDocumento = true }
+      else console.warn('Storia per documento non disponibile:', rDoc.error.message || rDoc.error)
+    }
+    if (!perDocumento) {
+      const { data, error } = await sb
+        .from('tm_conta_audit')
+        .select('campo, valore_prima, valore_dopo, utente, timestamp')
+        .eq('classificazione_id', classId)
+        .order('timestamp', { ascending: false })
+      if (error) throw error
+      rows = data || []
+    }
     var ids = []
     for (var i = 0; i < rows.length; i++) { if (rows[i].utente) ids.push(rows[i].utente) }
     await loadUtentiEmails(ids)
@@ -2439,14 +2461,30 @@ function renderStoria(rows) {
   var out = '<div class="storia-list">'
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i]
+    // FASE 26 — tre azioni, tre modi di scriverle. Una riga aggiunta o tolta
+    // non ha un «prima → dopo»: mostrarla con la freccia e un lato vuoto
+    // sembrerebbe un dato perso.
+    var az = r.azione || 'modifica'
+    var corpo
+    if (az === 'aggiunta') {
+      corpo = '<div class="storia-field">➕ Riga aggiunta</div>' +
+              '<div class="storia-change"><span class="storia-dopo">' +
+                esc(r.valore_dopo || '') + '</span></div>'
+    } else if (az === 'rimozione') {
+      corpo = '<div class="storia-field">➖ Riga tolta</div>' +
+              '<div class="storia-change"><span class="storia-prima">' +
+                esc(r.valore_prima || '') + '</span></div>'
+    } else {
+      corpo = '<div class="storia-field">' + esc(auditFieldLabel(r.campo)) + '</div>' +
+              '<div class="storia-change">' +
+                '<span class="storia-prima">' + esc(prettyAuditValue(r.campo, r.valore_prima)) + '</span>' +
+                ' <span class="storia-arrow" aria-hidden="true">→</span> ' +
+                '<span class="storia-dopo">' + esc(prettyAuditValue(r.campo, r.valore_dopo)) + '</span>' +
+              '</div>'
+    }
     out +=
       '<div class="storia-item">' +
-        '<div class="storia-field">' + esc(auditFieldLabel(r.campo)) + '</div>' +
-        '<div class="storia-change">' +
-          '<span class="storia-prima">' + esc(prettyAuditValue(r.campo, r.valore_prima)) + '</span>' +
-          ' <span class="storia-arrow" aria-hidden="true">→</span> ' +
-          '<span class="storia-dopo">' + esc(prettyAuditValue(r.campo, r.valore_dopo)) + '</span>' +
-        '</div>' +
+        corpo +
         '<div class="storia-meta">👤 ' + esc(utenteLabel(r.utente)) + ' · 🕐 ' + esc(fmtDateTime(r.timestamp)) + '</div>' +
       '</div>'
   }
@@ -2678,7 +2716,10 @@ async function loadExportDataset(force) {
   await loadCantieri()
   await loadAziendaInfo()
 
-  exportDataset = { fatture: fatture, acquisti: acquisti, movimentiAll: movimentiAll, classMap: classMap, numeroById: numeroById }
+  // FASE 26 — anche il DETTAGLIO delle righe, non solo la sintesi: l'export
+  // deve poter scrivere una riga per classificazione.
+  exportDataset = { fatture: fatture, acquisti: acquisti, movimentiAll: movimentiAll,
+                    classMap: classMap, classRighe: idx ? idx.righe : {}, numeroById: numeroById }
   return exportDataset
 }
 
@@ -2713,17 +2754,122 @@ function docsPeriodo(ds, da, a) {
     var c = ds.classMap[mov.origine_tipo + ':' + mov.origine_id]
     if (!confermato(mov)) continue
     if (!c || !inPeriodo(mov.data, da, a) || c.imponibile == null) continue
+    // `classificatiTutti` resta UNA voce per documento: e' un conteggio di
+    // documenti, e trasformarlo in un conteggio di righe farebbe dire
+    // all'anteprima che ce ne sono piu' di quanti sono.
     classificatiTutti.push({ mov: mov, cls: c })
     // il foglio "Spese e movimenti" esclude fatture e acquisti (hanno fogli propri)
-    if (mov.origine_tipo !== 'fattura' && mov.origine_tipo !== 'acquisto') spese.push({ mov: mov, cls: c })
+    if (mov.origine_tipo !== 'fattura' && mov.origine_tipo !== 'acquisto') {
+      // FASE 26 — una riga di export per ogni classificazione. Qui gli importi
+      // sono GIA' quelli della riga, quindi la somma non cambia per costruzione:
+      // la sintesi che si usava prima era esattamente la loro somma.
+      var righeMov = righeExportDi(ds, mov.origine_tipo, mov.origine_id)
+      for (var rr = 0; rr < righeMov.length; rr++) {
+        spese.push({ mov: mov, cls: righeMov[rr] || c, _i: rr, _n: righeMov.length })
+      }
+    }
   }
   function byData(x, y) { return String(x.data || x.data_emissione || (x.mov && x.mov.data) || '').localeCompare(String(y.data || y.data_emissione || (y.mov && y.mov.data) || '')) }
   vendite.sort(byData); note.sort(byData); acquisti.sort(byData); spese.sort(byData)
   // Il numero torna a chi chiama: l'anteprima dell'export lo dice in chiaro,
   // altrimenti dei documenti sparirebbero dal file senza che nessuno lo sappia.
+  // FASE 26 — le RIGHE di classificazione del periodo, per i riepiloghi per
+  // conto e per codice IVA: un documento diviso su due conti deve pesare su
+  // tutti e due, non tutto su quello prevalente.
+  var righeClassificate = []
+  for (var q = 0; q < classificatiTutti.length; q++) {
+    var mv = classificatiTutti[q].mov
+    var lr = righeExportDi(ds, mv.origine_tipo, mv.origine_id)
+    for (var rq = 0; rq < lr.length; rq++) {
+      righeClassificate.push(lr[rq] || classificatiTutti[q].cls)
+    }
+  }
   return { vendite: vendite, note: note, acquisti: acquisti, spese: spese,
-           classificatiTutti: classificatiTutti, scartatiDaConfermare: scartatiDaConfermare }
+           classificatiTutti: classificatiTutti, righeClassificate: righeClassificate,
+           scartatiDaConfermare: scartatiDaConfermare }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FASE 26 — L'EXPORT PORTA LA DIVISIONE
+//
+// IL PROBLEMA. Dalla FASE 25 un documento puo' essere diviso su piu' cantieri:
+// una tegola per Camorino, due listoni per il magazzino, una fattura sola. Ma
+// l'export continuava a scriverne UNA riga, con il conto della parte piu'
+// grande e l'importo INTERO. Finche' il file resta in casa e' un'imprecisione;
+// nel momento in cui va al commercialista, quel file dice una cosa che non e'
+// vera.
+//
+// LA REGOLA. Una riga di export per ogni classificazione, non per documento.
+//   documento con UNA classificazione  -> una riga, identica a prima;
+//   documento diviso in tre            -> tre righe, ognuna col suo importo,
+//                                         il suo conto, il suo codice IVA e il
+//                                         suo cantiere.
+//
+// LA TRAPPOLA, che e' la stessa del conteggio doppio spostata dentro il file:
+// piu' righe, ma LA SOMMA NON DEVE CAMBIARE DI UN CENTESIMO. Ripartire con le
+// percentuali e arrotondare ogni riga farebbe perdere o guadagnare centesimi:
+// percio' le prime righe si arrotondano e L'ULTIMA prende quello che resta.
+// E' il modo in cui si ripartisce una somma quando il totale non e' negoziabile.
+//
+// SUL FORMATO: le colonne di prima restano dove sono e come sono. Quelle nuove
+// vanno in CODA, dopo tutte le altre. Un file che va a una persona fuori dalla
+// ditta non si riorganizza sotto i piedi.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Le classificazioni di un documento, in ordine stabile. Sempre almeno una
+// voce: se il documento non e' classificato torna [null], cosi' chi disegna
+// la riga non deve avere due strade.
+function righeExportDi(ds, origineTipo, origineId) {
+  var lista = (ds && ds.classRighe) ? (ds.classRighe[origineTipo + ':' + origineId] || []) : []
+  if (!lista.length) return [null]
+  if (lista.length === 1) return lista
+  return lista.slice().sort(function (x, y) {
+    var d = (Math.abs(safeNum(y.imponibile) || 0)) - (Math.abs(safeNum(x.imponibile) || 0))
+    if (d !== 0) return d
+    return String(x.created_at || '').localeCompare(String(y.created_at || ''))
+  })
+}
+
+// Ripartisce un totale sulle righe secondo il peso di ognuna.
+// L'ultima riga prende il resto: e' quello che garantisce che la somma delle
+// parti sia ESATTAMENTE il totale di partenza, centesimi compresi.
+function ripartisci(totale, righe) {
+  var n = righe.length
+  var tot = safeNum(totale) || 0
+  if (n <= 1) return [round2(tot)]
+
+  var pesi = righe.map(function (r) {
+    if (!r) return 0
+    return Math.abs((safeNum(r.imponibile) || 0) + (safeNum(r.iva_importo) || 0))
+  })
+  var somma = 0
+  for (var i = 0; i < pesi.length; i++) somma += pesi[i]
+  // Senza pesi utilizzabili si divide in parti uguali: meglio una ripartizione
+  // arbitraria ma quadrata che una colonna vuota.
+  if (somma < 0.005) { pesi = righe.map(function () { return 1 }); somma = n }
+
+  var fette = [], accumulato = 0
+  for (var k = 0; k < n - 1; k++) {
+    var f = round2(tot * pesi[k] / somma)
+    fette.push(f)
+    accumulato = round2(accumulato + f)
+  }
+  fette.push(round2(tot - accumulato))   // l'ultima chiude il conto
+  return fette
+}
+
+// «1 di 3». Su un documento non diviso resta vuota: una colonna che dice
+// «1 di 1» su ogni riga e' rumore, e chi apre il file non deve chiedersi cosa
+// significhi finche' non serve davvero.
+function etichettaRigaDiviso(i, n) { return n > 1 ? (i + 1) + ' di ' + n : '' }
+
+// La frase che spiega il file a chi non ha seguito niente di tutto questo.
+var NOTA_EXPORT_DIVISI =
+  'Un documento puo occupare piu righe: quando una fattura riguarda piu cantieri ' +
+  '(per esempio materiale per due lavori diversi) viene divisa, e ogni riga porta ' +
+  'la sua parte di importo, il suo conto e il suo cantiere. Le righe dello stesso ' +
+  'documento hanno lo stesso numero e la colonna «Riga» dice «1 di 2», «2 di 2». ' +
+  'La somma delle righe e sempre il totale del documento: non sono doppioni.'
 
 // ── Fogli ────────────────────────────────────────────────────────────────────
 function buildSheetVendite(list, ds, negativo, mappaAllegati) {
@@ -2733,31 +2879,50 @@ function buildSheetVendite(list, ds, negativo, mappaAllegati) {
   // resta identico a quello dell'export Excel di sempre.
   // FASE 8 — PAGATO e RESIDUO: vedi la nota sul foglio Acquisti.
   if (mappaAllegati) head.push('PAGATO', 'RESIDUO', 'ALLEGATO')
+  // FASE 26 — in CODA, dopo tutto il resto: le colonne di prima non si spostano.
+  head.push('Riga', 'Conto', 'Codice IVA')
   var aoa = [head]
   var segno = negativo ? -1 : 1
   for (var i = 0; i < list.length; i++) {
     var f = list[i]
-    var c = ds.classMap['fattura:' + f.id]
-    var riga = [
-      f.numero || '',
-      f.data_emissione || '',
-      f.cliente_nome || '',
-      c ? cantiereLabel(c.cantiere_id) : '',
-      round2(segno * (safeNum(f.totale_imponibile) || 0)),
-      round2(segno * (safeNum(f.totale_iva) || 0)),
-      round2(segno * (safeNum(f.totale) || 0)),
-      f.valuta || 'CHF',
-      f.stato || '',
-      (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
-    ]
-    if (negativo) riga.push(ds.numeroById[f.rif_fattura_id] || '—')
-    if (mappaAllegati) {
-      var pagatoF = totalePagatoDi('tm_conta_fatture', f.id)
-      riga.push(round2(segno * pagatoF),
-                round2(segno * ((safeNum(f.totale) || 0) - pagatoF)),
-                mappaAllegati['vendite:' + f.id] || '')
+    // FASE 26 — una riga per classificazione. Con una sola (il caso di sempre)
+    // il giro fa un passo e il risultato e' identico a prima.
+    var righe = righeExportDi(ds, 'fattura', f.id)
+    var n = righe.length
+    var qImp = ripartisci(safeNum(f.totale_imponibile) || 0, righe)
+    var qIva = ripartisci(safeNum(f.totale_iva) || 0, righe)
+    var qTot = ripartisci(safeNum(f.totale) || 0, righe)
+    var pagatoF = mappaAllegati ? totalePagatoDi('tm_conta_fatture', f.id) : 0
+    var qPag = mappaAllegati ? ripartisci(pagatoF, righe) : null
+    var qRes = mappaAllegati ? ripartisci((safeNum(f.totale) || 0) - pagatoF, righe) : null
+
+    for (var r = 0; r < n; r++) {
+      var c = righe[r]
+      var riga = [
+        f.numero || '',
+        f.data_emissione || '',
+        f.cliente_nome || '',
+        c ? cantiereLabel(c.cantiere_id) : '',
+        round2(segno * qImp[r]),
+        round2(segno * qIva[r]),
+        round2(segno * qTot[r]),
+        f.valuta || 'CHF',
+        f.stato || '',
+        (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
+      ]
+      if (negativo) riga.push(ds.numeroById[f.rif_fattura_id] || '—')
+      if (mappaAllegati) {
+        riga.push(round2(segno * qPag[r]), round2(segno * qRes[r]),
+                  // L'allegato si nomina UNA volta sola: il file e' del
+                  // documento, non della riga, e ripeterlo su tre righe
+                  // farebbe credere che ce ne siano tre.
+                  (r === 0 ? (mappaAllegati['vendite:' + f.id] || '') : ''))
+      }
+      riga.push(etichettaRigaDiviso(r, n),
+                c ? contoLabel(c.conto_id) : '',
+                c ? ivaLabel(c.codice_iva_id) : '')
+      aoa.push(riga)
     }
-    aoa.push(riga)
   }
   return aoa
 }
@@ -2769,29 +2934,45 @@ function buildSheetAcquisti(list, ds, mappaAllegati) {
   // creditori a fine anno: senza, un documento pagato a meta' sembra aperto
   // per l'intero importo. Le rate non entrano: non sono documenti.
   if (mappaAllegati) head.push('PAGATO', 'RESIDUO', 'ALLEGATO')
+  // FASE 26 — in coda. «Cantiere» mancava del tutto su questo foglio, ed e'
+  // proprio il dato che la divisione porta.
+  head.push('Riga', 'Cantiere')
   var aoa = [head]
   for (var i = 0; i < list.length; i++) {
     var x = list[i]
-    var c = ds.classMap['acquisto:' + x.id]
-    aoa.push([
-      x.fornitore || '',
-      x.numero_fornitore || '',
-      x.data || '',
-      safeNum(x.imponibile) != null ? safeNum(x.imponibile) : '',
-      safeNum(x.iva_importo) != null ? safeNum(x.iva_importo) : '',
-      safeNum(x.importo) || 0,
-      x.valuta || 'CHF',
-      etichettaPagamento('uscita', x.stato_pagamento).testo,
-      x.data_pagamento || '',
-      x.metodo_pagamento || '',
-      c ? contoLabel(c.conto_id) : '',
-      c ? ivaLabel(c.codice_iva_id) : ''
-    ])
-    if (mappaAllegati) {
-      var pagatoX = totalePagatoDi('tm_conta_fatture_acquisto', x.id)
-      aoa[aoa.length - 1].push(round2(pagatoX),
-                               round2((safeNum(x.importo) || 0) - pagatoX),
-                               mappaAllegati['acquisti:' + x.id] || '')
+    var righe = righeExportDi(ds, 'acquisto', x.id)
+    var n = righe.length
+    var impDoc = safeNum(x.imponibile)
+    var ivaDoc = safeNum(x.iva_importo)
+    var qImp = ripartisci(impDoc != null ? impDoc : 0, righe)
+    var qIva = ripartisci(ivaDoc != null ? ivaDoc : 0, righe)
+    var qTot = ripartisci(safeNum(x.importo) || 0, righe)
+    var pagatoX = mappaAllegati ? totalePagatoDi('tm_conta_fatture_acquisto', x.id) : 0
+    var qPag = mappaAllegati ? ripartisci(pagatoX, righe) : null
+    var qRes = mappaAllegati ? ripartisci((safeNum(x.importo) || 0) - pagatoX, righe) : null
+
+    for (var r = 0; r < n; r++) {
+      var c = righe[r]
+      aoa.push([
+        x.fornitore || '',
+        x.numero_fornitore || '',
+        x.data || '',
+        impDoc != null ? qImp[r] : '',
+        ivaDoc != null ? qIva[r] : '',
+        qTot[r],
+        x.valuta || 'CHF',
+        etichettaPagamento('uscita', x.stato_pagamento).testo,
+        x.data_pagamento || '',
+        x.metodo_pagamento || '',
+        c ? contoLabel(c.conto_id) : '',
+        c ? ivaLabel(c.codice_iva_id) : ''
+      ])
+      if (mappaAllegati) {
+        aoa[aoa.length - 1].push(round2(qPag[r]), round2(qRes[r]),
+                                 (r === 0 ? (mappaAllegati['acquisti:' + x.id] || '') : ''))
+      }
+      aoa[aoa.length - 1].push(etichettaRigaDiviso(r, n),
+                               c ? cantiereLabel(c.cantiere_id) : '')
     }
   }
   return aoa
@@ -2801,11 +2982,14 @@ function buildSheetSpese(pairs, mappaAllegati) {
   var head = ['Data', 'Origine', 'Descrizione', 'Ente/Fornitore', 'Conto', 'Codice IVA',
               'IVA', 'Imponibile', 'IVA importo', 'Totale', 'Valuta', 'Cantiere', 'Note']
   if (mappaAllegati) head.push('ALLEGATO')
+  head.push('Riga')                              // FASE 26 — in coda, come le altre
   var aoa = [head]
   for (var i = 0; i < pairs.length; i++) {
     var m = pairs[i].mov, c = pairs[i].cls
     var imp = safeNum(c.imponibile) || 0
     var ivaImp = safeNum(c.iva_importo) || 0
+    var iRiga = pairs[i]._i || 0
+    var nRighe = pairs[i]._n || 1
     aoa.push([
       m.data || '', m.origine_tipo, m.descrizione || '', m.ente || '',
       contoLabel(c.conto_id), ivaLabel(c.codice_iva_id),
@@ -2815,10 +2999,13 @@ function buildSheetSpese(pairs, mappaAllegati) {
     ])
     // Gli allegati esistono solo per i movimenti propri: spesa e regia di
     // App Cantieri non hanno un file collegato a questa riga.
+    // FASE 26 — e si nomina una volta sola, sulla prima riga del documento.
     if (mappaAllegati) {
       aoa[aoa.length - 1].push(
-        (m.origine_tipo === 'proprio') ? (mappaAllegati['movimenti:' + m.origine_id] || '') : '')
+        (m.origine_tipo === 'proprio' && iRiga === 0)
+          ? (mappaAllegati['movimenti:' + m.origine_id] || '') : '')
     }
+    aoa[aoa.length - 1].push(etichettaRigaDiviso(iRiga, nRighe))
   }
   return aoa
 }
@@ -2847,14 +3034,28 @@ function buildSheetRiepilogo(d, sez, da, a) {
   if (sez.vendite)  aoa.push(['Fatture di vendita', d.vendite.length, t.vendite])
   if (sez.note)     aoa.push(['Note di credito', d.note.length, t.note])
   if (sez.acquisti) aoa.push(['Fatture d\'acquisto', d.acquisti.length, t.acquisti])
-  if (sez.spese)    aoa.push(['Spese e movimenti', d.spese.length, t.spese])
+  // FASE 26 — «Documenti» deve restare un conteggio di documenti: d.spese ora
+  // contiene una voce per RIGA, e scriverne il numero direbbe che ce ne sono
+  // piu' di quanti sono.
+  if (sez.spese) {
+    var visti = {}
+    for (var sp = 0; sp < d.spese.length; sp++) {
+      visti[d.spese[sp].mov.origine_tipo + ':' + d.spese[sp].mov.origine_id] = true
+    }
+    aoa.push(['Spese e movimenti', Object.keys(visti).length, t.spese])
+  }
   aoa.push(['', '', ''])
   aoa.push(['SALDO (vendite − note − acquisti − spese)', '', t.saldo])
 
   // Riepiloghi per conto e per codice IVA (su tutto il classificato del periodo)
   var perConto = {}, perIva = {}
-  for (var i = 0; i < d.classificatiTutti.length; i++) {
-    var c = d.classificatiTutti[i].cls
+  // FASE 26 — sulle RIGHE, non sulla sintesi: un documento diviso fra due conti
+  // deve comparire su tutti e due con la sua parte. Con un documento non diviso
+  // le righe sono la sintesi, e il riepilogo e' identico a prima.
+  var elencoRighe = d.righeClassificate ||
+                    d.classificatiTutti.map(function (x) { return x.cls })
+  for (var i = 0; i < elencoRighe.length; i++) {
+    var c = elencoRighe[i]
     var imp = safeNum(c.imponibile) || 0, ivaImp = safeNum(c.iva_importo) || 0
     var ck = contoLabel(c.conto_id), ik = ivaLabel(c.codice_iva_id)
     if (!perConto[ck]) perConto[ck] = { imp: 0, iva: 0, tot: 0 }
@@ -2862,6 +3063,12 @@ function buildSheetRiepilogo(d, sez, da, a) {
     if (!perIva[ik]) perIva[ik] = { imp: 0, iva: 0 }
     perIva[ik].imp += imp; perIva[ik].iva += ivaImp
   }
+  // FASE 26 — la spiegazione sta nel file, non solo a schermo: chi lo apre non
+  // ha seguito nessuna conversazione.
+  aoa.push(['', '', ''])
+  aoa.push(['COME SI LEGGE QUESTO FILE', '', ''])
+  aoa.push([NOTA_EXPORT_DIVISI, '', ''])
+
   aoa.push(['', '', ''])
   aoa.push(['RIEPILOGO PER CONTO', '', ''])
   aoa.push(['Conto', 'Imponibile', 'IVA', 'Totale'])
@@ -2875,6 +3082,44 @@ function buildSheetRiepilogo(d, sez, da, a) {
     aoa.push([kk, round2(perIva[kk].imp), round2(perIva[kk].iva)])
   })
   return aoa
+}
+
+// FASE 26 — quanti DOCUMENTI ci sono in un elenco che ha una voce per riga.
+function docsDistinti(coppie) {
+  var visti = {}
+  for (var i = 0; i < (coppie || []).length; i++) {
+    visti[coppie[i].mov.origine_tipo + ':' + coppie[i].mov.origine_id] = true
+  }
+  return Object.keys(visti).length
+}
+
+// L'avviso nell'anteprima: quanti documenti sono divisi e cosa vuol dire.
+function notaDivisiAnteprima(d) {
+  var divisi = 0, righeInPiu = 0
+  function conta(tipo, id) {
+    var n = ((exportDataset && exportDataset.classRighe)
+             ? (exportDataset.classRighe[tipo + ':' + id] || []) : []).length
+    if (n > 1) { divisi++; righeInPiu += (n - 1) }
+  }
+  ;(d.vendite || []).forEach(function (f) { conta('fattura', f.id) })
+  ;(d.note || []).forEach(function (f) { conta('fattura', f.id) })
+  ;(d.acquisti || []).forEach(function (x) { conta('acquisto', x.id) })
+  var vistiSpese = {}
+  ;(d.spese || []).forEach(function (pr) {
+    var k = pr.mov.origine_tipo + ':' + pr.mov.origine_id
+    if (vistiSpese[k]) return
+    vistiSpese[k] = true
+    conta(pr.mov.origine_tipo, pr.mov.origine_id)
+  })
+  if (!divisi) return ''
+  return '<div class="exp-riga exp-vuoto" style="align-items:flex-start">' +
+    '<span><span aria-hidden="true">✂️</span> ' + divisi +
+    (divisi === 1 ? ' documento è diviso' : ' documenti sono divisi') +
+    ' su più cantieri: nel file ' +
+    (divisi === 1 ? 'occuperà' : 'occuperanno') + ' ' + righeInPiu +
+    (righeInPiu === 1 ? ' riga in più' : ' righe in più') +
+    ', con lo stesso numero e la colonna «Riga» che dice 1 di 2, 2 di 2. ' +
+    'La somma non cambia.</span><span></span></div>'
 }
 
 // Sezioni pronte per l'export: solo spuntate e non vuote
@@ -2989,7 +3234,7 @@ async function updateExportPreview() {
       riga(sez.vendite,  '📤 Fatture di vendita', d.vendite.length,  t.vendite) +
       riga(sez.note,     '↩️ Note di credito',    d.note.length,     t.note) +
       riga(sez.acquisti, '📥 Fatture d\'acquisto', d.acquisti.length, t.acquisti) +
-      riga(sez.spese,    '🧾 Spese e movimenti',  d.spese.length,    t.spese) +
+      riga(sez.spese,    '🧾 Spese e movimenti',  docsDistinti(d.spese), t.spese) +
       '<div class="exp-riga" style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px">' +
         '<span><strong>Saldo del periodo</strong></span><span class="exp-amount">' + fmtNum2(t.saldo) + ' CHF</span></div>' +
       (nBlocc ? '<div class="exp-riga exp-vuoto"><span>' + nBlocc + ' movimenti già consegnati 🔒</span><span></span></div>' : '') +
@@ -3002,7 +3247,11 @@ async function updateExportPreview() {
             ? ' documento da confermare: escluso dal file'
             : ' documenti da confermare: esclusi dal file') +
           '</span><span></span></div>'
-        : '')
+        : '') +
+      // FASE 26 — quanti documenti sono divisi, e quindi quante righe in piu'
+      // troverà chi apre il file. Se non ce n'è nessuno non si dice niente:
+      // spiegare una cosa che non c'è è solo rumore.
+      notaDivisiAnteprima(d)
   } catch (e) {
     exportPeriodRows = []
     prev.innerHTML = '<span style="color:var(--err)">Errore anteprima: ' + esc(e.message || e) + '</span>'
@@ -14102,7 +14351,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '44'
+var VERSIONE = '45'
 
 function controllaVersionePagina() {
   try {
