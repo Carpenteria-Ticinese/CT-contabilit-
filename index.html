@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=43" />
+  <link rel="stylesheet" href="css/style.css?v=44" />
 </head>
-<body data-versione="43">
+<body data-versione="44">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -372,6 +372,23 @@
         </div>
 
         <div id="cant-dettaglio"></div>
+
+        <!-- FASE 25 — eliminare un cantiere, ma solo se è vuoto. Il conteggio di
+             cosa c'è attaccato lo fa il programma prima di offrirlo. -->
+        <div class="card no-print" id="cant-elimina-card">
+          <div class="card-title">🗑️ Elimina questo cantiere</div>
+          <div class="form-hint" style="margin-top:0; margin-bottom:12px">
+            Si può eliminare solo un cantiere <strong>vuoto</strong>. Se ha giornate, spese,
+            materiali, foto o documenti contabili, resta dov&rsquo;è: quei dati dicono cosa è
+            stato fatto, e una fattura deve continuare a dire a quale lavoro si riferisce.
+            Un lavoro finito si <strong>chiude</strong> (stato «Completato»), non si cancella.
+          </div>
+          <div id="cant-elimina-esito" role="status" aria-live="polite"></div>
+          <div class="form-actions" style="margin-top:0">
+            <button type="button" class="btn-secondary" id="cant-elimina-btn"
+                    onclick="chiediEliminaCantiere()">🔎 Controlla se si può eliminare</button>
+          </div>
+        </div>
 
         <!-- Avvisi obbligatori: sempre visibili, non solo quando c'è un problema -->
         <div class="nota-cruscotto">
@@ -2416,6 +2433,26 @@
                vuoto e muto sembra un guasto del programma. -->
           <div id="cls-cantiere-vuoto"></div>
           <div class="form-hint">Vuoto = «Ditta (generale)». Per le spese da App Cantieri è precompilato.</div>
+          <!-- FASE 25 — la porta della divisione. Sta qui e non in cima perché
+               chi non divide non deve accorgersi che si può dividere. -->
+          <div class="form-actions" style="margin-top:8px">
+            <button type="button" class="btn-secondary" id="cls-dividi-btn"
+                    onclick="attivaDivisione()">✂️ Dividi su più cantieri</button>
+          </div>
+        </div>
+
+        <!-- FASE 25 — LA DIVISIONE. Compare al posto di conto/IVA/cantiere
+             quando si preme «Dividi»: una riga per destinazione. -->
+        <div id="cls-divisione" style="display:none">
+          <div class="cls-div-testata">
+            <span class="form-label" style="margin:0">✂️ Diviso su più destinazioni</span>
+            <button type="button" class="link-btn" onclick="annullaDivisione()">↩️ Torna a una riga sola</button>
+          </div>
+          <div id="cls-div-righe"></div>
+          <div class="form-actions" style="margin-top:8px">
+            <button type="button" class="btn-secondary" onclick="aggiungiRigaDivisione()">➕ Aggiungi una riga</button>
+          </div>
+          <div id="cls-div-quadratura" role="status" aria-live="polite"></div>
         </div>
 
         <!-- FASE 22 / P4 — Mini-form nuovo cantiere. Solo i tre campi che
@@ -2505,7 +2542,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=43"></script>
+<script src="js/app.js?v=44"></script>
 
 </body>
 </html>
