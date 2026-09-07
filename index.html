@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=45" />
+  <link rel="stylesheet" href="css/style.css?v=46" />
 </head>
-<body data-versione="45">
+<body data-versione="46">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -1064,18 +1064,21 @@
 
             <div class="form-row">
               <div class="form-group" style="flex:1">
-                <label for="c-cap" class="form-label">NPA <span class="dim">(codice postale)</span></label>
-                <input type="text" id="c-cap" class="form-input" maxlength="10" placeholder="6500" / autocomplete="off">
+                <label for="c-cap" class="form-label">NPA <span class="dim">(scrivilo e la località si compila da sé)</span></label>
+                <input type="text" id="c-cap" class="form-input" maxlength="10" placeholder="6500" autocomplete="off" />
               </div>
               <div class="form-group" style="flex:2">
                 <label for="c-citta" class="form-label">Localit&agrave;</label>
-                <input type="text" id="c-citta" class="form-input" maxlength="100" placeholder="Bellinzona" / autocomplete="off">
+                <input type="text" id="c-citta" class="form-input" maxlength="100" placeholder="Bellinzona" autocomplete="off" />
               </div>
               <div class="form-group" style="flex:1">
                 <label for="c-paese" class="form-label">Paese</label>
                 <select id="c-paese" class="form-input" autocomplete="off"></select>
               </div>
             </div>
+            <!-- FASE 27 — quando un NPA ha piu' localita' (o viceversa) qui
+                 compaiono le possibili, da scegliere. Non si indovina. -->
+            <div id="c-npa-suggest" role="status" aria-live="polite"></div>
 
             <div class="form-row">
               <div class="form-group" style="flex:1">
@@ -1120,8 +1123,12 @@
               <div class="form-group" style="flex:1">
                 <label for="c-giorni" class="form-label">Giorni di pagamento</label>
                 <input type="number" id="c-giorni" class="form-input" min="0" max="365" step="1"
-                       placeholder="30" / autocomplete="off">
-                <div class="form-hint">Giorni. Serve a calcolare la scadenza.</div>
+                       placeholder="30" autocomplete="off" />
+                <div class="form-hint">
+                  Serve a calcolare la scadenza.
+                  <strong>0 = pagamento alla consegna o anticipato.</strong>
+                  Lasciandolo vuoto vale il termine predefinito della ditta.
+                </div>
               </div>
             </div>
 
@@ -1400,7 +1407,7 @@
           <div class="form-row">
             <div class="form-group" style="flex:1">
               <label for="f-fat-data" class="form-label">Data emissione <span class="dim">(default: oggi all'emissione)</span></label>
-              <input type="date" id="f-fat-data" class="form-input" />
+              <input type="date" id="f-fat-data" class="form-input" onchange="onDataEmissioneFatturaChange()" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="f-fat-valuta" class="form-label">Valuta</label>
@@ -1409,6 +1416,30 @@
                 <option value="EUR">EUR</option>
                 <option value="USD">USD</option>
               </select>
+            </div>
+          </div>
+
+          <!-- FASE 27 — il termine è una condizione DI QUESTA FATTURA, non del
+               cliente: sullo stesso cliente si fanno 30 giorni di norma e
+               pagamento anticipato su un acconto. I due campi si tengono
+               allineati: cambiando l'uno si ricalcola l'altro. -->
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="f-fat-giorni" class="form-label">Termine di pagamento (giorni)</label>
+              <input type="number" id="f-fat-giorni" class="form-input" min="0" max="365" step="1"
+                     onfocus="this.select()" oninput="onGiorniFatturaChange()" />
+              <div class="form-hint">
+                <strong>0 = pagamento alla consegna o anticipato.</strong>
+                Si propone dal cliente collegato; cambiandolo qui non si tocca la sua scheda in rubrica.
+              </div>
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="f-fat-scadenza" class="form-label">Scadenza</label>
+              <input type="date" id="f-fat-scadenza" class="form-input"
+                     onchange="onScadenzaFatturaChange()" />
+              <div class="form-hint" id="f-fat-scadenza-hint">
+                Puoi scrivere direttamente la data: i giorni qui accanto si aggiornano da soli.
+              </div>
             </div>
           </div>
         </div>
@@ -1848,12 +1879,12 @@
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
-            <label for="imp-npa" class="form-label">NPA / CAP</label>
-            <input type="text" id="imp-npa" class="form-input" maxlength="10" placeholder="6500" />
+            <label for="imp-npa" class="form-label">NPA / CAP <span class="dim">(scrivilo e la citt&agrave; si compila da s&eacute;)</span></label>
+            <input type="text" id="imp-npa" class="form-input" maxlength="10" placeholder="6500" autocomplete="off" />
           </div>
           <div class="form-group" style="flex:2">
             <label for="imp-citta" class="form-label">Città</label>
-            <input type="text" id="imp-citta" class="form-input" maxlength="100" placeholder="Bellinzona" />
+            <input type="text" id="imp-citta" class="form-input" maxlength="100" placeholder="Bellinzona" autocomplete="off" />
           </div>
           <div class="form-group" style="flex:1">
             <label for="imp-paese" class="form-label">Paese</label>
@@ -1863,6 +1894,9 @@
             </div>
           </div>
         </div>
+        <!-- FASE 27 — le possibili località di un NPA, o i possibili NPA di
+             una località: da scegliere, mai indovinate. -->
+        <div id="imp-npa-suggest" role="status" aria-live="polite"></div>
       </div>
 
       <div class="card">
@@ -2542,7 +2576,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=45"></script>
+<script src="js/app.js?v=46"></script>
 
 </body>
 </html>
