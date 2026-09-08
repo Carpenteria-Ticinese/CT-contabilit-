@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=46" />
+  <link rel="stylesheet" href="css/style.css?v=47" />
 </head>
-<body data-versione="46">
+<body data-versione="47">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -723,6 +723,8 @@
               <option value="c4">C4 &mdash; 324 &times; 229 mm &mdash; A4 non piegato</option>
               <option value="pers">Personalizzata &mdash; misure mie</option>
             </select>
+            <!-- FASE 28 — misure e uso del formato scelto, prima di stampare. -->
+            <div id="busta-formato-info" role="status" aria-live="polite"></div>
           </div>
           <div class="form-group" style="flex:1" id="busta-affrancatura-group">
             <label for="busta-affrancatura" class="form-label">Affrancatura</label>
@@ -1542,6 +1544,11 @@
         <div class="card">
           <div id="fatture-print"></div>
         </div>
+        <!-- FASE 28 — il formato pagina della fattura, scritto dal JS: con la
+             polizza in fondo il margine inferiore diventa 110mm, che e' la
+             fascia riservata a lei. Arriva dopo il <link> del CSS, quindi il
+             suo @page vince. Si azzera a stampa finita. -->
+        <style id="fatture-page-style"></style>
       </div>
 
     </div>
@@ -2576,7 +2583,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=46"></script>
+<script src="js/app.js?v=47"></script>
 
 </body>
 </html>
