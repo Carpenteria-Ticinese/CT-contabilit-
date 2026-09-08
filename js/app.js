@@ -4875,8 +4875,12 @@ function renderFatturaPrint(f, righe, rifInfo) {
         // FASE 22 — la nota vale solo finche' la polizza va spedita a parte.
         // Quando e' allegata alla fattura, dire il contrario sul documento
         // stesso sarebbe una bugia stampata.
+        // FASE 28 — quando la polizza e' li' sotto, sullo stesso foglio, non
+        // c'e' niente da dire: si vede da se'. La riga compare SOLO quando la
+        // fattura e' lunga e la polizza e' finita sulla pagina dopo, ed e' il
+        // CSS a mostrarla in quel caso (body.polizza-a-parte).
         (polizzaDi(f.id)
-          ? '<div class="inv-qrnote">Polizza QR nell’ultima pagina di questo documento.</div>'
+          ? '<div class="inv-qrnota-pagina">La polizza QR è nella pagina seguente.</div>'
           : '<div class="inv-qrnote">Polizza QR allegata a parte.</div>') +
       '</div>'
   }
@@ -4986,7 +4990,16 @@ async function printFattura() {
       await preparaPolizzaPerStampa(currentDetailFattura.id)
     }
   } catch (e) { console.warn('Polizza in stampa:', e.message || e) }
+  // FASE 28 — il formato pagina si azzera a stampa finita: un @page lasciato
+  // acceso condiziona la stampa dopo, e nessuno collegherebbe le due cose.
+  // Stessa rete della busta dalla FASE 23.
+  var pulisci = function () {
+    azzeraPaginaFattura()
+    window.removeEventListener('afterprint', pulisci)
+  }
+  window.addEventListener('afterprint', pulisci)
   window.print()
+  setTimeout(pulisci, 60000)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -6895,15 +6908,24 @@ function contattoInCategoria(c, cat) {
 // La zona di codifica e' 140 x 15 mm fino al formato B5 e 140 x 35 mm da B5 a
 // B4 (specifica della Posta, vedi sopra): il C4 e' l'unico di questo elenco a
 // superare il B5.
+// FASE 28 — «a cosa serve» accanto alle misure: chi compra le buste ragiona
+// per «A4 piegato in tre», non per 220 x 110. Serve PRIMA di stampare, non
+// dopo aver sprecato una busta.
 var FORMATI_BUSTA = {
-  c6:   { etichetta: 'C6',        larghezza: 162, altezza: 114, codificaH: 15 },
-  c56:  { etichetta: 'C5/6 (DL)', larghezza: 220, altezza: 110, codificaH: 15 },
-  c5:   { etichetta: 'C5',        larghezza: 229, altezza: 162, codificaH: 15 },
-  b5:   { etichetta: 'B5',        larghezza: 250, altezza: 176, codificaH: 15 },
-  c4:   { etichetta: 'C4',        larghezza: 324, altezza: 229, codificaH: 35 },
+  c6:   { etichetta: 'C6',        larghezza: 162, altezza: 114, codificaH: 15,
+          uso: 'A4 piegato in quattro' },
+  c56:  { etichetta: 'C5/6 (DL)', larghezza: 220, altezza: 110, codificaH: 15,
+          uso: 'A4 piegato in tre — la busta da lettera piu\u2019 comune' },
+  c5:   { etichetta: 'C5',        larghezza: 229, altezza: 162, codificaH: 15,
+          uso: 'A4 piegato a met\u00e0' },
+  b5:   { etichetta: 'B5',        larghezza: 250, altezza: 176, codificaH: 15,
+          uso: 'poco pi\u00f9 grande del C5' },
+  c4:   { etichetta: 'C4',        larghezza: 324, altezza: 229, codificaH: 35,
+          uso: 'A4 non piegato' },
   // Le misure della personalizzata si leggono dai due campi: qui restano
   // vuote apposta, cosi' non c'e' un secondo posto dove possano divergere.
-  pers: { etichetta: 'Personalizzata', larghezza: null, altezza: null, codificaH: null }
+  pers: { etichetta: 'Personalizzata', larghezza: null, altezza: null, codificaH: null,
+          uso: 'le misure le scrivi tu, col righello' }
 }
 
 // Zona di affrancatura: uguale su tutti i formati.
@@ -7405,6 +7427,7 @@ async function initBustaPage() {
   await loadImpostazioniConta()
   caricaPreferenzeBusta()
   caricaTaraturaBusta()
+  aggiornaInfoFormatoBusta()
   onAffrancaturaChange()
   disegnaBusta()
 }
@@ -7477,7 +7500,48 @@ async function salvaTaraturaBusta() {
 
 function onFormatoBustaChange() {
   caricaTaraturaBusta()      // solo gli scostamenti: sono l'unica cosa per formato
+  aggiornaInfoFormatoBusta()
   disegnaBusta()
+}
+
+// FASE 28 — le misure e l'uso del formato scelto, PRIMA di stampare. E il
+// limite detto in chiaro: il programma impone il formato della pagina, ma il
+// cassetto o la fessura per le buste li apre una mano, non il software. Meglio
+// dirlo che farlo scoprire con una busta sprecata.
+// Millimetri come si scrivono a voce: interi se sono interi.
+function mmLeggibili(n) {
+  var v = safeNum(n)
+  if (v == null) return '?'
+  return (Math.round(v) === v) ? String(v) : fmtNumIt(v)
+}
+
+function aggiornaInfoFormatoBusta() {
+  var box = el('busta-formato-info')
+  if (!box) return
+  var f = formatoBusta()
+  var chiave = formatoBustaCorrente()
+  var uso = (FORMATI_BUSTA[chiave] && FORMATI_BUSTA[chiave].uso) || ''
+  var orizz = f.larghezza > f.altezza
+
+  html('busta-formato-info',
+    '<div class="busta-info">' +
+      '<div class="busta-info-riga">' +
+        // Le misure di una busta sono numeri interi: «229,00 × 162,00» si legge
+        // peggio di «229 × 162». I decimali compaiono solo se ci sono davvero.
+        '<span class="busta-info-mis">' + mmLeggibili(f.larghezza) + ' × ' +
+          mmLeggibili(f.altezza) + ' mm</span>' +
+        (uso ? '<span class="busta-info-uso">' + esc(uso) + '</span>' : '') +
+        '<span class="busta-info-verso">' +
+          (orizz ? '\u2194\ufe0f pi\u00f9 larga che alta' : '\u2195\ufe0f pi\u00f9 alta che larga') +
+        '</span>' +
+      '</div>' +
+      '<div class="busta-info-nota">' +
+        '<span aria-hidden="true">\ud83d\udda8\ufe0f</span> ' +
+        'La finestra di stampa si aprir\u00e0 gi\u00e0 su queste misure: non devi scegliere niente. ' +
+        '<strong>Ma il cassetto delle buste lo devi mettere tu</strong> \u2014 quello il programma ' +
+        'non pu\u00f2 farlo. Infila la busta nell\u2019alimentazione manuale prima di premere Stampa.' +
+      '</div>' +
+    '</div>')
 }
 
 function onAffrancaturaChange() {
@@ -7740,8 +7804,13 @@ function impostaPaginaBusta(perProva) {
   var f = formatoBusta()
   var st = el('busta-page-style')
   if (!st) return
+  // FASE 28 — sempre in millimetri, anche la prova su A4. `size: A4 landscape`
+  // funziona, ma `A4 portrait` il browser lo normalizza a `a4` e lascia il
+  // dialogo libero di ricordarsi l'ultima scelta. Con le misure esplicite il
+  // verso e' deciso dal CSS in tutti e due i casi.
+  var pr = perProva ? provaSuA4(f) : null
   st.textContent = perProva
-    ? '@media print { @page { size: A4 ' + provaSuA4(f).verso + '; margin: 0; } }'
+    ? '@media print { @page { size: ' + pr.fogliaL + 'mm ' + pr.fogliaH + 'mm; margin: 0; } }'
     : '@media print { @page { size: ' + f.larghezza + 'mm ' + f.altezza + 'mm; margin: 0; } }'
 }
 
@@ -9241,6 +9310,7 @@ async function scaricaFatturaPDF() {
   // il titolo quando la finestra si è già aperta.
   var ripristina = function () {
     document.title = titoloPrima
+    azzeraPaginaFattura()      // FASE 28 — come in printFattura
     window.removeEventListener('afterprint', ripristina)
   }
   window.addEventListener('afterprint', ripristina)
@@ -14555,9 +14625,103 @@ async function ridisegnaStampaFattura(idFattura) {
 // una pagina bianca, e nessuno se ne accorge finche' la busta non e' spedita.
 // Se non si carica, la fattura esce come sempre e un banner lo dice: il
 // programma non deve mai restare bloccato per colpa della polizza.
+// ═════════════════════════════════════════════════════════════════════════════
+// FASE 28 — LA POLIZZA VA IN FONDO ALLA FATTURA, SULLO STESSO FOGLIO
+//
+// Nella 46 andava su una pagina sua. Sbagliato: su una fattura svizzera la
+// parte pagamento sta in fondo all'ULTIMA PAGINA, sugli ultimi 105 mm dello
+// stesso A4, e si stacca lungo la piega. Due fogli sono l'eccezione — e per
+// una fattura che occupa mezza pagina erano carta e tempo buttati.
+//
+// DUE MODALITA', e la sceglie il programma misurando:
+//   A. in fondo alla fattura   quando il contenuto lascia liberi i 105 mm
+//      (`polizza-in-fondo`)    finali. E' il caso normale.
+//   B. su una pagina propria   quando non ci stanno. Allora il documento LO
+//      (`polizza-a-parte`)     DICE, invece di lasciarlo indovinare.
+//
+// COME SI MISURA. L'altezza del contenuto si prende a schermo forzando la
+// larghezza a quella di stampa (180 mm di area utile), e si converte in
+// millimetri con un campione di misura noto. Non e' esatta al decimo — i font
+// in stampa si compongono in modo un po' diverso — e per questo c'e' un
+// margine di prudenza: nel dubbio si sceglie la pagina propria, che e' brutta
+// ma non taglia niente.
+// ═════════════════════════════════════════════════════════════════════════════
+
+var POLIZZA_ALTEZZA_MM = 105     // la parte pagamento della QR-fattura
+var POLIZZA_ARIA_MM = 5          // fra l'ultima riga e il bordo della polizza
+var PAGINA_UTILE_MM = 297 - 15   // A4 meno il margine superiore
+
+// Quanti millimetri fa un pixel, misurato sul posto: dipende dallo zoom del
+// browser e dai DPI dello schermo, e indovinarlo sarebbe l'errore.
+function mmPerPixel() {
+  var campione = document.createElement('div')
+  campione.style.cssText = 'position:absolute;visibility:hidden;height:100mm;width:1mm'
+  document.body.appendChild(campione)
+  var h = campione.getBoundingClientRect().height
+  document.body.removeChild(campione)
+  return h > 0 ? (100 / h) : (25.4 / 96)
+}
+
+// L'altezza del contenuto della fattura, in millimetri, come verrebbe in
+// stampa. Si misura su una copia larga quanto l'area utile del foglio.
+function altezzaFatturaMm() {
+  try {
+    var inv = document.querySelector('#fatture-print .inv')
+    if (!inv) return null
+    var mm = mmPerPixel()
+    var copia = inv.cloneNode(true)
+    // Dalla misura si tolgono le cose che in stampa NON occupano spazio in
+    // flusso, altrimenti il conto viene lungo e la polizza finisce sulla
+    // pagina dopo anche quando ci starebbe benissimo:
+    //   - la polizza stessa: e' lei che stiamo collocando;
+    //   - il pie' di pagina: in stampa e' `position: fixed`, sta nella fascia
+    //     dei margini e non spinge giu' niente.
+    var qr = copia.querySelector('.inv-qrpage')
+    if (qr && qr.parentNode) qr.parentNode.removeChild(qr)
+    var fo = copia.querySelector('.inv-footer')
+    if (fo && fo.parentNode) fo.parentNode.removeChild(fo)
+    // In stampa il logo e' piu' basso (68px invece di 76): pochi millimetri,
+    // ma su una soglia sono quelli che decidono.
+    var lg = copia.querySelector('.inv-logo')
+    if (lg) lg.style.height = '68px'
+    copia.style.cssText = 'position:absolute;left:-99999px;top:0;width:180mm;max-width:180mm;visibility:hidden'
+    document.body.appendChild(copia)
+    var h = copia.getBoundingClientRect().height * mm
+    document.body.removeChild(copia)
+    return h
+  } catch (e) {
+    console.warn('Misura della fattura non riuscita:', e.message || e)
+    return null
+  }
+}
+
+// Il formato pagina della fattura, scritto a runtime: senza polizza resta
+// quello del CSS, con la polizza il margine inferiore diventa la sua fascia.
+function impostaPaginaFattura(conPolizzaInFondo) {
+  var st = el('fatture-page-style')
+  if (!st) return
+  st.textContent = conPolizzaInFondo
+    ? '@media print { @page { size: 210mm 297mm; margin: 15mm 15mm ' +
+      (POLIZZA_ALTEZZA_MM + POLIZZA_ARIA_MM) + 'mm 15mm; } }'
+    : ''
+}
+
+// Si azzera a stampa finita, come si fa per la busta dalla FASE 23: un @page
+// lasciato acceso condiziona la stampa successiva, e nessuno collegherebbe le
+// due cose.
+function azzeraPaginaFattura() {
+  var st = el('fatture-page-style')
+  if (st) st.textContent = ''
+  document.body.classList.remove('polizza-in-fondo', 'polizza-a-parte')
+}
+
+// ── Il montaggio ───────────────────────────────────────────────────────────
+// L'immagine si carica PRIMA di window.print(): un <img> ancora vuoto stampa
+// un buco, e nessuno se ne accorge finche' la fattura non e' partita.
 async function preparaPolizzaPerStampa(idFattura) {
   var posto = el('fatture-qrpage')
   if (!posto) return false
+  azzeraPaginaFattura()
   var p = polizzaDi(idFattura)
   if (!p || !p.img_path) { posto.innerHTML = ''; return false }
 
@@ -14571,15 +14735,11 @@ async function preparaPolizzaPerStampa(idFattura) {
       img.onerror = function () { rifiuta(new Error('immagine non caricata')) }
       img.src = url
     })
-    // FASE 27 — la polizza sta in una pagina sua, con i margini a zero, e
-    // l'immagine si appoggia in FONDO: la parte pagamento occupa i 105 mm
-    // inferiori di un A4, ed e' li' che si stacca.
-    //
+
     // Se la polizza fosse piu' alta di un A4 (non dovrebbe, ma un PDF strano
-    // capita) si ancora in alto invece che in basso: cosi' si perde il fondo
-    // invece della testa, e almeno il codice QR — che sta in alto nella parte
-    // pagamento — resta leggibile. NON si scala: una polizza rimpicciolita non
-    // e' piu' conforme, e la banca la rifiuta.
+    // capita) si ancora in alto: si perde il fondo invece della testa, e il
+    // codice QR resta leggibile. NON si scala: una polizza rimpicciolita non
+    // e' piu' valida e la banca la rifiuta.
     var troppoAlta = h > 297.5
     posto.innerHTML =
       '<div class="inv-qrpage">' +
@@ -14587,6 +14747,25 @@ async function preparaPolizzaPerStampa(idFattura) {
              'style="width:' + l + 'mm;height:' + h + 'mm' +
              (troppoAlta ? ';top:0;bottom:auto' : '') + '">' +
       '</div>'
+
+    // La scelta della modalita'. Serve il DOM gia' disegnato, quindi si misura
+    // adesso e non prima.
+    var altezza = altezzaFatturaMm()
+    var spazioRichiesto = POLIZZA_ALTEZZA_MM + POLIZZA_ARIA_MM
+    // Margine di prudenza: la composizione in stampa non e' identica a quella
+    // a schermo, e nel dubbio si preferisce la pagina in piu' al testo tagliato.
+    var PRUDENZA_MM = 8
+    var ciSta = (altezza != null) && (altezza + spazioRichiesto + PRUDENZA_MM <= PAGINA_UTILE_MM)
+
+    if (ciSta) {
+      document.body.classList.add('polizza-in-fondo')
+      impostaPaginaFattura(true)
+    } else {
+      document.body.classList.add('polizza-a-parte')
+      impostaPaginaFattura(false)
+    }
+    _polizzaInFondo = ciSta
+
     if (troppoAlta) {
       showFattureBanner('fatture-detail-banner', 'warn',
         'La polizza allegata è alta ' + fmtNumIt(Math.round(h)) + ' mm, più di un foglio A4: ' +
@@ -14597,12 +14776,17 @@ async function preparaPolizzaPerStampa(idFattura) {
   } catch (e) {
     console.warn('Polizza non pronta per la stampa:', e.message || e)
     posto.innerHTML = ''
+    azzeraPaginaFattura()
     showFattureBanner('fatture-detail-banner', 'warn',
       'La polizza allegata non si è caricata: la fattura si stampa senza. ' +
       'Riprova fra un momento o controlla il collegamento.')
     return false
   }
 }
+
+// Vero quando la polizza e' finita in fondo alla fattura (stesso foglio).
+// Serve alla nota stampata: se e' li' sotto, dirlo sarebbe superfluo.
+var _polizzaInFondo = false
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -14751,7 +14935,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '46'
+var VERSIONE = '47'
 
 function controllaVersionePagina() {
   try {
