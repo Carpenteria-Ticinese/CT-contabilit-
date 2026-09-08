@@ -1120,6 +1120,10 @@ textarea.cell-desc {
 .inv-pay-row { display: flex; gap: 10px; justify-content: space-between; padding: 2px 0; color: #333; }
 .inv-scad { font-weight: 700; color: var(--ink); }
 .inv-qrnote { margin-top: 6px; font-size: 11px; color: #777; font-style: italic; }
+/* FASE 28 — la riga «la polizza e' nella pagina seguente» esiste solo per la
+   stampa, e solo quando la polizza finisce davvero su una pagina sua. A
+   schermo non si vede mai: nella scheda sarebbe una frase senza contesto. */
+.inv-qrnota-pagina { display: none; }
 
 /* ── FASE 22 — Il riquadro della polizza QR sulla scheda della fattura ───── */
 .polizza-riga {
@@ -1441,6 +1445,31 @@ textarea.cell-desc {
 }
 .npa-scelta:hover { border-color: #b45309; color: #b45309; }
 
+/* ── FASE 28 — LE MISURE DEL FORMATO BUSTA, PRIMA DI STAMPARE ─────────────
+   Chi compra le buste ragiona per «A4 piegato in tre», non per 220 x 110: qui
+   ci sono tutte e due le cose, e il verso del foglio. */
+.busta-info {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #b45309);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.busta-info-riga {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
+}
+.busta-info-mis { font-size: 15px; font-weight: 700; color: var(--ink); }
+.busta-info-uso { font-size: 13px; color: var(--text2); }
+.busta-info-verso {
+  font-size: 12px; color: var(--text2);
+  margin-left: auto; white-space: nowrap;
+}
+.busta-info-nota {
+  margin-top: 8px;
+  font-size: 12px; line-height: 1.5; color: var(--text2);
+}
+
 /* Stampa: solo il documento fattura */
 @media print {
   body * { visibility: hidden; }
@@ -1498,15 +1527,16 @@ textarea.cell-desc {
 
      Senza il punto 1 il piè di pagina finirebbe SOPRA le ultime righe di una
      fattura lunga: e' l'errore da non fare. */
-  /* FASE 27 — LE MISURE SCRITTE PER ESTESO, e non e' un dettaglio di stile.
-     Con `size: A4` il dialogo di stampa di Chrome lascia scegliere
-     l'orientamento e SI RICORDA l'ultima scelta fatta su quel sito: chi ha
-     stampato una busta DL (larga e bassa, quindi orizzontale) si ritrova la
-     fattura successiva gia' preimpostata in orizzontale, e sembra un difetto
-     del programma.
-     `A4 portrait` non basta: il browser lo normalizza a `a4` — A4 e' gia'
-     verticale per definizione — e il selettore resta libero. Con le misure
-     esplicite 210 x 297 mm, invece, l'orientamento e' imposto dal CSS. */
+  /* FASE 28 — IL FORMATO PAGINA DELLA FATTURA
+     Misure per esteso, e non e' un dettaglio di stile: con `size: A4` il
+     dialogo di Chrome lascia scegliere l'orientamento e si RICORDA l'ultima
+     scelta fatta sul sito — chi ha stampato una busta DL si ritrova la fattura
+     dopo in orizzontale. `A4 portrait` non basta: il browser lo normalizza a
+     `a4`. Con i millimetri, l'orientamento lo impone il CSS.
+
+     ATTENZIONE: questa regola vale quando la fattura NON ha la polizza. Con la
+     polizza il margine inferiore cambia, e lo scrive il JS nel tag
+     <style id="fatture-page-style"> — che arriva dopo e quindi vince. */
   @page { size: 210mm 297mm; margin: 15mm 15mm 30mm 15mm; }
 
   #fatture-print .inv-footer {
@@ -1520,78 +1550,87 @@ textarea.cell-desc {
   /* Un dito di aria fra l'ultima riga e la fascia del piè di pagina. */
   #fatture-print .inv { padding-bottom: 6mm; }
 
-  /* ── FASE 27 — LA POLIZZA QR: UNA PAGINA SUA, INTERA ──────────────────────
+  /* ── FASE 28 — LA POLIZZA QR IN FONDO ALLA FATTURA ────────────────────────
 
-     COSA USCIVA PRIMA, e perche'.
-     La polizza si spezzava fra due pagine e usciva tagliata a sinistra. La
-     causa era una sola, e non si vedeva: `.inv-qrpage` conteneva SOLTANTO un
-     elemento in position:absolute, che sta fuori dal flusso — quindi il
-     contenitore era alto ZERO. Il salto pagina c'era, ma il browser apriva una
-     pagina nuova per un blocco senza altezza, e l'immagine di 297 mm sbordava e
-     veniva spezzata dove capitava. Gli scostamenti negativi (-15mm) erano
-     riferiti a un blocco alto zero piazzato dove finiva il testo, non al bordo
-     del foglio: da li' anche il taglio a sinistra.
+     COM'ERA, E PERCHE' ERA SBAGLIATO.
+     Nella 46 la polizza andava su una pagina sua. Non e' cosi' che si fa una
+     fattura svizzera: la parte pagamento sta in fondo all'ULTIMA PAGINA della
+     fattura, sugli ultimi 105 mm dello stesso foglio, e si stacca lungo la
+     piega. Due fogli sono l'eccezione. La fattura di Umberto occupa mezza
+     pagina: il secondo foglio era carta buttata.
 
-     COME SI FA INVECE.
-     Alla polizza si da' UNA PAGINA CON MARGINI ZERO, dichiarata a parte. Cosi'
-     l'immagine sta a `left: 0` e `bottom: 0` senza offset da indovinare, e i
-     210 mm ci stanno da bordo a bordo.
+     E IL TAGLIO A SINISTRA.
+     Nella 46 c'erano DUE cure sovrapposte: `@page polizza { margin: 0 }` e in
+     piu' `margin-left: -15mm` «nel caso il browser non applicasse la pagina
+     con nome». Chrome la applicava: il margine era gia' zero e lo scostamento
+     negativo si sommava, portando il blocco 15 mm FUORI dal foglio a sinistra.
+     Da qui «uta» al posto di «Ricevuta».
+     Adesso la cura e' UNA SOLA: gli scostamenti negativi, riferiti alla page
+     area. Nessun @page con nome, niente che si sommi.
 
-     TRE VINCOLI, e nessuno e' negoziabile:
-     1. GRANDEZZA REALE. Le misure in mm le scrive il JS sull'immagine, prese
-        dalla pagina del PDF della banca. Niente max-width, niente scala: una
-        polizza rimpicciolita anche di poco non e' piu' conforme e la banca la
-        rifiuta.
-     2. IN FONDO. La parte pagamento occupa i 105 mm inferiori di un A4: e' li'
-        che la vuole la Posta, ed e' li' che si stacca.
-     3. NIENTE SOPRA. Il pie' di pagina e' `position: fixed` e si ripete su
-        ogni foglio; nasconderlo del tutto farebbe perdere alla fattura la sua
-        riga in fondo. Lo copre invece questo blocco, che e' un rettangolo
-        bianco di 210 x 297 mm, viene DOPO il pie' di pagina nel documento ed
-        e' posizionato: nell'ordine di disegno passa sopra.
+     COME FUNZIONA.
+     Quando la fattura ha la polizza, il JS scrive un @page col margine
+     inferiore a 110 mm: quella fascia diventa spazio riservato e il testo non
+     ci entra mai. La polizza e' `position: fixed` e ci scende dentro con uno
+     scostamento negativo — la stessa identica tecnica del pie' di pagina, che
+     funziona da otto versioni. `fixed` in stampa vuol dire «su ogni foglio»:
+     va bene finche' la fattura sta in una pagina, ed e' il JS a controllarlo
+     prima di scegliere questa modalita'. */
 
-     E L'ORIENTAMENTO NON SI PROPAGA: le stesse misure 210 x 297 mm sono
-     scritte anche qui, quindi questa pagina non puo' far ruotare il resto del
-     documento. */
-
-  @page polizza {
-    size: 210mm 297mm;
-    margin: 0;                 /* i 210 mm devono starci da bordo a bordo */
-  }
-
-  #fatture-print .inv-qrpage {
-    page: polizza;             /* la pagina coi margini a zero, solo per lei */
-    break-before: page;
-    page-break-before: always;
-    break-after: page;
-    page-break-after: always;
-    break-inside: avoid;       /* MAI spezzata: e' tutto il punto */
-    page-break-inside: avoid;
-
-    position: relative;
-    z-index: 2;                /* sopra il pie' di pagina fisso */
-    /* Le misure vere del foglio: senza queste il blocco e' alto zero, ed e'
-       esattamente il difetto di prima. */
+  /* Modalita' A — la polizza in fondo alla fattura, stesso foglio. */
+  body.polizza-in-fondo #fatture-print .inv-qrpage {
+    position: fixed;
+    left: -15mm;            /* dal bordo sinistro della page area a quello del foglio */
+    bottom: -110mm;         /* dentro i 110mm riservati, fino al bordo inferiore */
     width: 210mm;
-    height: 297mm;
-    /* I margini negativi servono da rete: se il browser non applicasse la
-       pagina con nome, il blocco risale comunque all'angolo fisico invece di
-       restare dentro i margini della fattura. */
-    margin: -15mm 0 0 -15mm;
+    height: 105mm;
+    margin: 0;
     padding: 0;
     overflow: hidden;
     background: #fff;
+    z-index: 2;             /* sopra il pie' di pagina */
+  }
+  /* Con la polizza sotto, il pie' di pagina risale sopra di lei. */
+  body.polizza-in-fondo #fatture-print .inv-footer { bottom: 2mm; }
+
+  /* Modalita' B — la fattura e' lunga e i 105mm non ci stanno: pagina propria.
+     Anche qui una cura sola: il margine inferiore resta quello riservato e la
+     polizza ci scende dentro con lo scostamento negativo. */
+  body.polizza-a-parte #fatture-print .inv-qrpage {
+    break-before: page;
+    page-break-before: always;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    position: relative;
+    width: 210mm;
+    height: 105mm;
+    margin: 0 0 0 -15mm;    /* solo a sinistra: e' l'unico scostamento */
+    padding: 0;
+    overflow: hidden;
+    background: #fff;
+    z-index: 2;
   }
 
   #fatture-print .inv-qrimg {
     position: absolute;
     left: 0;
-    bottom: 0;                 /* i 105 mm in fondo: dove si stacca */
+    bottom: 0;
     display: block;
     background: #fff;
     /* Nessuna interpolazione morbida: il QR e' tratto, e sfumarlo e'
        esattamente il modo di renderlo illeggibile al telefono. */
     image-rendering: crisp-edges;
+  }
+
+  /* La riga che avvisa quando la polizza e' finita sulla pagina dopo: si
+     stampa solo in quel caso, e lo dice invece di lasciarlo indovinare. */
+  #fatture-print .inv-qrnota-pagina { display: none; }
+  body.polizza-a-parte #fatture-print .inv-qrnota-pagina {
+    display: block;
+    margin-top: 10px;
+    font-size: 11px;
+    color: #666;
+    font-style: italic;
   }
 }
 
