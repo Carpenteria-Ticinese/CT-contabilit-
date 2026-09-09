@@ -631,7 +631,7 @@ async function loadCanalA() {
     try {
       const { data, error } = await sb
         .from('tm_conta_fatture')
-        .select('id, numero, data_emissione, cliente_nome, totale, valuta, tipo, stato')
+        .select('id, numero, data_emissione, cliente_nome, totale, valuta, tipo, stato, cantiere_id')
         .eq('azienda_id', currentAziendaId)
         .eq('stato', 'emessa')
         .order('data_emissione', { ascending: false })
@@ -648,7 +648,9 @@ async function loadCanalA() {
           descrizione:  (isNC ? 'Nota di credito ' : 'Fattura ') + (ft.numero || '') + ' — ' + (ft.cliente_nome || ''),
           importo:      imp,
           valuta:       ft.valuta || 'CHF',
-          cantiere_id:  null,
+          // FASE 27 — il cantiere scelto alla registrazione arriva fin qui:
+          // la classificazione lo trova gia' compilato e non lo richiede.
+          cantiere_id:  ft.cantiere_id || null,
           ente:         ft.cliente_nome || null,
           extra:        ft.cliente_nome ? 'Cliente: ' + ft.cliente_nome : null,
           _sorgente:    'Fatture',
@@ -669,7 +671,7 @@ async function loadCanalA() {
     try {
       const { data, error } = await sb
         .from('tm_conta_fatture_acquisto')
-        .select('id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id')
+        .select('id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id, cantiere_id')
         .eq('azienda_id', currentAziendaId)
         .order('data', { ascending: false })
       if (error) throw error
@@ -686,7 +688,7 @@ async function loadCanalA() {
           descrizione:  desc,
           importo:      safeNum(acq.importo),
           valuta:       acq.valuta || 'CHF',
-          cantiere_id:  null,
+          cantiere_id:  acq.cantiere_id || null,   // FASE 27 — vedi sopra
           ente:         acq.fornitore || null,
           extra:        acq.fornitore ? 'Fornitore: ' + acq.fornitore : null,
           _sorgente:    'Fatture acquisto',
@@ -710,7 +712,7 @@ async function loadCanalB() {
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, created_at, stato_conferma')
+      .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, created_at, stato_conferma, cantiere_id')
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false })
     if (error) throw error
@@ -722,7 +724,7 @@ async function loadCanalB() {
         descrizione:  m.descrizione || '(senza descrizione)',
         importo:      safeNum(m.importo),
         valuta:       m.valuta || 'CHF',
-        cantiere_id:  null,
+        cantiere_id:  m.cantiere_id || null,      // FASE 27 — vedi sopra
         ente:         m.ente_fornitore || null,
         extra:        m.ente_fornitore || null,
         _sorgente:    'Inserito manualmente',
@@ -2187,6 +2189,7 @@ function fillFormFromValues(vals) {
   riempiSelectGruppi('f-gruppo', vals.gruppo_codice || '')
   onMovStatoChange()
   aggiornaLegatoDaId('f', vals.contatto_id)
+  impostaCantierePicker('m', vals.cantiere_id || null)   // FASE 27
 }
 
 // Ridisegna il riquadro «contatto collegato» partendo dal solo id: serve quando
@@ -2221,7 +2224,8 @@ async function startEditMovimento(id) {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
       .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita,' +
-              ' data_scadenza, stato_pagamento, data_pagamento, gruppo_codice, contatto_id')
+              ' data_scadenza, stato_pagamento, data_pagamento, gruppo_codice, contatto_id,' +
+              ' cantiere_id')
       .eq('id', id)
       .eq('azienda_id', currentAziendaId)
       .single()
@@ -2239,13 +2243,18 @@ async function startEditMovimento(id) {
       stato_pagamento: data.stato_pagamento || 'pagato',
       data_pagamento:  data.data_pagamento || '',
       gruppo_codice:   data.gruppo_codice || '',
-      contatto_id:     data.contatto_id || ''
+      contatto_id:     data.contatto_id || '',
+      cantiere_id:     data.cantiere_id || ''            // FASE 27
     }
     editingMovimentoId = id
     originalEditValues = vals
 
     showPage('inserimento')
+    try { await loadCantieri() } catch (e) { /* non bloccante */ }
     fillFormFromValues(vals)
+    // FASE 27 — un movimento gia' diviso non si riattribuisce da qui.
+    try { await loadMappaCantieri(true) } catch (e) { /* non bloccante */ }
+    mostraDivisioneSeCe('m', 'proprio', id)
     renderMovimentoAllegatoCorrente()
     var bar = el('edit-mode-bar'); if (bar) bar.style.display = 'flex'
     var d = el('edit-mode-desc'); if (d) d.textContent = '«' + vals.descrizione + '»'
@@ -3663,6 +3672,9 @@ async function newFattura(tipo) {
   el('f-fat-data').value = oggiISO()
   el('f-fat-valuta').value = 'CHF'
   el('f-fat-note').value = ''
+  // FASE 27 — cantiere: documento nuovo, campo pulito.
+  try { await loadCantieri() } catch (e) { /* non bloccante */ }
+  impostaCantierePicker('v', null)
   html('fatture-edit-banner', '')
   showFattureView('edit')
   await ensureContiIva()
@@ -3743,6 +3755,11 @@ async function editFattura(id) {
     aggiornaNotaTermine()
     el('f-fat-valuta').value = f.valuta || 'CHF'
     el('f-fat-note').value = f.note || ''
+    // FASE 27 — cantiere della fattura, e avviso se e' gia' divisa.
+    try { await loadCantieri() } catch (e) { /* non bloccante */ }
+    impostaCantierePicker('v', f.cantiere_id || null)
+    try { await loadMappaCantieri(true) } catch (e) { /* non bloccante */ }
+    mostraDivisioneSeCe('v', 'fattura', f.id)
     html('fatture-edit-banner', '')
     showFattureView('edit')
     await ensureContiIva()
@@ -4077,6 +4094,8 @@ function collectFatturaHeader() {
     // fattura d'acquisto. Resta facoltativo: un nome scritto a mano si salva
     // lo stesso, con contatto_id nullo.
     contatto_id:       (el('f-cli-contatto-id') && el('f-cli-contatto-id').value) || null,
+    // FASE 27 — il cantiere scelto alla registrazione. NULL = nessun cantiere.
+    cantiere_id:       valoreCantiere('v'),
     cliente_indirizzo: el('f-cli-indirizzo') ? (el('f-cli-indirizzo').value.trim() || null) : null,
     cliente_paese:     (el('f-cli-paese') && el('f-cli-paese').value.trim()) || PAESE_PREDEFINITO,
     cliente_iva:       el('f-cli-iva') ? (el('f-cli-iva').value.trim() || null) : null,
@@ -5498,6 +5517,8 @@ function fillAcquistoForm(v) {
   setVal('a-pag-data', '')
   setVal('a-pag-metodo', '')
   onAcquistoGiaPagata()
+  // FASE 27 — il cantiere scelto alla registrazione.
+  impostaCantierePicker('a', v.cantiere_id || null)
   // FASE 2: gruppo e contatto collegato
   if (el('a-contatto-id')) el('a-contatto-id').value = v.contatto_id || ''
   riempiSelectGruppi('a-gruppo', v.gruppo_codice || '')
@@ -5564,6 +5585,9 @@ async function newAcquisto() {
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
   html('a-contatto-legato', '')
   html('a-fornitore-suggest', '')
+  // FASE 27 — cantiere: documento nuovo, campo pulito.
+  try { await loadCantieri() } catch (e) { /* l'elenco non e' un requisito */ }
+  impostaCantierePicker('a', null)
   // FASE 5A: il ponte riparte pulito, senza le segnalazioni del documento prima
   chiudiIncollaRisposta()
   html('ponte-ai-banner', '')
@@ -5586,7 +5610,8 @@ async function editAcquisto(id) {
       stato_pagamento: data.stato_pagamento || 'aperto', note: data.note || '',
       codice_iva_id: data.codice_iva_id || null,
       imponibile: data.imponibile, iva_importo: data.iva_importo,
-      gruppo_codice: data.gruppo_codice || null, contatto_id: data.contatto_id || null
+      gruppo_codice: data.gruppo_codice || null, contatto_id: data.contatto_id || null,
+      cantiere_id:   data.cantiere_id || null                      // FASE 27
     }
     acquistoOriginal = vals
     clearAcquistoFileInput()   // PRIMA di mostrare il form: mai dopo
@@ -5599,6 +5624,10 @@ async function editAcquisto(id) {
     await aggiornaGiaPagata(id, data.importo)
     await aggiornaRigaClassificazioneForm('tm_conta_fatture_acquisto', id,
                                           'a-classificazione-riga', data)
+    // FASE 27 — se il documento e' gia' diviso, il campo cantiere si spegne:
+    // la divisione vince, e non deve poter essere cancellata da qui.
+    try { await loadMappaCantieri(true) } catch (e) { /* non bloccante */ }
+    mostraDivisioneSeCe('a', 'acquisto', id)
   } catch (e) {
     showFattureBanner('acquisti-list-banner', 'err', 'Apertura: ' + (e.message || e))
   }
@@ -5627,6 +5656,8 @@ function collectAcquisto() {
     // FASE 2: raggruppamento e collegamento alla rubrica
     gruppo_codice:    getVal('a-gruppo') || null,
     contatto_id:      getVal('a-contatto-id') || null,
+    // FASE 27 — il cantiere scelto alla registrazione. NULL = magazzino.
+    cantiere_id:      valoreCantiere('a'),
     // IVA (restano NULL se non si sceglie un codice: si salva solo il totale)
     codice_iva_id:    getVal('a-codice-iva') || null,
     imponibile:       impo,
@@ -6117,6 +6148,7 @@ function resetInserimentoForm() {
   if (el('f-contatto-id')) el('f-contatto-id').value = ''
   html('f-contatto-legato', '')
   html('f-ente-suggest', '')
+  impostaCantierePicker('m', null)     // FASE 27
   riempiSelectGruppi('f-gruppo', '')
   proponiStatoDaData()
 }
@@ -6195,7 +6227,9 @@ async function handleInserimentoSubmit(event) {
       // quando il pagamento viene registrato, subito sotto.
       data_scadenza:   (el('f-scadenza') && el('f-scadenza').value) || null,
       gruppo_codice:   (el('f-gruppo') && el('f-gruppo').value) || null,
-      contatto_id:     (el('f-contatto-id') && el('f-contatto-id').value) || null
+      contatto_id:     (el('f-contatto-id') && el('f-contatto-id').value) || null,
+      // FASE 27 — il cantiere scelto alla registrazione. NULL = magazzino.
+      cantiere_id:     valoreCantiere('m')
     }
 
     if (editingMovimentoId) {
@@ -11185,6 +11219,245 @@ async function loadGiornate(force) {
   return giornateCache
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 27 — IL CANTIERE SI SCEGLIE QUANDO SI REGISTRA
+//
+// Il momento in cui uno SA a quale cantiere appartiene una fattura e' quello in
+// cui ce l'ha in mano. Chiederlo tre giorni dopo, in una schermata separata,
+// vuol dire non chiederlo: chi registra dieci documenti di fila non ci torna, e
+// la contabilita' di cantiere resta vuota. E' esattamente quello che e'
+// successo.
+//
+// UN MOTORE SOLO, TRE FORM. Il prefisso dice quale:
+//   'a' fattura d'acquisto · 'm' movimento / inserimento manuale · 'v' fattura
+//   di vendita.
+// Tre copie dello stesso campo diventerebbero tre campi diversi al primo
+// ritocco.
+//
+// IL VUOTO E' UNA RISPOSTA. Una tegola comprata per il magazzino non ha
+// cantiere: nessun avviso, nessun rosso, e nella pagina Cantieri finisce nella
+// riga «fuori cantiere», che e' la piu' utile di tutte — se cresce troppo vuol
+// dire che si sta dimenticando di attribuire.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var cantiereSuggest = { pfx: null, list: [], hi: -1, conChiusi: false }
+
+function cantiereCampi(pfx) {
+  return {
+    testo:   'cant-' + pfx + '-nome',
+    hidden:  'cant-' + pfx + '-id',
+    suggest: 'cant-' + pfx + '-suggest',
+    scelto:  'cant-' + pfx + '-scelto',
+    nota:    'cant-' + pfx + '-nota',
+    btn:     'cant-' + pfx + '-sfoglia'
+  }
+}
+
+function chiudiSuggerimentiCantiere(pfx) {
+  html(cantiereCampi(pfx).suggest, '')
+  cantiereSuggest = { pfx: null, list: [], hi: -1, conChiusi: false }
+}
+
+// Un cantiere e' «chiuso» quando il suo stato non e' fra gli attivi.
+// ordineStatoCantiere() torna 0 sugli attivi: si riusa quella, cosi' non
+// esistono due idee diverse di «attivo» nello stesso programma.
+function cantiereAttivo(c) {
+  return ordineStatoCantiere(c && c.stato) === 0
+}
+
+// Disegna il menu. `list` gia' scelta da chi chiama.
+function mostraSuggerimentiCantiere(pfx, list, conChiusi, sfoglia) {
+  var c = cantiereCampi(pfx)
+  var chiusi = (cantieriCache || []).filter(function (x) { return !cantiereAttivo(x) }).length
+
+  // «Magazzino / nessun cantiere» in cima e SEMPRE: dev'essere una scelta che
+  // si fa, non un campo che si lascia vuoto per stanchezza.
+  var out = '<button type="button" class="suggest-item suggest-magazzino" role="option"' +
+            ' onclick="scegliCantiere(\'' + pfx + '\', \'\')">' +
+            '\ud83c\udfe0 Magazzino / nessun cantiere' +
+            '<span class="s-sub">per quello che non va su un cantiere preciso</span>' +
+            '</button>'
+
+  out += list.map(function (x) {
+    return '<button type="button" class="suggest-item" role="option"' +
+           ' onclick="scegliCantiere(\'' + pfx + '\', \'' + esc(x.id) + '\')">' +
+           esc(x.nome || '(senza nome)') +
+           '<span class="s-sub">' +
+             esc(unisciParti([x.luogo, x.committente, x.stato], ' \u00b7 ') || 'nessun dettaglio') +
+           '</span></button>'
+  }).join('')
+
+  if (!list.length) {
+    out += '<div class="suggest-vuoto dim">Nessun cantiere trovato.</div>'
+  }
+
+  // I chiusi non si buttano via: si mostrano su richiesta. Un elenco che
+  // comincia con dieci cantieri finiti non si legge piu'.
+  if (sfoglia && !conChiusi && chiusi > 0) {
+    out += '<button type="button" class="suggest-item suggest-new"' +
+           ' onclick="cantiereSfoglia(\'' + pfx + '\', true)">' +
+           '\u25be Mostra anche i cantieri chiusi (' + chiusi + ')' +
+           '</button>'
+  }
+
+  html(c.suggest, out)
+  cantiereSuggest = { pfx: pfx, list: list, hi: -1, conChiusi: !!conChiusi }
+}
+
+// Scrivendo si cerca fra TUTTI, chiusi compresi: se uno scrive il nome di un
+// cantiere finito, e' perche' lo vuole.
+async function cantiereSuggerisci(pfx) {
+  var c = cantiereCampi(pfx)
+  var q = getVal(c.testo).toLowerCase()
+
+  // Scrivere a mano scollega la scelta: il testo e l'id devono dire la stessa
+  // cosa, altrimenti si salva il nome di uno e l'id di un altro.
+  if (el(c.hidden) && el(c.hidden).value) {
+    var scelto = (cantieriCache || []).filter(function (x) { return x.id === el(c.hidden).value })[0]
+    if (!scelto || String(scelto.nome || '').toLowerCase() !== q) {
+      el(c.hidden).value = ''
+      html(c.scelto, '')
+    }
+  }
+
+  if (q.length < 2) { chiudiSuggerimentiCantiere(pfx); return }
+  try { await loadCantieri() } catch (e) { /* la ricerca e' un aiuto, non un requisito */ }
+
+  var termini = q.split(/\s+/)
+  var trovati = cantieriOrdinati().filter(function (x) {
+    var hay = (String(x.nome || '') + ' ' + String(x.luogo || '') + ' ' +
+               String(x.committente || '')).toLowerCase()
+    return termini.every(function (tr) { return hay.indexOf(tr) !== -1 })
+  }).slice(0, 12)
+
+  mostraSuggerimentiCantiere(pfx, trovati, true, false)
+}
+
+// Il bottone: l'elenco completo, prima i soli attivi.
+async function cantiereSfoglia(pfx, conChiusi) {
+  var c = cantiereCampi(pfx)
+  var box = el(c.suggest)
+  // Secondo clic sul bottone: si richiude, come ci si aspetta da un menu.
+  if (!conChiusi && box && box.innerHTML && cantiereSuggest.pfx === pfx) {
+    chiudiSuggerimentiCantiere(pfx)
+    return
+  }
+  try { await loadCantieri() } catch (e) { /* l'elenco e' un aiuto, non un requisito */ }
+  var list = cantieriOrdinati().filter(function (x) { return conChiusi || cantiereAttivo(x) })
+  mostraSuggerimentiCantiere(pfx, list, conChiusi, true)
+  if (el(c.testo)) el(c.testo).focus()
+}
+
+// Frecce su/giu' per scorrere, Invio per scegliere, Esc per chiudere.
+function cantiereTasti(event, pfx) {
+  var box = el(cantiereCampi(pfx).suggest)
+  if (!box || !box.innerHTML) return
+  var items = box.querySelectorAll('.suggest-item')
+  if (!items.length) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    var n = items.length
+    cantiereSuggest.hi = (event.key === 'ArrowDown')
+      ? (cantiereSuggest.hi + 1) % n
+      : (cantiereSuggest.hi - 1 + n) % n
+    for (var i = 0; i < n; i++) items[i].classList.toggle('hi', i === cantiereSuggest.hi)
+    items[cantiereSuggest.hi].scrollIntoView({ block: 'nearest' })
+  } else if (event.key === 'Enter' && cantiereSuggest.hi >= 0) {
+    event.preventDefault()
+    items[cantiereSuggest.hi].click()
+  } else if (event.key === 'Escape') {
+    chiudiSuggerimentiCantiere(pfx)
+  }
+}
+
+// id vuoto = magazzino. E' una scelta esplicita, e si vede scritta.
+function scegliCantiere(pfx, id) {
+  var c = cantiereCampi(pfx)
+  chiudiSuggerimentiCantiere(pfx)
+  if (!id) {
+    if (el(c.testo))  el(c.testo).value = ''
+    if (el(c.hidden)) el(c.hidden).value = ''
+    html(c.scelto,
+      '<div class="cantiere-scelto magazzino">\ud83c\udfe0 <strong>Magazzino / nessun cantiere</strong>' +
+      ' <span class="dim">— scelta esplicita</span></div>')
+    return
+  }
+  var x = (cantieriCache || []).filter(function (k) { return k.id === id })[0]
+  if (!x) return
+  if (el(c.testo))  el(c.testo).value = x.nome || ''
+  if (el(c.hidden)) el(c.hidden).value = id
+  html(c.scelto,
+    '<div class="cantiere-scelto">\ud83c\udfd7\ufe0f Cantiere: <strong>' +
+      esc(nomeCantiere(x, true)) + '</strong>' +
+    '<button type="button" class="cl-x" onclick="scegliCantiere(\'' + pfx + '\', \'\')">' +
+      'Togli</button></div>')
+}
+
+// Da un id salvato al campo: si usa riaprendo un documento.
+function impostaCantierePicker(pfx, id) {
+  var c = cantiereCampi(pfx)
+  html(c.suggest, '')
+  html(c.nota, '')
+  if (el(c.testo)) el(c.testo).disabled = false
+  if (el(c.btn))   el(c.btn).disabled = false
+  if (!id) {
+    if (el(c.testo))  el(c.testo).value = ''
+    if (el(c.hidden)) el(c.hidden).value = ''
+    html(c.scelto, '')
+    return
+  }
+  if (el(c.hidden)) el(c.hidden).value = id
+  var x = (cantieriCache || []).filter(function (k) { return k.id === id })[0]
+  if (x) {
+    if (el(c.testo)) el(c.testo).value = x.nome || ''
+    html(c.scelto, '<div class="cantiere-scelto">\ud83c\udfd7\ufe0f Cantiere: <strong>' +
+      esc(nomeCantiere(x, true)) + '</strong>' +
+      '<button type="button" class="cl-x" onclick="scegliCantiere(\'' + pfx + '\', \'\')">' +
+      'Togli</button></div>')
+  } else {
+    // L'id c'e' ma il cantiere non si legge (permessi, o cancellato in App
+    // Cantieri): si dice, non si cancella il collegamento di nascosto.
+    if (el(c.testo)) el(c.testo).value = ''
+    html(c.scelto, '<div class="cantiere-scelto">\u26a0\ufe0f Cantiere collegato ma non leggibile' +
+      ' <span class="dim">(' + esc(String(id).slice(0, 8)) + '\u2026)</span></div>')
+  }
+}
+
+function valoreCantiere(pfx) {
+  var v = el(cantiereCampi(pfx).hidden)
+  return (v && v.value) ? v.value : null
+}
+
+// FASE 25 + 27 — un documento GIA' DIVISO non si tocca dalla registrazione.
+// La divisione e' una decisione presa nella classificazione, con degli importi
+// dentro: sovrascriverla con «un cantiere solo» butterebbe via quel lavoro
+// senza dirlo. Qui si mostra che e' diviso e si spegne il campo.
+function mostraDivisioneSeCe(pfx, origineTipo, origineId) {
+  var c = cantiereCampi(pfx)
+  var quote = (classCantiereMap || {})[chiaveClassificazione(origineTipo, origineId)] || []
+  var conCantiere = quote.filter(function (q) { return q.cantiere_id })
+  if (quote.length < 2 && conCantiere.length < 2) return false
+
+  var nomi = conCantiere.map(function (q) {
+    var x = (cantieriCache || []).filter(function (k) { return k.id === q.cantiere_id })[0]
+    return x ? (x.nome || '(senza nome)') : 'cantiere non leggibile'
+  })
+  if (quote.length > conCantiere.length) nomi.push('magazzino')
+
+  if (el(c.testo)) el(c.testo).disabled = true
+  if (el(c.btn))   el(c.btn).disabled = true
+  html(c.scelto, '')
+  html(c.nota,
+    '<div class="fase-banner warn" role="status" style="margin-top:8px">' +
+      '<span class="icon" aria-hidden="true">\u2702\ufe0f</span>' +
+      '<div class="msg"><strong>Questo documento e\u2019 diviso su ' + quote.length +
+        ' parti</strong> (' + esc(nomi.join(', ')) + ').' +
+      '<div style="margin-top:4px">La divisione si cambia dalla classificazione, non da qui: ' +
+        'scrivere un cantiere solo la cancellerebbe. Il campo resta spento apposta.</div>' +
+      '</div></div>')
+  return true
+}
+
 // Il collegamento documento → cantiere sta nelle classificazioni, non nella
 // vista: v_conta_flussi non espone cantiere_id e modificarla e' fuori perimetro.
 // Si carica la mappa e si incrocia qui.
@@ -11196,10 +11469,47 @@ async function loadGiornate(force) {
 // Adesso ogni documento porta l'elenco delle sue quote, e ogni quota sa quanto
 // vale: la somma delle quote e' il totale del documento, e nessun franco viene
 // contato due volte.
+// FASE 27 — il cantiere scritto SUL DOCUMENTO alla registrazione.
+// E' la seconda casa del cantiere, e serve la guardia sulla sessione come per
+// tutte le altre letture: senza sessione la RLS torna zero righe SENZA errore,
+// e una mappa vuota segnata come buona lascerebbe i cantieri spogli per tutta
+// la sessione. E' la trappola che li ha gia' fatti sparire una volta.
+var docCantiereMap = null
+
+async function loadCantiereDocumenti(force) {
+  if (docCantiereMap && !force) return docCantiereMap
+  if (!currentAziendaId) { return docCantiereMap || {} }   // niente sessione: non si segna
+  var mappa = {}
+  var fonti = [
+    { tabella: 'tm_conta_fatture',          tipo: 'fattura'  },
+    { tabella: 'tm_conta_fatture_acquisto', tipo: 'acquisto' },
+    { tabella: 'tm_conta_movimenti_propri', tipo: 'proprio'  }
+  ]
+  for (var i = 0; i < fonti.length; i++) {
+    try {
+      const { data, error } = await sb.from(fonti[i].tabella)
+        .select('id, cantiere_id')
+        .eq('azienda_id', currentAziendaId)
+        .not('cantiere_id', 'is', null)
+      if (error) throw error
+      ;(data || []).forEach(function (r) {
+        mappa[chiaveClassificazione(fonti[i].tipo, r.id)] = r.cantiere_id
+      })
+    } catch (e) {
+      // Colonna non ancora creata (SQL_FASE27 non lanciato) o permessi: si
+      // continua senza. Il programma resta quello di prima, non si rompe.
+      console.warn('Cantiere sul documento (' + fonti[i].tabella + '):', e.message || e)
+    }
+  }
+  docCantiereMap = mappa
+  return docCantiereMap
+}
+
 async function loadMappaCantieri(force) {
   if (classCantiereMap && !force) return classCantiereMap
   classCantiereMap = {}
   if (!currentAziendaId) return classCantiereMap
+  await loadCantiereDocumenti(force)
   try {
     const { data, error } = await sb.from('tm_conta_classificazioni')
       .select('origine_tipo, origine_id, cantiere_id, imponibile, iva_importo')
@@ -11224,9 +11534,26 @@ async function loadMappaCantieri(force) {
 
 // Le quote di un documento della vista. Se il documento non e' classificato,
 // nessuna quota: non finisce su nessun cantiere, come prima.
+// FASE 27 — DUE FONTI, UNA REGOLA SOLA, E IL DOPPIO CONTEGGIO NON PUO' NASCERE.
+//
+//   1. le righe di classificazione (FASE 25): possono essere piu' d'una, e
+//      portano ognuna il suo importo. Se ci sono, VINCONO.
+//   2. il cantiere scritto sul documento alla registrazione (FASE 27): vale
+//      solo quando nessuno ha ancora classificato quel documento.
+//
+// Mai la somma delle due: si sceglie, e si sceglie sempre la prima quando c'e'.
+// Cosi' registrare non cancella una divisione fatta dopo, e dividere non viene
+// annullato da una risalvata della registrazione.
 function quoteCantieriDelFlusso(r) {
-  if (!classCantiereMap) return []
-  return classCantiereMap[chiaveClassificazione(r.origine_tipo, r.id_origine)] || []
+  var k = chiaveClassificazione(r.origine_tipo, r.id_origine)
+  var daClass = classCantiereMap ? (classCantiereMap[k] || []) : []
+  if (daClass.length) return daClass
+
+  var cid = docCantiereMap ? docCantiereMap[k] : null
+  if (!cid) return []
+  // Documento non ancora classificato ma gia' attribuito: una quota sola, per
+  // l'intero importo del documento. La frazione risultera' 1.
+  return [{ cantiere_id: cid, quota: safeNum(r.importo_totale) || 0 }]
 }
 
 // Quanta parte di questo documento appartiene a questo cantiere.
@@ -11251,6 +11578,75 @@ function quotaCantiere(r, cantiereId) {
   // ripartizione coerente che un numero fuori scala.
   var frazione = (Math.abs(totQuote) > 0.005) ? (mia / totQuote) : 0
   return { importo: (Math.abs(imp) > 0.005 ? imp * frazione : mia), frazione: frazione }
+}
+
+// FASE 27 — LA QUOTA CHE RESTA FUORI DA OGNI CANTIERE.
+// Due casi, e vanno tenuti separati solo nel calcolo, non nel risultato:
+//   · documento senza nessuna attribuzione   -> ci finisce INTERO;
+//   · documento diviso, con una parte a magazzino (riga di classificazione
+//     senza cantiere) -> ci finisce QUELLA PARTE.
+// Sommata a tutte le quote dei cantieri deve fare il totale del documento: e'
+// l'invariante che rende vero il «totale generale = cantieri + fuori cantiere».
+function quotaFuoriCantiere(r) {
+  var quote = quoteCantieriDelFlusso(r)
+  var imp = safeNum(r.importo_totale) || 0
+  if (!quote.length) return { importo: imp, frazione: 1 }
+
+  var totQuote = 0, mia = 0
+  for (var i = 0; i < quote.length; i++) {
+    totQuote += quote[i].quota
+    if (!quote[i].cantiere_id) mia += quote[i].quota
+  }
+  if (Math.abs(mia) < 0.005) return null
+  var frazione = (Math.abs(totQuote) > 0.005) ? (mia / totQuote) : 0
+  return { importo: (Math.abs(imp) > 0.005 ? imp * frazione : mia), frazione: frazione }
+}
+
+// I conti di quello che non sta su nessun cantiere. E' la cifra piu' utile
+// della pagina: se cresce, vuol dire che si sta dimenticando di attribuire.
+function contiFuoriCantiere() {
+  var f = {
+    fatturato: { importo: 0, righe: [] },
+    fornitori: { importo: 0, righe: [] },
+    perGruppo: {}
+  }
+  ;(flussiCache || []).forEach(function (r) {
+    if (!confermata(r)) return
+    var q = quotaFuoriCantiere(r)
+    if (!q) return
+    if (r.verso === 'entrata') {
+      f.fatturato.importo += q.importo
+      f.fatturato.righe.push(r)
+    } else {
+      f.fornitori.importo += q.importo
+      f.fornitori.righe.push(r)
+      accumulaGruppo(f.perGruppo, r.gruppo_codice, q.importo)
+    }
+  })
+  f.margine = f.fatturato.importo - f.fornitori.importo
+  return f
+}
+
+// I costi divisi per gruppo di spesa. Un totale unico non dice se un cantiere
+// e' costato in materiale o in subappalti, ed e' proprio quello che serve
+// sapere per capire dov'e' andato il margine.
+function accumulaGruppo(mappa, codice, importo) {
+  var k = codice || '__senza__'
+  if (!mappa[k]) mappa[k] = { codice: codice || null, importo: 0 }
+  mappa[k].importo += importo
+}
+
+// Le voci di un `perGruppo`, ordinate dalla piu' pesante: si legge dall'alto e
+// si smette quando non interessa piu'.
+function gruppiOrdinati(mappa) {
+  return Object.keys(mappa || {}).map(function (k) { return mappa[k] })
+    .sort(function (a, b) { return Math.abs(b.importo) - Math.abs(a.importo) })
+}
+
+function etichettaGruppoCosto(codice) {
+  if (!codice) return 'Senza gruppo'
+  var n = nomeGruppo(codice)
+  return n ? (codice + ' · ' + n) : codice
 }
 
 // Compatibilita': il cantiere del documento quando ce n'e' UNO SOLO. Serve agli
@@ -11279,7 +11675,8 @@ function contiCantiere(cantiereId) {
     spese:       { importo: 0, righe: [] },
     regiaAperta: { importo: 0, righe: [] },
     ore: 0,
-    giornate:    []
+    giornate:    [],
+    perGruppo:   {}      // FASE 27 — i costi divisi per gruppo di spesa
   }
 
   // ── Entrate e fatture fornitori: dalla vista, incrociata con le classificazioni
@@ -11309,6 +11706,7 @@ function contiCantiere(cantiereId) {
       if (Math.abs(res) > 0.005) { c.daIncassare.importo += res;  c.daIncassare.righe.push(r) }
     } else {
       c.fornitori.importo += imp; c.fornitori.righe.push(r)
+      accumulaGruppo(c.perGruppo, r.gruppo_codice, imp)   // FASE 27
       if (Math.abs(res) > 0.005) c.fornitoriDaPagare += res
     }
   })
@@ -11710,6 +12108,15 @@ function renderElencoCantieri() {
     '</tr>'
   }).join('')
 
+  // FASE 27 — QUELLO CHE NON STA SU NESSUN CANTIERE.
+  // E' la cifra piu' utile della pagina: se e' grossa, vuol dire che si sta
+  // dimenticando di attribuire. Entra nel totale generale, altrimenti il
+  // totale non sarebbe il totale di niente.
+  var fuori = contiFuoriCantiere()
+  tot.fatturato += fuori.fatturato.importo
+  tot.costi     += fuori.fornitori.importo
+  tot.margine   += fuori.margine
+
   var percTot = (tot.fatturato > 0) ? (tot.margine / tot.fatturato * 100) : null
 
   function th(campo, testo, extra) {
@@ -11726,6 +12133,16 @@ function renderElencoCantieri() {
       th('margine', 'Margine', ' style="text-align:right"') +
       th('perc', 'Margine %', ' style="text-align:right"') +
     '</tr></thead><tbody>' + body +
+    // La riga del non attribuito sta SOPRA il totale, come una voce qualsiasi:
+    // e' denaro vero quanto quello dei cantieri, solo senza un cantiere.
+    '<tr class="riga-fuori-cantiere">' +
+      '<td>\ud83c\udfe0 <strong>Fuori cantiere</strong> ' +
+        '<span class="dim">magazzino / non ancora attribuito</span></td>' +
+      '<td class="num">' + esc(fmtNumIt(fuori.fatturato.importo)) + ' CHF</td>' +
+      '<td class="num">' + esc(fmtNumIt(fuori.fornitori.importo)) + ' CHF</td>' +
+      '<td class="num">' + esc(fmtNumIt(fuori.margine)) + ' CHF</td>' +
+      '<td class="num"><span class="dim">—</span></td>' +
+    '</tr>' +
     '<tr class="riga-totale">' +
       '<td><strong>Totale generale</strong></td>' +
       '<td class="num"><strong>' + esc(fmtNumIt(tot.fatturato)) + ' CHF</strong></td>' +
@@ -11816,6 +12233,26 @@ function renderSchedaCantiere() {
     '</div>' +
     '</div>'
 
+  // ── COSTI PER GRUPPO DI SPESA (FASE 27)
+  // Un totale unico non dice dov'e' finito il margine. Qui si vede se il
+  // cantiere e' costato in materiale, in subappalti o in trasporti.
+  var gruppi = gruppiOrdinati(k.perGruppo)
+  var perGruppo = '<div class="card cant-blocco"><div class="card-title">🧩 Costi per gruppo</div>' +
+    (gruppi.length
+      ? gruppi.map(function (g) {
+          var quota = (k.fornitori.importo > 0.005)
+            ? (g.importo / k.fornitori.importo * 100) : null
+          return '<div class="cant-riga">' +
+              '<span class="cant-et">' + esc(etichettaGruppoCosto(g.codice)) + '</span>' +
+              '<span class="cant-imp">' + esc(fmtNumIt(g.importo)) + ' CHF</span>' +
+              '<span class="cant-n">' + (quota == null ? '' : esc(fmtNumIt(quota)) + ' %') + '</span>' +
+            '</div>'
+        }).join('') +
+        '<div class="cant-sub">Solo le fatture fornitori. Le spese di App Cantieri ' +
+        'restano nel loro blocco: non hanno un gruppo di spesa.</div>'
+      : '<div class="cru-vuoto">Nessun costo da fatture fornitori su questo cantiere.</div>') +
+    '</div>'
+
   // ── MANODOPERA
   var manodopera = '<div class="card cant-blocco"><div class="card-title">👷 Manodopera</div>' +
     rigaClic('ore', 'Ore registrate', k.ore, k.giornate.length).replace(' CHF', ' ore') +
@@ -11862,7 +12299,7 @@ function renderSchedaCantiere() {
           : '')) +
     '</div>'
 
-  html('cant-dettaglio', entrate + uscite + manodopera + risultato)
+  html('cant-dettaglio', entrate + uscite + perGruppo + manodopera + risultato)
 }
 
 // ── Elenco dei documenti dietro a un riquadro ────────────────────────────────
@@ -13506,7 +13943,8 @@ function movimentoPerClassificare(tabella, doc) {
     return {
       origine_tipo: 'fattura', origine_id: doc.id,
       data: doc.data_emissione, importo: safeNum(doc.totale),
-      valuta: doc.valuta || 'CHF', cantiere_id: null,
+      // FASE 27 — il cantiere della registrazione precompila la classificazione.
+      valuta: doc.valuta || 'CHF', cantiere_id: doc.cantiere_id || null,
       descrizione: (doc.tipo === 'nota_credito' ? 'Nota di credito ' : 'Fattura ') +
                    (doc.numero || '') + ' — ' + (doc.cliente_nome || ''),
       ente: doc.cliente_nome || null,
@@ -13517,7 +13955,7 @@ function movimentoPerClassificare(tabella, doc) {
     return {
       origine_tipo: 'acquisto', origine_id: doc.id,
       data: doc.data, importo: safeNum(doc.importo),
-      valuta: doc.valuta || 'CHF', cantiere_id: null,
+      valuta: doc.valuta || 'CHF', cantiere_id: doc.cantiere_id || null,   // FASE 27
       codice_iva_id: doc.codice_iva_id || null,   // FASE 20 — vedi sopra
       descrizione: 'Acquisto ' + (doc.numero_fornitore || '') + ' — ' + (doc.fornitore || ''),
       ente: doc.fornitore || null,
@@ -13527,7 +13965,7 @@ function movimentoPerClassificare(tabella, doc) {
   return {
     origine_tipo: 'proprio', origine_id: doc.id,
     data: doc.data, importo: safeNum(doc.importo),
-    valuta: doc.valuta || 'CHF', cantiere_id: null,
+    valuta: doc.valuta || 'CHF', cantiere_id: doc.cantiere_id || null,   // FASE 27
     descrizione: doc.descrizione || 'Movimento',
     ente: doc.ente_fornitore || null,
     _sorgente: 'Inserimento manuale', _tipo_label: 'Movimento proprio', _icon: '➕'
@@ -14935,7 +15373,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '47'
+var VERSIONE = '48'
 
 function controllaVersionePagina() {
   try {
@@ -15470,7 +15908,18 @@ function closeSidebar() {
 // FASE 2 — il menu dei suggerimenti della rubrica si chiude cliccando altrove.
 // Senza questo resterebbe aperto sopra il resto del modulo.
 document.addEventListener('click', function (ev) {
-  ['f', 'a', 'v', 'b'].forEach(function (prefix) {
+  // FASE 27 — gli stessi tre gesti sui menu dei cantieri.
+  ;['a', 'm', 'v'].forEach(function (pfx) {
+    var cc = cantiereCampi(pfx)
+    var bx = el(cc.suggest)
+    if (!bx || !bx.innerHTML) return
+    var campo = el(cc.testo), bott = el(cc.btn)
+    if (bx.contains(ev.target)) return
+    if (campo && campo === ev.target) return
+    if (bott && (bott === ev.target || bott.contains(ev.target))) return
+    html(cc.suggest, '')
+  })
+  ;['f', 'a', 'v', 'b'].forEach(function (prefix) {
     var c = rubricaCampi(prefix)
     var box = el(c.suggest)
     if (!box || !box.innerHTML) return
