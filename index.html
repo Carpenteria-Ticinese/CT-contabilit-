@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=47" />
+  <link rel="stylesheet" href="css/style.css?v=48" />
 </head>
-<body data-versione="47">
+<body data-versione="48">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -521,6 +521,33 @@
               <div class="form-hint" id="f-gruppo-hint">
                 Serve a raggruppare le spese nel cruscotto. Se il contatto ha un gruppo
                 predefinito viene proposto qui, e resta modificabile.
+              </div>
+            </div>
+
+            <div class="form-group rubrica-pick cantiere-pick">
+              <label for="cant-m-nome" class="form-label">
+                🏗️ Cantiere <span class="dim">(facoltativo)</span>
+              </label>
+              <div class="campo-con-bottone">
+                <input type="text" id="cant-m-nome" class="form-input" maxlength="120"
+                       autocomplete="off" placeholder="🔍 Scrivi per cercare un cantiere&hellip;"
+                       oninput="cantiereSuggerisci('m')"
+                       onkeydown="cantiereTasti(event, 'm')"
+                       aria-autocomplete="list" aria-controls="cant-m-suggest" />
+                <button type="button" class="btn-secondary" id="cant-m-sfoglia"
+                        onclick="cantiereSfoglia('m')"
+                        aria-label="Apri l&rsquo;elenco dei cantieri">
+                  📋 Scegli dall&rsquo;elenco
+                </button>
+              </div>
+              <input type="hidden" id="cant-m-id" />
+              <div id="cant-m-suggest" class="rubrica-suggest" role="listbox"
+                   aria-label="Cantieri trovati"></div>
+              <div id="cant-m-scelto"></div>
+              <div id="cant-m-nota"></div>
+              <div class="form-hint">
+                Vuoto vale <strong>Magazzino / nessun cantiere</strong>, ed &egrave; una risposta
+                valida: non tutto quello che si compra va su un cantiere.
               </div>
             </div>
 
@@ -1507,6 +1534,33 @@
         </div>
 
         <div class="card">
+          <div class="form-group rubrica-pick cantiere-pick">
+            <label for="cant-v-nome" class="form-label">
+              🏗️ Cantiere <span class="dim">(facoltativo)</span>
+            </label>
+            <div class="campo-con-bottone">
+              <input type="text" id="cant-v-nome" class="form-input" maxlength="120"
+                     autocomplete="off" placeholder="🔍 Scrivi per cercare un cantiere&hellip;"
+                     oninput="cantiereSuggerisci('v')"
+                     onkeydown="cantiereTasti(event, 'v')"
+                     aria-autocomplete="list" aria-controls="cant-v-suggest" />
+              <button type="button" class="btn-secondary" id="cant-v-sfoglia"
+                      onclick="cantiereSfoglia('v')"
+                      aria-label="Apri l&rsquo;elenco dei cantieri">
+                📋 Scegli dall&rsquo;elenco
+              </button>
+            </div>
+            <input type="hidden" id="cant-v-id" />
+            <div id="cant-v-suggest" class="rubrica-suggest" role="listbox"
+                 aria-label="Cantieri trovati"></div>
+            <div id="cant-v-scelto"></div>
+            <div id="cant-v-nota"></div>
+            <div class="form-hint">
+              Vuoto vale <strong>Magazzino / nessun cantiere</strong>, ed &egrave; una risposta
+              valida: non tutto quello che si compra va su un cantiere. Sui ricavi serve per il margine del cantiere.
+            </div>
+          </div>
+
           <div class="form-group">
             <label for="f-fat-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
             <textarea id="f-fat-note" class="form-input" rows="2" maxlength="500" placeholder="Condizioni di pagamento, riferimenti…"></textarea>
@@ -1775,6 +1829,33 @@
                 <option value="pagato">✅ Pagato</option>
               </select>
               <div class="form-hint">Lo stato si calcola dai pagamenti registrati.</div>
+            </div>
+          </div>
+
+          <div class="form-group rubrica-pick cantiere-pick">
+            <label for="cant-a-nome" class="form-label">
+              🏗️ Cantiere <span class="dim">(facoltativo)</span>
+            </label>
+            <div class="campo-con-bottone">
+              <input type="text" id="cant-a-nome" class="form-input" maxlength="120"
+                     autocomplete="off" placeholder="🔍 Scrivi per cercare un cantiere&hellip;"
+                     oninput="cantiereSuggerisci('a')"
+                     onkeydown="cantiereTasti(event, 'a')"
+                     aria-autocomplete="list" aria-controls="cant-a-suggest" />
+              <button type="button" class="btn-secondary" id="cant-a-sfoglia"
+                      onclick="cantiereSfoglia('a')"
+                      aria-label="Apri l&rsquo;elenco dei cantieri">
+                📋 Scegli dall&rsquo;elenco
+              </button>
+            </div>
+            <input type="hidden" id="cant-a-id" />
+            <div id="cant-a-suggest" class="rubrica-suggest" role="listbox"
+                 aria-label="Cantieri trovati"></div>
+            <div id="cant-a-scelto"></div>
+            <div id="cant-a-nota"></div>
+            <div class="form-hint">
+              Vuoto vale <strong>Magazzino / nessun cantiere</strong>, ed &egrave; una risposta
+              valida: non tutto quello che si compra va su un cantiere. Il cantiere scelto qui arriva gi&agrave; compilato nella classificazione.
             </div>
           </div>
 
@@ -2583,7 +2664,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=47"></script>
+<script src="js/app.js?v=48"></script>
 
 </body>
 </html>
