@@ -1922,6 +1922,39 @@ textarea.cell-desc {
   box-shadow: 0 6px 16px rgba(0,0,0,.12);
 }
 .rubrica-suggest:empty { display: none; }
+
+/* ── FASE 27 — il campo Cantiere nei form di registrazione ──────────────── */
+/* «Magazzino / nessun cantiere» sta in cima al menu e si vede che e' un'altra
+   cosa dai cantieri: e' una scelta, non un cantiere. */
+.suggest-item.suggest-magazzino { background: var(--bg); font-weight: 600; }
+
+/* La conferma sotto il campo: dice cosa e' stato scelto, con il bottone per
+   togliere. Senza, «vuoto» e «scelto e poi svuotato» si confondono. */
+.cantiere-scelto {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 6px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); font-size: 13px;
+}
+.cantiere-scelto.magazzino { border-style: dashed; color: var(--text2); }
+.cantiere-scelto .cl-x {
+  margin-left: auto; border: none; background: none; cursor: pointer;
+  color: var(--text2); font-size: 12px; text-decoration: underline; padding: 2px 4px;
+}
+.cantiere-scelto .cl-x:hover { color: var(--err); }
+
+/* Campo spento perche' il documento e' diviso: si deve vedere che non e' un
+   guasto ma una scelta gia' presa altrove. */
+.cantiere-pick input:disabled,
+.cantiere-pick button:disabled { opacity: .55; cursor: not-allowed; }
+
+/* La riga del non attribuito nella tabella dei cantieri: e' un totale, non un
+   cantiere, e si legge staccata da quelli sopra. */
+tr.riga-fuori-cantiere td {
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
 .suggest-item {
   display: block;
   width: 100%;
