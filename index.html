@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=48" />
+  <link rel="stylesheet" href="css/style.css?v=49" />
 </head>
-<body data-versione="48">
+<body data-versione="49">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -79,6 +79,11 @@
       <span>Fatture acquisto</span>
       <span class="nav-badge badge-conferma" id="nav-badge-acquisti"
             style="display:none" aria-live="polite"></span>
+    </button>
+
+    <button class="nav-item auth-only" data-page="offerte">
+      <span aria-hidden="true">📋</span>
+      <span>Offerte fornitori</span>
     </button>
 
     <button class="nav-item auth-only" data-page="export">
@@ -1111,14 +1116,21 @@
 
             <div class="form-row">
               <div class="form-group" style="flex:1">
-                <label for="c-telefono" class="form-label">Telefono</label>
+                <label for="c-telefono" class="form-label">Tel. <span class="dim">(fisso)</span></label>
                 <input type="tel" id="c-telefono" class="form-input" maxlength="40"
-                       placeholder="+41 91 000 00 00" oninput="renderAzioniRapide()" / autocomplete="off">
+                       placeholder="+41 91 000 00 00" oninput="renderAzioniRapide()" autocomplete="off" />
+              </div>
+              <!-- FASE 29 — il cellulare accanto al fisso: due numeri diversi,
+                   tutti e due facoltativi, nessuno al posto dell'altro. -->
+              <div class="form-group" style="flex:1">
+                <label for="c-cellulare" class="form-label">Cell. <span class="dim">(cellulare)</span></label>
+                <input type="tel" id="c-cellulare" class="form-input" maxlength="40"
+                       placeholder="+41 79 000 00 00" oninput="renderAzioniRapide()" autocomplete="off" />
               </div>
               <div class="form-group" style="flex:1">
                 <label for="c-email" class="form-label">Email</label>
                 <input type="email" id="c-email" class="form-input" maxlength="150"
-                       placeholder="nome@esempio.ch" oninput="renderAzioniRapide()" / autocomplete="off">
+                       placeholder="nome@esempio.ch" oninput="renderAzioniRapide()" autocomplete="off" />
               </div>
             </div>
 
@@ -1491,15 +1503,17 @@
             <option value="fr/h"></option>
             <option value="ac."></option>
             <option value="pz"></option>
-            <option value="forfait"></option>
+            <option value="a corpo"></option>
           </datalist>
           <div class="table-wrap">
             <table>
               <thead><tr>
                 <th>Descrizione</th>
-                <th style="width:80px">Un.</th>
+                <th style="width:80px">U.M.</th>
                 <th style="width:90px;text-align:right">Quantità</th>
                 <th style="width:120px;text-align:right">Prezzo unit.</th>
+                <!-- FASE 29 — sconto di riga, in percentuale, facoltativo -->
+                <th style="width:80px;text-align:right" title="Sconto di riga, in percentuale">Sconto %</th>
                 <th style="width:160px" id="th-riga-codiva">Codice IVA</th>
                 <th style="width:110px;text-align:right" id="th-riga-imponibile">Imponibile</th>
                 <th style="width:100px;text-align:right" id="th-riga-iva">IVA</th>
@@ -1510,6 +1524,21 @@
           </div>
 
           <div class="fattura-totali" id="fatture-totali">
+            <!-- FASE 29 — sconto di documento: sul subtotale, in % o in CHF.
+                 Le due righe «Subtotale» e «Sconto» compaiono solo se c'e'. -->
+            <div class="ft-sconto-doc">
+              <span class="ft-label">Sconto sul documento <span class="dim">(facoltativo)</span></span>
+              <span class="ft-sconto-campi">
+                <input type="number" id="f-sconto-valore" class="form-input" min="0" step="0.01"
+                       placeholder="0" onfocus="this.select()" oninput="onScontoDocumentoInput()" />
+                <select id="f-sconto-tipo" class="form-input" onchange="onScontoDocumentoInput()">
+                  <option value="pct">%</option>
+                  <option value="chf">CHF</option>
+                </select>
+              </span>
+            </div>
+            <div id="fatture-tot-subtotale-row" style="display:none"><span class="ft-label">Subtotale</span> <span class="ft-val" id="fatture-tot-subtotale">0.00</span></div>
+            <div id="fatture-tot-sconto-row" style="display:none"><span class="ft-label">Sconto documento</span> <span class="ft-val" id="fatture-tot-sconto">0.00</span></div>
             <div id="fatture-tot-imponibile-row"><span class="ft-label">Imponibile</span> <span class="ft-val" id="fatture-tot-imponibile">0.00</span></div>
             <div id="fatture-tot-iva-row"><span class="ft-label">IVA</span> <span class="ft-val" id="fatture-tot-iva">0.00</span></div>
             <div class="ft-grand"><span class="ft-label">Totale</span> <span class="ft-val" id="fatture-tot-totale">0.00</span></div>
@@ -1608,6 +1637,185 @@
     </div>
 
     <!-- ══ PAGINA: Fatture d'acquisto (Fase 10) ════════════════════════════ -->
+    <!-- FASE 29 — OFFERTE FORNITORI
+         Un'offerta NON e' un movimento contabile: non entra in nessuna somma,
+         non sta in v_conta_flussi. E' un riferimento da confrontare con la
+         fattura d'acquisto che arriva dopo. -->
+    <div id="page-offerte" class="page">
+
+      <!-- Elenco -->
+      <div id="offerte-list-view">
+        <div class="page-header">
+          <div>
+            <div class="page-title">📋 Offerte fornitori</div>
+            <div class="page-subtitle">
+              Le offerte ricevute, da confrontare con la fattura quando arriva.
+              Non sono spese: non entrano in nessuna somma.
+            </div>
+          </div>
+          <button class="btn-primary" onclick="newOfferta()">➕ Nuova offerta</button>
+        </div>
+
+        <div id="offerte-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+
+        <div class="card">
+          <div class="card-title">📄 Elenco</div>
+          <div class="form-row" style="margin-bottom:12px">
+            <div class="form-group" style="flex:2; margin-bottom:0">
+              <label for="offerte-search" class="form-label">Cerca</label>
+              <input type="text" id="offerte-search" class="form-input"
+                     placeholder="🔍 Fornitore, riferimento, importo…"
+                     oninput="renderOfferteTable()" autocomplete="off" />
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="offerte-filtro-stato" class="form-label">Stato</label>
+              <select id="offerte-filtro-stato" class="form-input" onchange="renderOfferteTable()">
+                <option value="">Tutte</option>
+                <option value="da_valutare">🕐 Da valutare</option>
+                <option value="confermata">✅ Confermata</option>
+                <option value="scaduta">⌛ Scaduta</option>
+                <option value="rifiutata">✖️ Rifiutata</option>
+              </select>
+            </div>
+          </div>
+          <div id="offerte-table"></div>
+        </div>
+      </div>
+
+      <!-- Scheda in sola lettura -->
+      <div id="offerte-detail-view" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title" id="offerte-detail-title">Offerta</div>
+            <div class="page-subtitle">Sola lettura. Per cambiare qualcosa premi «Modifica».</div>
+          </div>
+          <button class="btn-secondary" onclick="offerteBackToList()">← Indietro</button>
+        </div>
+        <div id="offerte-detail-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
+        <div id="offerte-detail-actions" class="form-actions" style="margin-bottom:16px"></div>
+        <div class="card"><div id="offerte-detail-body"></div></div>
+        <div id="offerte-detail-allegati" style="margin-top:16px"></div>
+      </div>
+
+      <!-- Modulo -->
+      <div id="offerte-edit-view" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title" id="offerte-edit-title">Nuova offerta</div>
+            <div class="page-subtitle">Quello che il fornitore ha proposto, riga per riga.</div>
+          </div>
+          <button class="btn-secondary" onclick="offerteBackToList()">← Indietro</button>
+        </div>
+
+        <div id="offerte-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
+
+        <div class="card">
+          <div class="card-title">🏢 Fornitore e riferimenti</div>
+          <div class="form-group rubrica-pick">
+            <label for="off-fornitore" class="form-label">Fornitore <span class="req" aria-hidden="true">*</span></label>
+            <div class="campo-con-bottone">
+              <input type="text" id="off-fornitore" class="form-input" maxlength="200"
+                     autocomplete="off" placeholder="🔍 Scrivi per cercare fra i fornitori…"
+                     oninput="rubricaSuggerisci('o')"
+                     onkeydown="rubricaTasti(event, 'o')"
+                     aria-autocomplete="list" aria-controls="off-fornitore-suggest" />
+              <button type="button" class="btn-secondary" id="off-fornitore-sfoglia"
+                      onclick="rubricaSfoglia('o')"
+                      aria-label="Apri l&rsquo;elenco dei fornitori in rubrica">
+                📇 Scegli dalla rubrica
+              </button>
+            </div>
+            <input type="hidden" id="off-contatto-id" />
+            <div id="off-fornitore-suggest" class="rubrica-suggest" role="listbox"
+                 aria-label="Fornitori trovati in rubrica"></div>
+            <div id="off-contatto-legato"></div>
+            <div class="form-hint">Solo i contatti segnati come fornitore in rubrica.</div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="off-data" class="form-label">Data dell&rsquo;offerta <span class="req" aria-hidden="true">*</span></label>
+              <input type="date" id="off-data" class="form-input" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="off-riferimento" class="form-label">Riferimento <span class="dim">(numero dell&rsquo;offerta)</span></label>
+              <input type="text" id="off-riferimento" class="form-input" maxlength="80" placeholder="es. OFF-2026-118" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="off-stato" class="form-label">Stato</label>
+              <select id="off-stato" class="form-input">
+                <option value="da_valutare">🕐 Da valutare</option>
+                <option value="confermata">✅ Confermata</option>
+                <option value="scaduta">⌛ Scaduta</option>
+                <option value="rifiutata">✖️ Rifiutata</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group rubrica-pick cantiere-pick">
+            <label for="cant-o-nome" class="form-label">
+              🏗️ Cantiere di riferimento <span class="dim">(facoltativo)</span>
+            </label>
+            <div class="campo-con-bottone">
+              <input type="text" id="cant-o-nome" class="form-input" maxlength="120"
+                     autocomplete="off" placeholder="🔍 Scrivi per cercare un cantiere…"
+                     oninput="cantiereSuggerisci('o')"
+                     onkeydown="cantiereTasti(event, 'o')"
+                     aria-autocomplete="list" aria-controls="cant-o-suggest" />
+              <button type="button" class="btn-secondary" id="cant-o-sfoglia"
+                      onclick="cantiereSfoglia('o')"
+                      aria-label="Apri l&rsquo;elenco dei cantieri">
+                📋 Scegli dall&rsquo;elenco
+              </button>
+            </div>
+            <input type="hidden" id="cant-o-id" />
+            <div id="cant-o-suggest" class="rubrica-suggest" role="listbox" aria-label="Cantieri trovati"></div>
+            <div id="cant-o-scelto"></div>
+            <div id="cant-o-nota"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📦 Righe dell&rsquo;offerta
+            <button type="button" class="link-btn" onclick="addRigaOfferta()">+ Aggiungi riga</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Descrizione</th>
+                <th style="width:80px">U.M.</th>
+                <th style="width:90px;text-align:right">Quantità</th>
+                <th style="width:120px;text-align:right">Prezzo unit.</th>
+                <th style="width:110px;text-align:right">Importo</th>
+                <th style="width:40px"></th>
+              </tr></thead>
+              <tbody id="offerte-righe"></tbody>
+            </table>
+          </div>
+          <div class="fattura-totali">
+            <div class="ft-grand"><span class="ft-label">Totale offerta</span> <span class="ft-val" id="offerte-tot">0,00</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="form-group">
+            <label for="off-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
+            <textarea id="off-note" class="form-input" rows="2" maxlength="500"
+                      placeholder="Condizioni, validità, consegna…"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="off-allegato" class="form-label">📎 PDF o foto dell&rsquo;offerta <span class="dim">(facoltativo)</span></label>
+            <input type="file" id="off-allegato" class="form-input" accept=".pdf,image/*" />
+            <div class="form-hint">Si allega al salvataggio. Gli allegati gi&agrave; caricati si vedono nella scheda.</div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn-primary" id="btn-salva-offerta" onclick="saveOfferta()">💾 Salva offerta</button>
+            <button type="button" class="btn-secondary" onclick="offerteBackToList()">Annulla</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="page-acquisti" class="page">
 
       <!-- Lista -->
@@ -1857,6 +2065,17 @@
               Vuoto vale <strong>Magazzino / nessun cantiere</strong>, ed &egrave; una risposta
               valida: non tutto quello che si compra va su un cantiere. Il cantiere scelto qui arriva gi&agrave; compilato nella classificazione.
             </div>
+          </div>
+
+          <!-- FASE 29 — l'offerta a cui questa fattura risponde. Facoltativa,
+               mai un obbligo: serve solo al confronto affiancato. -->
+          <div class="form-group" id="a-offerta-group">
+            <label for="a-offerta" class="form-label">📋 Offerta collegata <span class="dim">(facoltativa)</span></label>
+            <select id="a-offerta" class="form-input" onchange="onOffertaCollegataChange()"></select>
+            <div class="form-hint">
+              Prima le offerte di questo fornitore, poi le altre. Collegandola vedi il confronto qui sotto.
+            </div>
+            <div id="a-offerta-confronto"></div>
           </div>
 
           <!-- Se la fattura ha gia' dei pagamenti la spunta sparisce: si
@@ -2636,6 +2855,31 @@
   </div>
 
   <!-- ══ MODALE: Conferma emissione fattura (Fase 10) ═════════════════════ -->
+  <!-- FASE 29 — Gli allegati di un documento, in SOLA VISUALIZZAZIONE.
+       Si guarda, non si tocca: niente elimina, niente cambio di tipo, niente
+       aggiungi. Per quello c'e' la scheda. Cosi' guardare un allegato non
+       obbliga ad aprire la modifica di un documento che non doveva cambiare. -->
+  <div id="allegati-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="allegati-title">
+    <div class="modal-card" style="max-width:560px">
+      <div class="modal-header">
+        <div class="modal-title" id="allegati-title">📎 Allegati</div>
+        <button class="modal-close" onclick="chiudiAllegatiOverlay()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="allegati-overlay-sotto" class="dim" style="margin-bottom:10px"></div>
+        <div id="allegati-overlay-lista"></div>
+        <div class="form-hint" style="margin-top:10px">
+          Solo visualizzazione. Per aggiungere, cambiare tipo o eliminare un allegato apri la scheda del documento.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiAllegatiOverlay()">Chiudi</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="emit-confirm-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="emit-confirm-title" >
     <div class="modal-card" style="max-width:440px">
       <div class="modal-header">
@@ -2664,7 +2908,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=48"></script>
+<script src="js/app.js?v=49"></script>
 
 </body>
 </html>
