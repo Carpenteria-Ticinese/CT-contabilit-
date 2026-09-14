@@ -1008,6 +1008,36 @@ textarea.cell-desc {
 #fatture-righe textarea.cell-titolo { font-weight: 700; }
 .cell-input.cell-unita { text-align: center; }
 
+/* FASE 29 — confronto offerta / fattura, uno accanto all'altro */
+.off-confronto {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  margin-top: 10px; padding: 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg);
+}
+.off-col { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; min-width: 0; }
+.off-col-titolo { font-weight: 700; margin-bottom: 8px; }
+.off-tabella { font-size: 12px; }
+.off-tabella thead th { font-size: 10px; padding: 5px 6px; }
+.off-tabella tbody td { padding: 5px 6px; }
+.off-tot { margin-top: 8px; text-align: right; font-size: 13px; }
+.off-diff {
+  grid-column: 1 / -1; padding: 10px 12px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border); font-size: 13px;
+}
+@media (max-width: 700px) { .off-confronto { grid-template-columns: 1fr; } }
+
+/* FASE 29 — sconto di riga e sconto di documento nell'editor */
+.cell-input.cell-sconto { text-align: right; }
+.ft-sconto-doc {
+  display: flex; gap: 14px; align-items: center; justify-content: space-between;
+  min-width: 240px; margin-bottom: 4px;
+}
+.ft-sconto-campi { display: inline-flex; gap: 6px; align-items: center; }
+.ft-sconto-campi .form-input { width: 90px; padding: 5px 8px; font-size: 13px; }
+.ft-sconto-campi select.form-input { width: 70px; }
+/* La colonna Sconto sul documento: stretta, e vuota quando non c'e' */
+.inv-table th.inv-sconto, .inv-table td.inv-sconto { width: 56px; white-space: nowrap; }
+
 .fattura-totali {
   display: flex;
   flex-direction: column;
@@ -1091,7 +1121,7 @@ textarea.cell-desc {
 .inv-table th.inv-pos, .inv-table td.inv-pos {
   width: 42px; white-space: nowrap; color: #555; font-variant-numeric: tabular-nums;
 }
-.inv-table th.inv-un, .inv-table td.inv-un { width: 46px; text-align: center; }
+.inv-table th.inv-un, .inv-table td.inv-un { width: 62px; text-align: center; white-space: nowrap; }  /* FASE 29: «a corpo» su una riga */
 /* La riga-titolo: in grassetto, senza importi, staccata da quella sopra. */
 .inv-table tbody tr.inv-riga-titolo td {
   font-weight: 700; color: var(--ink); padding-top: 12px; border-bottom: none;
