@@ -3466,6 +3466,7 @@ async function loadFattureList() {
       .order('created_at', { ascending: false })
     if (error) throw error
     fattureList = data || []
+    try { await loadAllegati() } catch (eA) { /* il conteggio e' un di piu' */ }   // FASE 29
     renderFattureTable()
   } catch (e) {
     html('fatture-table', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
@@ -3474,6 +3475,15 @@ async function loadFattureList() {
 
 function fattureRowActions(f) {
   var a = '<button class="icon-btn" onclick="event.stopPropagation(); viewFattura(\'' + f.id + '\')">👁 Apri</button>'
+  // FASE 29 — quanti allegati ha, a colpo d'occhio. Chi non ne ha non mostra
+  // niente qui: la spia «PDF mancante» sta gia' nella colonna dello stato.
+  var nAll = contaAllegati('tm_conta_fatture', f.id)
+  if (nAll) {
+    a += '<button class="icon-btn" title="Vedi ' + (nAll === 1 ? 'l\u2019allegato' : 'i ' + nAll + ' allegati') +
+         '" onclick="event.stopPropagation(); apriAllegatiSolaLettura(\'tm_conta_fatture\', \'' + f.id +
+         '\', \'' + esc(String(f.numero || 'bozza').replace(/\x27/g, '')) + ' — ' +
+         esc(String(f.cliente_nome || '').replace(/\x27/g, '')) + '\', \'fatture-list-banner\')">📎 ' + nAll + '</button>'
+  }
   if (f.stato === 'bozza') {
     a += '<button class="icon-btn classify" onclick="event.stopPropagation(); editFattura(\'' + f.id + '\')">✏️</button>' +
          '<button class="icon-btn danger" onclick="event.stopPropagation(); deleteBozza(\'' + f.id + '\')">🗑️</button>'
@@ -3578,7 +3588,16 @@ function ivaAliquotaById(id) {
 
 // Le unita' che si usano davvero in carpenteria. Sono SUGGERIMENTI: il campo
 // resta libero, perche' prima o poi serve un'unita' che qui non c'e'.
-var UNITA_SUGGERITE = ['ml', 'm2', 'm3', 'kg', 'h', 'fr/h', 'ac.', 'pz', 'forfait']
+var UNITA_SUGGERITE = ['ml', 'm2', 'm3', 'kg', 'h', 'fr/h', 'ac.', 'pz', 'a corpo']
+
+// FASE 29 — «forfait» si scrive «a corpo»: in Ticino, su una fattura di
+// carpenteria, e' cosi'. Le righe gia' salvate come «forfait» restano tali nel
+// database (e' un'etichetta, non un dato: nessun UPDATE) e si MOSTRANO come
+// «a corpo» ovunque.
+function etichettaUnita(u) {
+  var s = String(u == null ? '' : u).trim()
+  return (s.toLowerCase() === 'forfait') ? 'a corpo' : s
+}
 
 function isRigaTitolo(r) {
   return !!r && r.tipo_riga === 'titolo'
@@ -3623,15 +3642,136 @@ function posizioniRighe(righe) {
   return out
 }
 
-function calcolaRiga(r) {
-  // FASE 21 — una riga-titolo vale zero e resta fuori da ogni somma. Tornando
-  // null qui, recalcFatturaTotals e computeCurrentTotale la saltano da soli:
-  // saltano gia' tutto quello che non ha un imponibile.
-  if (isRigaTitolo(r)) return { imponibile: null, iva: null, totale: null }
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 29 — GLI SCONTI, E L'ORDINE IN CUI SI CALCOLANO
+//
+// Due livelli, indipendenti, usabili insieme:
+//   · sconto di RIGA, in %, sulla singola riga;
+//   · sconto di DOCUMENTO, in % o in CHF, sul subtotale, uno per fattura.
+//
+// L'ORDINE E' FISSO e va rispettato alla lettera:
+//   1. per ogni riga: importo = quantita x prezzo, poi lo sconto di riga
+//      -> importo NETTO di riga;
+//   2. subtotale = somma degli importi netti di riga;
+//   3. sconto di documento sul subtotale -> IMPONIBILE;
+//   4. l'IVA si calcola sull'imponibile, MAI sul subtotale prima dello sconto.
+//
+// Con piu' aliquote IVA lo sconto di documento si ripartisce fra le righe in
+// proporzione al loro netto, e l'IVA si calcola riga per riga sulla quota
+// scontata: cosi' il riepilogo per aliquota torna con i totali. Il resto di
+// arrotondamento finisce sull'ultima riga, cosi' la somma quadra al centesimo.
+//
+// UNA FATTURA SENZA SCONTI DEVE DARE LO STESSO TOTALE DI PRIMA: senza sconto
+// di riga netto = lordo, senza sconto di documento imponibile = subtotale.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Lo sconto di riga, pulito: fra 0 e 100, altrimenti 0.
+function scontoRigaPct(r) {
+  var s = safeNum(r && r.sconto_pct)
+  if (s == null || s <= 0) return 0
+  return s > 100 ? 100 : s
+}
+
+// L'importo LORDO e NETTO di una riga (passi 1). Null se la riga non ha numeri.
+function importiRiga(r) {
+  if (isRigaTitolo(r)) return null
   var qta = safeNum(r.quantita), prezzo = safeNum(r.prezzo_unitario)
-  if (qta == null || prezzo == null) return { imponibile: null, iva: null, totale: null }
+  if (qta == null || prezzo == null) return null
+  var lordo = round2(qta * prezzo)
+  var pct = scontoRigaPct(r)
+  var sconto = pct ? round2(lordo * pct / 100) : 0
+  return { lordo: lordo, scontoPct: pct, scontoImporto: sconto, netto: round2(lordo - sconto) }
+}
+
+// Lo sconto di documento in CHF, dato il subtotale (passo 3).
+// `tipo` = 'pct' | 'chf'; non puo' superare il subtotale.
+function scontoDocumentoImporto(subtotale, tipo, valore) {
+  var v = safeNum(valore)
+  if (v == null || v <= 0 || !(subtotale > 0)) return 0
+  var imp = (tipo === 'pct') ? round2(subtotale * (v > 100 ? 100 : v) / 100) : round2(v)
+  return imp > subtotale ? subtotale : imp
+}
+
+// Il calcolo completo, per tutte le righe. Torna i totali e, riga per riga,
+// gli importi da mostrare e da salvare. `righe` = array di righe editor o
+// di righe lette dal database (stessi nomi di campo).
+function calcolaTotaliFattura(righe, scontoTipo, scontoValore) {
+  var ivaOn = isSoggettoIva()
+  var perRiga = []
+  var subtotale = 0
+  for (var i = 0; i < righe.length; i++) {
+    var im = importiRiga(righe[i])
+    perRiga.push(im ? { lordo: im.lordo, scontoPct: im.scontoPct, scontoImporto: im.scontoImporto,
+                        netto: im.netto, imponibile: null, iva: null } : null)
+    if (im) subtotale += im.netto
+  }
+  subtotale = round2(subtotale)
+
+  var scontoDoc = scontoDocumentoImporto(subtotale, scontoTipo, scontoValore)
+  var imponibile = round2(subtotale - scontoDoc)
+
+  // Ripartizione dello sconto di documento sulle righe, in proporzione al
+  // netto; l'ultima riga con importo assorbe il resto di arrotondamento.
+  var fattore = (subtotale > 0) ? (imponibile / subtotale) : 1
+  var sommaImp = 0, ultima = -1
+  for (var j = 0; j < perRiga.length; j++) {
+    if (!perRiga[j]) continue
+    perRiga[j].imponibile = round2(perRiga[j].netto * fattore)
+    sommaImp += perRiga[j].imponibile
+    ultima = j
+  }
+  if (ultima >= 0) {
+    var resto = round2(imponibile - round2(sommaImp))
+    if (Math.abs(resto) >= 0.005) perRiga[ultima].imponibile = round2(perRiga[ultima].imponibile + resto)
+  }
+
+  // L'IVA riga per riga, SULL'IMPONIBILE scontato (passo 4).
+  var iva = 0
+  for (var k = 0; k < perRiga.length; k++) {
+    if (!perRiga[k]) continue
+    var alq = ivaOn ? ivaAliquotaById(righe[k].codice_iva_id) : 0
+    var c = calcolaIva(perRiga[k].imponibile, alq, false)
+    perRiga[k].iva = c.iva || 0
+    iva += perRiga[k].iva
+  }
+  iva = round2(iva)
+
+  return {
+    subtotale: subtotale,
+    scontoDocTipo: (scontoDoc > 0) ? scontoTipo : null,
+    scontoDocValore: (scontoDoc > 0) ? safeNum(scontoValore) : null,
+    scontoDoc: scontoDoc,
+    imponibile: imponibile,
+    iva: iva,
+    totale: round2(imponibile + iva),
+    righe: perRiga
+  }
+}
+
+// Lo sconto di documento come sta nel modulo. Le due variabili sono lo stato
+// dell'editor, come fatturaRighe.
+var editorScontoTipo = 'pct'
+var editorScontoValore = ''
+
+function scontoDocumentoDalForm() {
+  var tipo = getVal('f-sconto-tipo') || 'pct'
+  var val = getVal('f-sconto-valore')
+  editorScontoTipo = tipo
+  editorScontoValore = val
+  return { tipo: tipo, valore: val }
+}
+
+// Compatibilita': chi chiedeva il calcolo di UNA riga (imponibile / iva /
+// totale) continua ad averlo. E' la riga da sola, col suo sconto di riga e
+// SENZA lo sconto di documento: quello si applica solo nel totale.
+function calcolaRiga(r) {
+  var im = importiRiga(r)
+  if (!im) return { imponibile: null, iva: null, totale: null, lordo: null, scontoImporto: null }
   var aliquota = isSoggettoIva() ? ivaAliquotaById(r.codice_iva_id) : 0
-  return calcolaIva(round2(qta * prezzo), aliquota, false)
+  var c = calcolaIva(im.netto, aliquota, false)
+  c.lordo = im.lordo
+  c.scontoImporto = im.scontoImporto
+  return c
 }
 
 // Mostra/nasconde le colonne IVA dell'editor e la riga IVA nei totali
@@ -3657,7 +3797,7 @@ async function newFattura(tipo) {
   editorRifId = null
   editorRifTotale = null
   editorRifInfo = null
-  fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' }]
+  fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce', sconto_pct: '' }]
   el('fatture-edit-title').textContent = editorTipo === 'nota_credito' ? 'Nuova nota di credito' : 'Nuova fattura'
   el('f-cli-nome').value = ''
   // FASE 17 — collegamento alla rubrica: si azzera con il resto dell'intestazione,
@@ -3675,6 +3815,9 @@ async function newFattura(tipo) {
   // FASE 27 — cantiere: documento nuovo, campo pulito.
   try { await loadCantieri() } catch (e) { /* non bloccante */ }
   impostaCantierePicker('v', null)
+  // FASE 29 — nessuno sconto di documento su una fattura nuova.
+  if (el('f-sconto-tipo'))   el('f-sconto-tipo').value   = 'pct'
+  if (el('f-sconto-valore')) el('f-sconto-valore').value = ''
   html('fatture-edit-banner', '')
   showFattureView('edit')
   await ensureContiIva()
@@ -3726,9 +3869,10 @@ async function editFattura(id) {
                // FASE 21 — le righe salvate prima della migrazione non hanno
                // le due colonne: unita vuota e tipo 'voce', che e' quello che
                // sono sempre state.
-               unita: r.unita || '', tipo_riga: r.tipo_riga || 'voce' }
+               unita: r.unita || '', tipo_riga: r.tipo_riga || 'voce',
+               sconto_pct: r.sconto_pct == null ? '' : r.sconto_pct }   // FASE 29
     })
-    if (!fatturaRighe.length) fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' }]
+    if (!fatturaRighe.length) fatturaRighe = [{ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce', sconto_pct: '' }]
 
     el('fatture-edit-title').textContent = (f.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura') + ' (bozza)'
     // FASE 27 — su una bozza salvata il termine viene DAL DOCUMENTO: e' una
@@ -3760,6 +3904,9 @@ async function editFattura(id) {
     impostaCantierePicker('v', f.cantiere_id || null)
     try { await loadMappaCantieri(true) } catch (e) { /* non bloccante */ }
     mostraDivisioneSeCe('v', 'fattura', f.id)
+    // FASE 29 — lo sconto di documento salvato torna nel modulo.
+    if (el('f-sconto-tipo'))   el('f-sconto-tipo').value   = f.sconto_doc_tipo || 'pct'
+    if (el('f-sconto-valore')) el('f-sconto-valore').value = f.sconto_doc_valore == null ? '' : f.sconto_doc_valore
     html('fatture-edit-banner', '')
     showFattureView('edit')
     await ensureContiIva()
@@ -3785,8 +3932,8 @@ function renderRigheEditor() {
     // FASE 21 — su una riga-titolo i campi numerici non ci sono proprio: non
     // devono essere «disattivati ma presenti», perche' un campo grigio invita
     // comunque a provarci. Al loro posto una cella vuota.
-    // unita, quantita, prezzo, [codice IVA], imponibile, [importo IVA]
-    var celleVuote = '<td></td><td></td><td></td>' + (ivaOn ? '<td></td>' : '') +
+    // unita, quantita, prezzo, sconto, [codice IVA], imponibile, [importo IVA]
+    var celleVuote = '<td></td><td></td><td></td><td></td>' + (ivaOn ? '<td></td>' : '') +
                      '<td></td>' + (ivaOn ? '<td></td>' : '')
     rows +=
       '<tr' + (titolo ? ' class="riga-titolo"' : '') + '>' +
@@ -3803,7 +3950,7 @@ function renderRigheEditor() {
           // FASE 21 — l'unita': campo libero con i suggerimenti piu' usati.
           // Una tendina chiusa prima o poi non ha l'unita' che serve.
           '<td><input class="cell-input cell-unita" list="unita-suggerite" maxlength="16"' +
-            ' value="' + esc(r.unita || '') + '" placeholder="—"' +
+            ' value="' + esc(etichettaUnita(r.unita)) + '" placeholder="—"' +
             ' oninput="onRigaInput(' + i + ',\'unita\',this.value)"></td>' +
           // FASE 20 — onfocus/select: il campo parte con «1» (quantita) e col
           // valore gia' scritto (prezzo). Senza la selezione, la prima cifra si
@@ -3811,6 +3958,10 @@ function renderRigheEditor() {
           // finito su una fattura vera.
           '<td><input class="cell-input num" type="number" step="0.001" value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'quantita\',this.value)"></td>' +
           '<td><input class="cell-input num" type="number" step="0.01" value="' + esc(r.prezzo_unitario == null ? '' : String(r.prezzo_unitario)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'prezzo_unitario\',this.value)"></td>' +
+          // FASE 29 — lo sconto di riga, in percentuale. Vuoto = nessuno.
+          '<td><input class="cell-input num cell-sconto" type="number" min="0" max="100" step="0.5" placeholder="—"' +
+            ' value="' + esc(r.sconto_pct == null ? '' : String(r.sconto_pct)) + '"' +
+            ' onfocus="this.select()" oninput="onRigaInput(' + i + ',\'sconto_pct\',this.value)"></td>' +
           (ivaOn ? '<td><select class="cell-input" onchange="onRigaInput(' + i + ',\'codice_iva_id\',this.value)">' + buildIvaOptions(r.codice_iva_id) + '</select></td>' : '') +
           '<td class="num" id="imp-cell-' + i + '">' + importoRigaTesto(calc.imponibile) + '</td>' +
           (ivaOn ? '<td class="num" id="iva-cell-' + i + '">' + importoRigaTesto(calc.iva) + '</td>' : '')
@@ -3842,6 +3993,9 @@ function importoRigaTesto(v) {
   return fmtNum2(v == null ? 0 : v)
 }
 
+// FASE 29 — lo sconto di documento: appena cambia, i totali si rifanno.
+function onScontoDocumentoInput() { recalcFatturaTotals() }
+
 function onRigaInput(i, field, value) {
   if (!fatturaRighe[i]) return
   fatturaRighe[i][field] = value
@@ -3857,30 +4011,26 @@ function onRigaInput(i, field, value) {
 // riga, per una cosa che si decide una volta.
 function addTitolo() {
   fatturaRighe.push({ descrizione: '', quantita: '', prezzo_unitario: '',
-                      codice_iva_id: '', unita: '', tipo_riga: 'titolo' })
+                      codice_iva_id: '', unita: '', tipo_riga: 'titolo', sconto_pct: '' })
   renderRigheEditor()
 }
 
 function addRiga() {
-  fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' })
+  fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce', sconto_pct: '' })
   renderRigheEditor()
 }
 function removeRiga(i) {
   fatturaRighe.splice(i, 1)
-  if (!fatturaRighe.length) fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce' })
+  if (!fatturaRighe.length) fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce', sconto_pct: '' })
   renderRigheEditor()
 }
 
 // Calcola i totali dalle righe SENZA scrivere nel DOM (usato dalle validazioni,
 // evita ricorsione con updateNcRefInfo)
 function computeCurrentTotale() {
-  var ti = 0, tv = 0
-  for (var i = 0; i < fatturaRighe.length; i++) {
-    var c = calcolaRiga(fatturaRighe[i])
-    if (c.imponibile != null) ti += c.imponibile
-    if (c.iva != null) tv += c.iva
-  }
-  return round2(round2(ti) + round2(tv))
+  // FASE 29 — stesso motore dei totali a schermo, sconto di documento incluso.
+  var sd = scontoDocumentoDalForm()
+  return calcolaTotaliFattura(fatturaRighe, sd.tipo, sd.valore).totale
 }
 
 // Verifica storno: la nota di credito non deve superare il totale della fattura originale
@@ -3914,19 +4064,23 @@ function updateNcRefInfo() {
 }
 
 function recalcFatturaTotals() {
-  var ti = 0, tv = 0
-  for (var i = 0; i < fatturaRighe.length; i++) {
-    var c = calcolaRiga(fatturaRighe[i])
-    if (c.imponibile != null) ti += c.imponibile
-    if (c.iva != null) tv += c.iva
-  }
-  ti = round2(ti); tv = round2(tv)
-  var tt = round2(ti + tv)
-  if (el('fatture-tot-imponibile')) el('fatture-tot-imponibile').textContent = fmtNum2(ti)
-  if (el('fatture-tot-iva'))        el('fatture-tot-iva').textContent = fmtNum2(tv)
-  if (el('fatture-tot-totale'))     el('fatture-tot-totale').textContent = fmtNum2(tt)
+  // FASE 29 — un motore solo (calcolaTotaliFattura): editor, salvataggio e
+  // stampa leggono gli stessi numeri, e non possono divergere.
+  var sd = scontoDocumentoDalForm()
+  var t = calcolaTotaliFattura(fatturaRighe, sd.tipo, sd.valore)
+  // Il subtotale e lo sconto di documento si mostrano SOLO se lo sconto c'e':
+  // senza, il riquadro dei totali e' identico a prima.
+  var rowSub = el('fatture-tot-subtotale-row'), rowSc = el('fatture-tot-sconto-row')
+  if (rowSub) rowSub.style.display = t.scontoDoc > 0 ? '' : 'none'
+  if (rowSc)  rowSc.style.display  = t.scontoDoc > 0 ? '' : 'none'
+  if (el('fatture-tot-subtotale'))  el('fatture-tot-subtotale').textContent = fmtNum2(t.subtotale)
+  if (el('fatture-tot-sconto'))     el('fatture-tot-sconto').textContent = '\u2212 ' + fmtNum2(t.scontoDoc)
+  if (el('fatture-tot-imponibile')) el('fatture-tot-imponibile').textContent = fmtNum2(t.imponibile)
+  if (el('fatture-tot-iva'))        el('fatture-tot-iva').textContent = fmtNum2(t.iva)
+  if (el('fatture-tot-totale'))     el('fatture-tot-totale').textContent = fmtNum2(t.totale)
   updateNcRefInfo()
-  return { imponibile: ti, iva: tv, totale: tt }
+  return { imponibile: t.imponibile, iva: t.iva, totale: t.totale, subtotale: t.subtotale,
+           scontoDoc: t.scontoDoc, scontoDocTipo: t.scontoDocTipo, scontoDocValore: t.scontoDocValore }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -4111,7 +4265,13 @@ function collectFatturaHeader() {
     note:              el('f-fat-note') ? (el('f-fat-note').value.trim() || null) : null,
     totale_imponibile: tot.imponibile,
     totale_iva:        tot.iva,
-    totale:            tot.totale
+    totale:            tot.totale,
+    // FASE 29 — lo sconto di documento: come l'ha scritto Umberto (tipo e
+    // valore) e quanto vale in franchi. Il terzo e' un numero derivato, ma
+    // serve al documento stampato senza dover rifare il calcolo.
+    sconto_doc_tipo:    tot.scontoDocTipo,
+    sconto_doc_valore:  tot.scontoDocValore,
+    sconto_doc_importo: tot.scontoDoc > 0 ? tot.scontoDoc : null
   }
 }
 
@@ -4119,6 +4279,8 @@ async function replaceRighe(fatturaId) {
   const del = await sb.from('tm_conta_fatture_righe').delete().eq('fattura_id', fatturaId).select()
   if (del.error) throw del.error
   var payload = []
+  var sdSalva = scontoDocumentoDalForm()
+  var totaliPerRighe = calcolaTotaliFattura(fatturaRighe, sdSalva.tipo, sdSalva.valore)
   for (var i = 0; i < fatturaRighe.length; i++) {
     var r = fatturaRighe[i]
     var desc = (r.descrizione || '').trim()
@@ -4128,6 +4290,11 @@ async function replaceRighe(fatturaId) {
     if (!desc) continue
     var titolo = isRigaTitolo(r)
     var calc = calcolaRiga(r)
+    // FASE 29 — la quota di IVA di questa riga sull'imponibile SCONTATO (dopo
+    // lo sconto di documento): cosi' la somma delle righe fa l'IVA del
+    // documento. imponibile_riga resta il NETTO di riga, cioe' quello che si
+    // stampa nella colonna Importo e che sommato da' il subtotale.
+    var quota = totaliPerRighe.righe[i]
     payload.push({
       fattura_id:      fatturaId,
       descrizione:     desc,
@@ -4139,9 +4306,11 @@ async function replaceRighe(fatturaId) {
       quantita:        titolo ? 0 : (safeNum(r.quantita) != null ? safeNum(r.quantita) : 0),
       prezzo_unitario: titolo ? 0 : (safeNum(r.prezzo_unitario) != null ? safeNum(r.prezzo_unitario) : 0),
       codice_iva_id:   (titolo || !isSoggettoIva()) ? null : (r.codice_iva_id || null),
+      sconto_pct:      titolo ? null : (scontoRigaPct(r) || null),
       imponibile_riga: calc.imponibile != null ? calc.imponibile : 0,
-      iva_riga:        calc.iva != null ? calc.iva : 0,
-      totale_riga:     calc.totale != null ? calc.totale : 0,
+      iva_riga:        (quota && quota.iva != null) ? quota.iva : (calc.iva != null ? calc.iva : 0),
+      totale_riga:     (quota && quota.imponibile != null) ? round2(quota.imponibile + (quota.iva || 0))
+                                                           : (calc.totale != null ? calc.totale : 0),
       ordine:          i
     })
   }
@@ -4364,7 +4533,8 @@ async function creaNotaCredito(id) {
         return {
           fattura_id: ncId, descrizione: r.descrizione, quantita: r.quantita, prezzo_unitario: r.prezzo_unitario,
           codice_iva_id: r.codice_iva_id, imponibile_riga: r.imponibile_riga, iva_riga: r.iva_riga, totale_riga: r.totale_riga, ordine: idx,
-          unita: r.unita || null, tipo_riga: r.tipo_riga || 'voce'   // FASE 21
+          unita: r.unita || null, tipo_riga: r.tipo_riga || 'voce',   // FASE 21
+          sconto_pct: r.sconto_pct == null ? null : r.sconto_pct       // FASE 29
         }
       })
       const { error: rErr2 } = await sb.from('tm_conta_fatture_righe').insert(rp).select()
@@ -4741,7 +4911,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
   var posizioni = posizioniRighe(righe)
   // Quante colonne stanno a destra della descrizione: servono per il colspan
   // della riga-titolo, che occupa tutto il resto della larghezza.
-  var colonneDopoDesc = 4 + (ivaOn ? 2 : 0)   // Un., Q.tà, Prezzo, [IVA], Importo, [IVA]
+  var colonneDopoDesc = 5 + (ivaOn ? 2 : 0)   // U.M., Quantità, Prezzo, Sconto, [IVA], Importo, [IVA]
   var righeHtml = ''
   for (var i = 0; i < righe.length; i++) {
     var r = righe[i]
@@ -4760,17 +4930,20 @@ function renderFatturaPrint(f, righe, rifInfo) {
         '<td class="inv-desc">' + esc(r.descrizione || '') + '</td>' +
         // FASE 21 — l'unita' resta VUOTA sulle righe che non ce l'hanno: un
         // trattino o un «pz» messo d'ufficio sarebbe un dato inventato.
-        '<td class="inv-un">' + esc(r.unita || '') + '</td>' +
+        '<td class="inv-un">' + esc(etichettaUnita(r.unita)) + '</td>' +
         '<td class="num">' + fmtNum2(safeNum(r.quantita)) + '</td>' +
         '<td class="num">' + fmtNum2(safeNum(r.prezzo_unitario)) + '</td>' +
+        // FASE 29 — lo sconto di riga si vede solo se c'e': niente «0%».
+        '<td class="num inv-sconto">' + (scontoRigaPct(r) ? fmtNumIt(scontoRigaPct(r)) + ' %' : '') + '</td>' +
         (ivaOn ? '<td>' + esc(ivaLabel(r.codice_iva_id)) + '</td>' : '') +
         '<td class="num">' + fmtNum2(safeNum(r.imponibile_riga)) + '</td>' +
         (ivaOn ? '<td class="num">' + fmtNum2(safeNum(r.iva_riga)) + '</td>' : '') +
       '</tr>'
   }
   var righeHead =
-    '<th class="inv-pos">Pos</th><th>Descrizione</th><th class="inv-un">Un.</th>' +
-    '<th class="num">Q.tà</th><th class="num">Prezzo</th>' +
+    '<th class="inv-pos">Pos.</th><th>Descrizione</th><th class="inv-un">U.M.</th>' +
+    '<th class="num">Quantità</th><th class="num">Prezzo</th>' +
+    '<th class="num inv-sconto">Sconto</th>' +
     (ivaOn ? '<th>IVA</th>' : '') +
     '<th class="num">' + (ivaOn ? 'Imponibile' : 'Importo') + '</th>' +
     (ivaOn ? '<th class="num">IVA</th>' : '')
@@ -4805,10 +4978,26 @@ function renderFatturaPrint(f, righe, rifInfo) {
   }
 
   // Totali: con IVA → imponibile/IVA/totale; senza IVA → solo totale documento
+  // FASE 29 — se c'e' uno sconto di documento si vede: SUBTOTALE, poi la riga
+  // dello sconto, poi l'imponibile. Mai nascosto dentro il subtotale.
+  var scontoDocImp = safeNum(f.sconto_doc_importo) || 0
+  var subtotaleStampa = 0
+  for (var s = 0; s < righe.length; s++) subtotaleStampa += safeNum(righe[s].imponibile_riga) || 0
+  subtotaleStampa = round2(subtotaleStampa)
+  var scontoDocEtichetta = 'Sconto'
+  if (scontoDocImp > 0 && f.sconto_doc_tipo === 'pct' && safeNum(f.sconto_doc_valore) != null) {
+    scontoDocEtichetta = 'Sconto ' + fmtNumIt(safeNum(f.sconto_doc_valore)) + ' %'
+  }
   var totHtml = '<div class="inv-tot">' +
+    (scontoDocImp > 0
+      ? '<div><span>Subtotale</span><span>' + fmtNum2(subtotaleStampa) + ' ' + v + '</span></div>' +
+        '<div><span>' + esc(scontoDocEtichetta) + '</span><span>\u2212 ' + fmtNum2(scontoDocImp) + ' ' + v + '</span></div>'
+      : '') +
+    (ivaOn || scontoDocImp > 0
+      ? '<div><span>' + (ivaOn ? 'Totale imponibile' : 'Imponibile') + '</span><span>' + fmtNum2(safeNum(f.totale_imponibile)) + ' ' + v + '</span></div>'
+      : '') +
     (ivaOn
-      ? '<div><span>Totale imponibile</span><span>' + fmtNum2(safeNum(f.totale_imponibile)) + ' ' + v + '</span></div>' +
-        '<div><span>Totale IVA</span><span>' + fmtNum2(safeNum(f.totale_iva)) + ' ' + v + '</span></div>'
+      ? '<div><span>Totale IVA</span><span>' + fmtNum2(safeNum(f.totale_iva)) + ' ' + v + '</span></div>'
       : '') +
     '<div class="inv-grand"><span>Totale documento</span><span>' + fmtNum2(safeNum(f.totale)) + ' ' + v + '</span></div>' +
     '</div>'
@@ -5009,10 +5198,15 @@ async function printFattura() {
       await preparaPolizzaPerStampa(currentDetailFattura.id)
     }
   } catch (e) { console.warn('Polizza in stampa:', e.message || e) }
+  // FASE 29 — anche «Stampa» propone il nome giusto: se dal dialogo si sceglie
+  // «Salva come PDF», il browser usa il titolo della pagina come nome file.
+  var titoloPrimaStampa = document.title
+  document.title = nomeFilePdfFattura(currentDetailFattura)
   // FASE 28 — il formato pagina si azzera a stampa finita: un @page lasciato
   // acceso condiziona la stampa dopo, e nessuno collegherebbe le due cose.
   // Stessa rete della busta dalla FASE 23.
   var pulisci = function () {
+    document.title = titoloPrimaStampa   // FASE 29
     azzeraPaginaFattura()
     window.removeEventListener('afterprint', pulisci)
   }
@@ -5222,6 +5416,8 @@ function acquistiRowActions(a) {
       : '') +
     badgeAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-list-banner') +
     spiaDoppione(a) +
+    // FASE 29 — «Apri» guarda, «Modifica» cambia. Prima c'era solo la seconda.
+    '<button class="icon-btn" title="Apri in sola lettura" onclick="event.stopPropagation(); viewAcquisto(\'' + a.id + '\')">👁 Apri</button>' +
     '<button class="icon-btn classify" onclick="event.stopPropagation(); editAcquisto(\'' + a.id + '\')">✏️ Modifica</button>' +
     (pagato
       // FASE 8 — l'icona apre la modale del pagamento invece di segnare
@@ -5400,6 +5596,7 @@ function recalcAcquistoIva() {
 function onAcquistoIvaCodeChange() { recalcAcquistoIva() }
 
 function onAcquistoImportoChange() {
+  if (getVal('a-offerta') && typeof onOffertaCollegataChange === 'function') onOffertaCollegataChange()   // FASE 29
   if (!acquistoIvaManuale) recalcAcquistoIva()
   else updateAcquistoIvaSummary()
 }
@@ -5519,6 +5716,9 @@ function fillAcquistoForm(v) {
   onAcquistoGiaPagata()
   // FASE 27 — il cantiere scelto alla registrazione.
   impostaCantierePicker('a', v.cantiere_id || null)
+  // FASE 29 — l'offerta collegata: la tendina si riempie appena le offerte
+  // sono lette, e si aggiorna quando cambia il fornitore.
+  riempiTendinaOfferte(v.offerta_id || null)
   // FASE 2: gruppo e contatto collegato
   if (el('a-contatto-id')) el('a-contatto-id').value = v.contatto_id || ''
   riempiSelectGruppi('a-gruppo', v.gruppo_codice || '')
@@ -5574,6 +5774,7 @@ async function newAcquisto() {
   showAcquistiView('edit')
   await ensureContiIva()      // per il menu Codice IVA
   await loadAziendaInfo()     // per la nota "non soggetto IVA"
+  try { await loadOfferte() } catch (e) { /* le offerte sono un aiuto */ }   // FASE 29
   fillAcquistoForm({ data: oggiISO(), valuta: 'CHF', stato_pagamento: 'aperto' })
   await aggiornaGiaPagata(null, null)  // nuovo: la spunta e' disponibile
   // La lettura automatica vale solo su un documento nuovo: rileggere una
@@ -5611,7 +5812,8 @@ async function editAcquisto(id) {
       codice_iva_id: data.codice_iva_id || null,
       imponibile: data.imponibile, iva_importo: data.iva_importo,
       gruppo_codice: data.gruppo_codice || null, contatto_id: data.contatto_id || null,
-      cantiere_id:   data.cantiere_id || null                      // FASE 27
+      cantiere_id:   data.cantiere_id || null,                     // FASE 27
+      offerta_id:    data.offerta_id || null                       // FASE 29
     }
     acquistoOriginal = vals
     clearAcquistoFileInput()   // PRIMA di mostrare il form: mai dopo
@@ -5620,6 +5822,7 @@ async function editAcquisto(id) {
     showAcquistiView('edit')
     await ensureContiIva()
     await loadAziendaInfo()
+    try { await loadOfferte() } catch (e) { /* le offerte sono un aiuto */ }   // FASE 29
     fillAcquistoForm(vals)
     await aggiornaGiaPagata(id, data.importo)
     await aggiornaRigaClassificazioneForm('tm_conta_fatture_acquisto', id,
@@ -5658,6 +5861,8 @@ function collectAcquisto() {
     contatto_id:      getVal('a-contatto-id') || null,
     // FASE 27 — il cantiere scelto alla registrazione. NULL = magazzino.
     cantiere_id:      valoreCantiere('a'),
+    // FASE 29 — l'offerta collegata, facoltativa.
+    offerta_id:       getVal('a-offerta') || null,
     // IVA (restano NULL se non si sceglie un codice: si salva solo il totale)
     codice_iva_id:    getVal('a-codice-iva') || null,
     imponibile:       impo,
@@ -6776,6 +6981,9 @@ let rubricaSuggest  = { prefix: null, list: [], hi: -1 }   // stato del menu a t
 // se ci sono: quando mancano, il doppio uso semplicemente non esiste e tutto
 // funziona come prima, a categoria singola.
 let contattiDoppiaCategoria = true
+// FASE 29 — stessa idea per la colonna `cellulare`: se manca (SQL_FASE29 non
+// lanciato) non si legge e non si scrive, e tutto funziona come prima.
+let contattiHaCellulare = true
 
 // ── Caricamento dati di base ─────────────────────────────────────────────────
 
@@ -6855,7 +7063,13 @@ async function loadContatti(force) {
       .eq('azienda_id', currentAziendaId)
       .order('ragione_sociale', { nullsFirst: false })
   }
-  var res = await leggi(campiBase + ', e_cliente, e_fornitore')
+  var res = await leggi(campiBase + ', e_cliente, e_fornitore, cellulare')
+  // FASE 29 — SQL_FASE29 non ancora lanciato: si rilegge senza `cellulare`,
+  // e la rubrica funziona come prima. Lo stesso ripiego della FASE 17.
+  if (res.error && /cellulare/.test(String(res.error.message || ''))) {
+    contattiHaCellulare = false
+    res = await leggi(campiBase + ', e_cliente, e_fornitore')
+  }
   // Migrazione FASE 17 non ancora lanciata: si rilegge senza le due colonne
   // invece di lasciare la rubrica vuota con un errore incomprensibile.
   if (res.error && /e_cliente|e_fornitore/.test(String(res.error.message || ''))) {
@@ -6881,7 +7095,8 @@ function contattoNome(c) {
 function contattoSub(c) {
   var parti = []
   if (c.citta) parti.push([c.cap, c.citta].filter(Boolean).join(' '))
-  if (c.telefono) parti.push('☎ ' + c.telefono)
+  if (c.telefono)  parti.push('☎ Tel. ' + c.telefono)
+  if (c.cellulare) parti.push('📱 Cell. ' + c.cellulare)   // FASE 29
   if (c.email) parti.push('✉ ' + c.email)
   if (c.gruppo_default) parti.push('gruppo ' + c.gruppo_default)
   if (c.giorni_pagamento != null) parti.push(c.giorni_pagamento + ' giorni')
@@ -8014,6 +8229,496 @@ async function apriBustaDaContatto(id) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// FASE 29 / P5 — OFFERTE DEI FORNITORI
+//
+// Quando Umberto ordina materiale, spesso riceve prima un'offerta. Qui la si
+// salva per confrontarla con la fattura che arriva dopo, che puo' avere una
+// composizione diversa (offerti cinque articoli, fatturati tre).
+//
+// NON E' UN MOVIMENTO CONTABILE. Non entra in nessuna somma di entrate o
+// uscite, non sta in v_conta_flussi, non passa dalla classificazione. E'
+// un riferimento. Tabelle sue: tm_conta_offerte e tm_conta_offerte_righe.
+//
+// Il collegamento dalla fattura d'acquisto e' FACOLTATIVO, mai un blocco. Se
+// c'e', si vede il confronto: l'offerta a sinistra riga per riga, la fattura
+// a destra, e i due totali bene in vista. Nessun abbinamento riga-per-riga
+// automatico: e' Umberto che giudica se torna, il programma non indovina.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let offerteCache = null
+let offerteList = []
+let editingOffertaId = null
+let offertaRighe = []
+let currentDetailOfferta = null
+
+var STATI_OFFERTA = {
+  da_valutare: { et: 'Da valutare', ic: '\ud83d\udd50', cls: 'info' },
+  confermata:  { et: 'Confermata',  ic: '\u2705', cls: 'ok'   },
+  scaduta:     { et: 'Scaduta',     ic: '\u231b', cls: 'warn' },
+  rifiutata:   { et: 'Rifiutata',   ic: '\u2716\ufe0f', cls: 'err'  }
+}
+function badgeStatoOfferta(s) {
+  var d = STATI_OFFERTA[s] || STATI_OFFERTA.da_valutare
+  return badge(d.cls, d.ic + ' ' + d.et)
+}
+
+// Guardia sulla sessione, come ovunque: senza, una lettura vuota resterebbe
+// in cache per tutta la sessione.
+async function loadOfferte(force) {
+  if (offerteCache && !force) return offerteCache
+  if (!currentAziendaId) return offerteCache || []
+  const { data, error } = await sb.from('tm_conta_offerte')
+    .select('id, contatto_id, fornitore, data, riferimento, cantiere_id, stato, valuta, totale, note, created_at')
+    .eq('azienda_id', currentAziendaId)
+    .order('data', { ascending: false })
+  if (error) throw error
+  offerteCache = data || []
+  return offerteCache
+}
+
+function showOfferteView(which) {
+  registraVista('offerte', which)
+  ;['list', 'detail', 'edit'].forEach(function (v) {
+    var e = el('offerte-' + v + '-view')
+    if (e) e.style.display = (v === which) ? 'block' : 'none'
+  })
+}
+
+async function initOffertePage() {
+  if (!currentAziendaId) { html('offerte-table', '<div class="dim">Accedi per vedere le offerte.</div>'); return }
+  showOfferteView('list')
+  html('offerte-table', loadingRow('Caricamento offerte…'))
+  try {
+    await loadOfferte(true)
+    try { await loadCantieri() } catch (e) { /* solo per il nome del cantiere */ }
+    try { await loadAllegati() } catch (e) { /* solo per il conteggio */ }
+    offerteList = offerteCache || []
+    renderOfferteTable()
+  } catch (e) {
+    html('offerte-table', '')
+    showFattureBanner('offerte-list-banner', 'err', 'Offerte non caricate: ' + friendlyOfferteError(e))
+  }
+}
+
+function friendlyOfferteError(e) {
+  var m = String((e && (e.message || e.msg)) || e)
+  if (/Could not find the table|relation .* does not exist|tm_conta_offerte/i.test(m) && /find|exist/i.test(m)) {
+    return 'la tabella delle offerte non c\u2019\u00e8 ancora: lancia SQL_FASE29.sql dal SQL Editor di Supabase, poi ricarica.'
+  }
+  return m
+}
+
+function offerteBackToList() {
+  editingOffertaId = null
+  currentDetailOfferta = null
+  showOfferteView('list')
+  renderOfferteTable()
+}
+
+function nomeCantiereDaId(id) {
+  if (!id) return ''
+  var c = (cantieriCache || []).filter(function (x) { return x.id === id })[0]
+  return c ? nomeCantiere(c, false) : ''
+}
+
+function renderOfferteTable() {
+  var q = (getVal('offerte-search') || '').toLowerCase()
+  var stato = getVal('offerte-filtro-stato')
+  var list = (offerteList || []).filter(function (o) {
+    if (stato && o.stato !== stato) return false
+    if (q) {
+      var tot = safeNum(o.totale)
+      var hay = ((o.fornitore || '') + ' ' + (o.riferimento || '') + ' ' +
+                 nomeCantiereDaId(o.cantiere_id) + ' ' +
+                 (tot != null ? String(tot) + ' ' + tot.toFixed(2) : '')).toLowerCase()
+      if (!q.split(/\s+/).every(function (t) { return hay.indexOf(t) !== -1 })) return false
+    }
+    return true
+  })
+  if (!list.length) {
+    html('offerte-table', '<div class="cru-vuoto">' +
+      (q || stato ? 'Nessuna offerta trovata con questi filtri.'
+                  : 'Nessuna offerta registrata. Premi «\u2795 Nuova offerta» per la prima.') + '</div>')
+    return
+  }
+  var rows = list.map(function (o) {
+    var nAll = contaAllegati('tm_conta_offerte', o.id)
+    return '<tr class="row-clickable" onclick="viewOfferta(\'' + esc(o.id) + '\')">' +
+      '<td class="dim">' + esc(fmtDate(o.data)) + '</td>' +
+      '<td>' + esc(o.fornitore || '') +
+        (o.riferimento ? '<div class="dim" style="font-size:11px">' + esc(o.riferimento) + '</div>' : '') + '</td>' +
+      '<td>' + esc(nomeCantiereDaId(o.cantiere_id) || '\u2014') + '</td>' +
+      '<td class="num">' + fmtImporto(o.totale, o.valuta) + '</td>' +
+      '<td>' + badgeStatoOfferta(o.stato) + '</td>' +
+      '<td class="row-actions">' +
+        '<button class="icon-btn" onclick="event.stopPropagation(); viewOfferta(\'' + esc(o.id) + '\')">\ud83d\udc41 Apri</button>' +
+        (nAll ? '<button class="icon-btn" onclick="event.stopPropagation(); apriAllegatiSolaLettura(\'tm_conta_offerte\', \'' + esc(o.id) +
+                '\', \'' + esc(String(o.fornitore || '').replace(/\x27/g, '')) + '\', \'offerte-list-banner\')">\ud83d\udcce ' + nAll + '</button>' : '') +
+        '<button class="icon-btn classify" onclick="event.stopPropagation(); editOfferta(\'' + esc(o.id) + '\')">\u270f\ufe0f Modifica</button>' +
+        '<button class="icon-btn danger" onclick="event.stopPropagation(); deleteOfferta(\'' + esc(o.id) + '\')">\ud83d\uddd1\ufe0f</button>' +
+      '</td>' +
+    '</tr>'
+  }).join('')
+  html('offerte-table', '<div class="table-wrap"><table><thead><tr>' +
+    '<th style="width:100px">Data</th><th>Fornitore</th><th>Cantiere</th>' +
+    '<th style="width:130px;text-align:right">Totale</th><th style="width:130px">Stato</th><th style="width:210px">Azioni</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>')
+}
+
+// ── Il modulo ───────────────────────────────────────────────────────────────
+function rigaOffertaVuota() {
+  return { descrizione: '', quantita: 1, unita: '', prezzo_unitario: '' }
+}
+
+async function newOfferta() {
+  editingOffertaId = null
+  offertaRighe = [rigaOffertaVuota()]
+  if (el('offerte-edit-title')) el('offerte-edit-title').textContent = 'Nuova offerta'
+  html('offerte-edit-banner', '')
+  setVal('off-fornitore', ''); setVal('off-contatto-id', ''); html('off-contatto-legato', ''); html('off-fornitore-suggest', '')
+  setVal('off-data', oggiISO()); setVal('off-riferimento', ''); setVal('off-stato', 'da_valutare'); setVal('off-note', '')
+  if (el('off-allegato')) el('off-allegato').value = ''
+  showOfferteView('edit')
+  try { await loadCantieri() } catch (e) { /* non bloccante */ }
+  impostaCantierePicker('o', null)
+  renderRigheOfferta()
+}
+
+async function editOfferta(id) {
+  if (!currentAziendaId) return
+  html('offerte-edit-banner', '')
+  try {
+    const { data: o, error } = await sb.from('tm_conta_offerte').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    const { data: righe, error: rErr } = await sb.from('tm_conta_offerte_righe').select('*').eq('offerta_id', id).order('ordine')
+    if (rErr) throw rErr
+    editingOffertaId = id
+    offertaRighe = (righe || []).map(function (r) {
+      return { descrizione: r.descrizione || '', quantita: r.quantita, unita: r.unita || '', prezzo_unitario: r.prezzo_unitario }
+    })
+    if (!offertaRighe.length) offertaRighe = [rigaOffertaVuota()]
+    if (el('offerte-edit-title')) el('offerte-edit-title').textContent = 'Modifica offerta'
+    setVal('off-fornitore', o.fornitore || ''); setVal('off-contatto-id', o.contatto_id || '')
+    html('off-fornitore-suggest', ''); aggiornaLegatoDaId('o', o.contatto_id)
+    setVal('off-data', o.data || ''); setVal('off-riferimento', o.riferimento || '')
+    setVal('off-stato', o.stato || 'da_valutare'); setVal('off-note', o.note || '')
+    if (el('off-allegato')) el('off-allegato').value = ''
+    showOfferteView('edit')
+    try { await loadCantieri() } catch (e) { /* non bloccante */ }
+    impostaCantierePicker('o', o.cantiere_id || null)
+    renderRigheOfferta()
+  } catch (e) {
+    showFattureBanner('offerte-list-banner', 'err', 'Apertura: ' + friendlyOfferteError(e))
+  }
+}
+
+function importoRigaOfferta(r) {
+  var q = safeNum(r.quantita), p = safeNum(r.prezzo_unitario)
+  if (q == null || p == null) return null
+  return round2(q * p)
+}
+
+function totaleOfferta() {
+  var t = 0
+  offertaRighe.forEach(function (r) { var i = importoRigaOfferta(r); if (i != null) t += i })
+  return round2(t)
+}
+
+function renderRigheOfferta() {
+  var tb = el('offerte-righe')
+  if (!tb) return
+  tb.innerHTML = offertaRighe.map(function (r, i) {
+    var imp = importoRigaOfferta(r)
+    return '<tr>' +
+      '<td><textarea class="cell-input cell-desc" rows="1" placeholder="Descrizione"' +
+        ' oninput="onRigaOffertaInput(' + i + ',\'descrizione\',this.value); autoGrowRiga(this)">' +
+        '\n' + esc(r.descrizione || '') + '</textarea></td>' +
+      '<td><input class="cell-input cell-unita" list="unita-suggerite" maxlength="16" value="' + esc(etichettaUnita(r.unita)) + '"' +
+        ' placeholder="\u2014" oninput="onRigaOffertaInput(' + i + ',\'unita\',this.value)"></td>' +
+      '<td><input class="cell-input num" type="number" step="0.001" value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '"' +
+        ' onfocus="this.select()" oninput="onRigaOffertaInput(' + i + ',\'quantita\',this.value)"></td>' +
+      '<td><input class="cell-input num" type="number" step="0.01" value="' + esc(r.prezzo_unitario == null ? '' : String(r.prezzo_unitario)) + '"' +
+        ' onfocus="this.select()" oninput="onRigaOffertaInput(' + i + ',\'prezzo_unitario\',this.value)"></td>' +
+      '<td class="num" id="off-imp-' + i + '">' + fmtNum2(imp == null ? 0 : imp) + '</td>' +
+      '<td><button class="icon-btn danger" title="Rimuovi riga" onclick="removeRigaOfferta(' + i + ')">\u2715</button></td>' +
+    '</tr>'
+  }).join('')
+  var aree = tb.querySelectorAll('textarea.cell-desc')
+  for (var j = 0; j < aree.length; j++) autoGrowRiga(aree[j])
+  if (el('offerte-tot')) el('offerte-tot').textContent = fmtNum2(totaleOfferta())
+}
+
+function onRigaOffertaInput(i, field, value) {
+  if (!offertaRighe[i]) return
+  offertaRighe[i][field] = value
+  var imp = importoRigaOfferta(offertaRighe[i])
+  var cell = el('off-imp-' + i)
+  if (cell) cell.textContent = fmtNum2(imp == null ? 0 : imp)
+  if (el('offerte-tot')) el('offerte-tot').textContent = fmtNum2(totaleOfferta())
+}
+function addRigaOfferta() { offertaRighe.push(rigaOffertaVuota()); renderRigheOfferta() }
+function removeRigaOfferta(i) {
+  offertaRighe.splice(i, 1)
+  if (!offertaRighe.length) offertaRighe.push(rigaOffertaVuota())
+  renderRigheOfferta()
+}
+
+async function saveOfferta() {
+  html('offerte-edit-banner', '')
+  var btn = el('btn-salva-offerta'); if (btn) btn.disabled = true
+  var fileInput = el('off-allegato')
+  var file = (fileInput && fileInput.files && fileInput.files.length) ? fileInput.files[0] : null
+  try {
+    var fornitore = getVal('off-fornitore')
+    var dataVal = getVal('off-data')
+    if (!fornitore) throw new Error('Il fornitore \u00e8 obbligatorio.')
+    if (!dataVal) throw new Error('La data dell\u2019offerta \u00e8 obbligatoria.')
+    var righeValide = offertaRighe.filter(function (r) { return (r.descrizione || '').trim() })
+    if (!righeValide.length) throw new Error('Serve almeno una riga con una descrizione.')
+
+    var testa = {
+      azienda_id:  currentAziendaId,
+      contatto_id: getVal('off-contatto-id') || null,
+      fornitore:   fornitore,
+      data:        dataVal,
+      riferimento: getVal('off-riferimento') || null,
+      cantiere_id: valoreCantiere('o'),
+      stato:       getVal('off-stato') || 'da_valutare',
+      valuta:      'CHF',
+      totale:      totaleOfferta(),
+      note:        getVal('off-note') || null
+    }
+    var id = editingOffertaId
+    if (id) {
+      const { error } = await sb.from('tm_conta_offerte').update(testa).eq('id', id).eq('azienda_id', currentAziendaId).select()
+      if (error) throw error
+    } else {
+      testa.created_by = currentUser ? currentUser.id : null
+      const { data, error } = await sb.from('tm_conta_offerte').insert(testa).select()
+      if (error) throw error
+      id = data && data[0] ? data[0].id : null
+      editingOffertaId = id
+    }
+    if (!id) throw new Error('ID offerta non disponibile dopo il salvataggio.')
+
+    // Righe: cancella e reinserisci, come per le fatture.
+    const del = await sb.from('tm_conta_offerte_righe').delete().eq('offerta_id', id).select()
+    if (del.error) throw del.error
+    var payload = righeValide.map(function (r, i) {
+      return {
+        offerta_id: id, descrizione: (r.descrizione || '').trim(),
+        quantita: safeNum(r.quantita) != null ? safeNum(r.quantita) : 0,
+        unita: (r.unita || '').trim() || null,
+        prezzo_unitario: safeNum(r.prezzo_unitario) != null ? safeNum(r.prezzo_unitario) : 0,
+        importo: importoRigaOfferta(r) != null ? importoRigaOfferta(r) : 0,
+        ordine: i
+      }
+    })
+    if (payload.length) {
+      const ins = await sb.from('tm_conta_offerte_righe').insert(payload).select()
+      if (ins.error) throw ins.error
+    }
+
+    var allegatoFallito = await creaAllegatoDaForm(file, 'tm_conta_offerte', id)
+    await loadOfferte(true)
+    offerteList = offerteCache || []
+    if (allegatoFallito) {
+      showFattureBanner('offerte-list-banner', 'warn', 'Offerta salvata, ma l\u2019allegato non \u00e8 stato caricato: ' + allegatoFallito)
+    } else {
+      showFattureBanner('offerte-list-banner', 'ok', 'Offerta salvata: ' + fornitore + ', ' + fmtNum2(testa.totale) + ' CHF.')
+    }
+    offerteBackToList()
+  } catch (e) {
+    showFattureBanner('offerte-edit-banner', 'err', 'Non salvata: ' + friendlyOfferteError(e))
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+async function deleteOfferta(id) {
+  var o = (offerteCache || []).filter(function (x) { return x.id === id })[0]
+  if (!window.confirm('Eliminare l\u2019offerta' + (o ? ' di ' + o.fornitore : '') + '? Le fatture d\u2019acquisto collegate restano, solo senza il collegamento.')) return
+  try {
+    const { error } = await sb.from('tm_conta_offerte').delete().eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadOfferte(true)
+    offerteList = offerteCache || []
+    offerteBackToList()
+    showFattureBanner('offerte-list-banner', 'ok', 'Offerta eliminata.')
+  } catch (e) {
+    showFattureBanner('offerte-list-banner', 'err', 'Non eliminata: ' + friendlyOfferteError(e))
+  }
+}
+
+// ── La scheda in sola lettura ───────────────────────────────────────────────
+async function viewOfferta(id) {
+  if (!currentAziendaId) return
+  showOfferteView('detail')
+  html('offerte-detail-banner', '')
+  html('offerte-detail-body', loadingRow('Caricamento\u2026'))
+  try {
+    const { data: o, error } = await sb.from('tm_conta_offerte').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    const { data: righe, error: rErr } = await sb.from('tm_conta_offerte_righe').select('*').eq('offerta_id', id).order('ordine')
+    if (rErr) throw rErr
+    currentDetailOfferta = o
+    try { await loadCantieri() } catch (e) { /* solo per il nome */ }
+    if (el('offerte-detail-title')) el('offerte-detail-title').textContent = 'Offerta \u2014 ' + (o.fornitore || '')
+    html('offerte-detail-body', schedaOffertaHtml(o, righe || []))
+    html('offerte-detail-actions',
+      '<button class="btn-primary" onclick="editOfferta(\'' + esc(o.id) + '\')">\u270f\ufe0f Modifica</button>' +
+      Object.keys(STATI_OFFERTA).filter(function (s) { return s !== o.stato }).map(function (s) {
+        var d = STATI_OFFERTA[s]
+        return '<button class="btn-secondary" onclick="cambiaStatoOfferta(\'' + esc(o.id) + '\', \'' + s + '\')">' +
+               d.ic + ' Segna ' + d.et.toLowerCase() + '</button>'
+      }).join(''))
+    try {
+      await loadAllegati()
+      html('offerte-detail-allegati', boxAllegatiHtml('tm_conta_offerte', o.id, 'Offerta ' + (o.riferimento || o.fornitore || '')))
+    } catch (eA) { html('offerte-detail-allegati', '') }
+  } catch (e) {
+    html('offerte-detail-body', '<p style="color:var(--err)">Errore: ' + esc(friendlyOfferteError(e)) + '</p>')
+  }
+}
+
+function righeOffertaHtml(righe, conTotale) {
+  if (!righe.length) return '<div class="dim">Nessuna riga.</div>'
+  var tot = 0
+  var rows = righe.map(function (r) {
+    tot += safeNum(r.importo) || 0
+    return '<tr>' +
+      '<td class="inv-desc">' + esc(r.descrizione || '') + '</td>' +
+      '<td class="inv-un">' + esc(etichettaUnita(r.unita)) + '</td>' +
+      '<td class="num">' + fmtNum2(safeNum(r.quantita)) + '</td>' +
+      '<td class="num">' + fmtNum2(safeNum(r.prezzo_unitario)) + '</td>' +
+      '<td class="num">' + fmtNum2(safeNum(r.importo)) + '</td>' +
+    '</tr>'
+  }).join('')
+  return '<table class="inv-table off-tabella"><thead><tr>' +
+    '<th>Descrizione</th><th class="inv-un">U.M.</th><th class="num">Q.t\u00e0</th><th class="num">Prezzo</th><th class="num">Importo</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody>' +
+    (conTotale ? '<tfoot><tr><td colspan="4"><strong>Totale</strong></td><td class="num"><strong>' + fmtNum2(round2(tot)) + '</strong></td></tr></tfoot>' : '') +
+    '</table>'
+}
+
+function schedaOffertaHtml(o, righe) {
+  function riga(lbl, val) {
+    if (val === null || val === undefined || val === '') return ''
+    return '<div class="ro-lbl">' + esc(lbl) + '</div><div class="ro-val">' + val + '</div>'
+  }
+  return '<div class="ro-grid">' +
+    '<div class="ro-section">Offerta</div>' +
+    riga('Fornitore', esc(o.fornitore || '')) +
+    riga('Data', esc(fmtDate(o.data))) +
+    riga('Riferimento', esc(o.riferimento || '')) +
+    riga('Cantiere', esc(nomeCantiereDaId(o.cantiere_id))) +
+    riga('Stato', badgeStatoOfferta(o.stato)) +
+    riga('Totale', '<strong>' + fmtImporto(o.totale, o.valuta) + '</strong>') +
+    riga('Note', o.note ? esc(o.note).replace(/\n/g, '<br>') : '') +
+    '</div>' +
+    '<div class="ro-section" style="margin-top:14px">Righe</div>' +
+    righeOffertaHtml(righe, true) +
+    '<div class="form-hint" style="margin-top:8px">Un\u2019offerta non \u00e8 una spesa: non entra in nessuna somma. ' +
+    'Quando arriva la fattura, collegala dal modulo della fattura d\u2019acquisto per vedere il confronto.</div>'
+}
+
+async function cambiaStatoOfferta(id, stato) {
+  try {
+    const { error } = await sb.from('tm_conta_offerte').update({ stato: stato }).eq('id', id).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadOfferte(true)
+    offerteList = offerteCache || []
+    await viewOfferta(id)
+    showFattureBanner('offerte-detail-banner', 'ok', 'Stato aggiornato: ' + STATI_OFFERTA[stato].et + '.')
+  } catch (e) {
+    showFattureBanner('offerte-detail-banner', 'err', 'Stato non cambiato: ' + friendlyOfferteError(e))
+  }
+}
+
+// ── Dentro la fattura d'acquisto: la tendina e il confronto ────────────────
+function riempiTendinaOfferte(selezionata) {
+  var sel = el('a-offerta')
+  if (!sel) return
+  var lista = offerteCache || []
+  var contattoId = getVal('a-contatto-id')
+  var nomeForn = (getVal('a-fornitore') || '').toLowerCase().trim()
+  function dello(o) {
+    if (contattoId && o.contatto_id === contattoId) return true
+    return !!nomeForn && String(o.fornitore || '').toLowerCase().trim() === nomeForn
+  }
+  var sue = lista.filter(dello), altre = lista.filter(function (o) { return !dello(o) })
+  function voce(o) {
+    return '<option value="' + esc(o.id) + '"' + (o.id === selezionata ? ' selected' : '') + '>' +
+      esc(fmtDate(o.data) + ' \u00b7 ' + (o.fornitore || '') + (o.riferimento ? ' \u00b7 ' + o.riferimento : '') +
+          ' \u00b7 ' + fmtNum2(safeNum(o.totale)) + ' CHF \u00b7 ' + (STATI_OFFERTA[o.stato] || {}).et) + '</option>'
+  }
+  var out = '<option value="">\u2014 nessuna offerta collegata \u2014</option>'
+  if (sue.length)   out += '<optgroup label="Di questo fornitore">' + sue.map(voce).join('') + '</optgroup>'
+  if (altre.length) out += '<optgroup label="Altre offerte">' + altre.map(voce).join('') + '</optgroup>'
+  if (!lista.length) out += '<option value="" disabled>Nessuna offerta registrata</option>'
+  sel.innerHTML = out
+  if (selezionata && sel.value !== selezionata) sel.value = ''
+  onOffertaCollegataChange()
+}
+
+async function onOffertaCollegataChange() {
+  var id = getVal('a-offerta')
+  var box = el('a-offerta-confronto')
+  if (!box) return
+  if (!id) { box.innerHTML = ''; return }
+  box.innerHTML = loadingRow('Leggo l\u2019offerta\u2026')
+  try {
+    const { data: righe, error } = await sb.from('tm_conta_offerte_righe').select('*').eq('offerta_id', id).order('ordine')
+    if (error) throw error
+    var o = (offerteCache || []).filter(function (x) { return x.id === id })[0] || {}
+    box.innerHTML = confrontoOffertaHtml(o, righe || [])
+  } catch (e) {
+    box.innerHTML = '<div class="fase-banner warn" role="status"><span class="icon" aria-hidden="true">\u26a0\ufe0f</span>' +
+      '<div class="msg">Confronto non disponibile: ' + esc(friendlyOfferteError(e)) + '</div></div>'
+  }
+}
+
+// Il confronto affiancato. La fattura d'acquisto NON ha righe (si registra
+// con un importo solo), quindi a destra ci sono i suoi dati: importo, IVA,
+// imponibile. Il giudizio e' di Umberto: qui si mettono i numeri uno accanto
+// all'altro, e la differenza in evidenza.
+function confrontoOffertaHtml(o, righe) {
+  var totOff = safeNum(o.totale) != null ? safeNum(o.totale)
+             : round2(righe.reduce(function (s, r) { return s + (safeNum(r.importo) || 0) }, 0))
+  var totFat = safeNum(getVal('a-importo'))
+  var diff = (totFat != null) ? round2(totFat - totOff) : null
+  var segno = diff == null ? '' : (diff > 0 ? '+' : '')
+  var giudizio = diff == null ? '<span class="dim">scrivi l\u2019importo della fattura per vedere la differenza</span>'
+    : Math.abs(diff) < 0.005 ? '\u2705 Fattura e offerta coincidono'
+    : (diff > 0 ? '\u26a0\ufe0f La fattura \u00e8 PI\u00d9 ALTA dell\u2019offerta di ' : '\u2139\ufe0f La fattura \u00e8 pi\u00f9 bassa dell\u2019offerta di ') +
+      fmtNum2(Math.abs(diff)) + ' CHF'
+  return '<div class="off-confronto">' +
+    '<div class="off-col">' +
+      '<div class="off-col-titolo">\ud83d\udccb Offerta ' + esc(o.riferimento ? o.riferimento : '') +
+        ' <span class="dim">' + esc(fmtDate(o.data)) + '</span></div>' +
+      righeOffertaHtml(righe, false) +
+      '<div class="off-tot">Totale offerta <strong>' + fmtNum2(totOff) + ' CHF</strong></div>' +
+    '</div>' +
+    '<div class="off-col">' +
+      '<div class="off-col-titolo">\ud83d\udce5 Questa fattura</div>' +
+      '<div class="ro-grid">' +
+        '<div class="ro-lbl">Fornitore</div><div class="ro-val">' + esc(getVal('a-fornitore') || '\u2014') + '</div>' +
+        '<div class="ro-lbl">Numero</div><div class="ro-val">' + esc(getVal('a-numero') || '\u2014') + '</div>' +
+        '<div class="ro-lbl">Data</div><div class="ro-val">' + esc(getVal('a-data') ? fmtDate(getVal('a-data')) : '\u2014') + '</div>' +
+        '<div class="ro-lbl">Imponibile</div><div class="ro-val">' + (safeNum(getVal('a-imponibile')) != null ? fmtNum2(safeNum(getVal('a-imponibile'))) + ' CHF' : '\u2014') + '</div>' +
+        '<div class="ro-lbl">IVA</div><div class="ro-val">' + (safeNum(getVal('a-iva')) != null ? fmtNum2(safeNum(getVal('a-iva'))) + ' CHF' : '\u2014') + '</div>' +
+      '</div>' +
+      '<div class="off-tot">Totale fattura <strong>' + (totFat != null ? fmtNum2(totFat) + ' CHF' : '\u2014') + '</strong></div>' +
+    '</div>' +
+    '<div class="off-diff">' + giudizio +
+      (diff != null && Math.abs(diff) >= 0.005 ? ' <span class="dim">(' + segno + fmtNum2(diff) + ' CHF)</span>' : '') +
+      '<div class="dim" style="font-size:11px;margin-top:3px">La fattura d\u2019acquisto non ha righe: si confrontano i totali e si leggono le righe dell\u2019offerta. ' +
+      'La composizione pu\u00f2 essere diversa (offerti cinque articoli, fatturati tre): giudichi tu.</div>' +
+    '</div>' +
+  '</div>'
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // FASE 21 / P8 — IL FOGLIO DEI CODICI
 //
 // Un foglio solo, da stampare e tenere sul tavolo mentre si classifica: il
@@ -8187,7 +8892,7 @@ function renderContattiList() {
     var termini = q.split(/\s+/)
     list = list.filter(function (c) {
       var hay = (contattoNome(c) + ' ' + (c.citta || '') + ' ' + (c.cap || '') + ' ' +
-                 (c.email || '') + ' ' + (c.telefono || '') + ' ' +
+                 (c.email || '') + ' ' + (c.telefono || '') + ' ' + (c.cellulare || '') + ' ' +
                  (c.uid_partita_iva || '')).toLowerCase()
       return termini.every(function (t) { return hay.indexOf(t) !== -1 })
     })
@@ -8213,7 +8918,12 @@ function renderContattiList() {
     if (c.telefono) {
       azioni += '<a class="azione-rapida" href="tel:' + esc(String(c.telefono).replace(/\s/g, '')) + '"' +
                 ' onclick="event.stopPropagation()"' +
-                ' aria-label="Chiama ' + esc(nome) + '">📞 Chiama</a>'
+                ' aria-label="Chiama il fisso di ' + esc(nome) + '">📞 Tel.</a>'
+    }
+    if (c.cellulare) {   // FASE 29
+      azioni += '<a class="azione-rapida" href="tel:' + esc(String(c.cellulare).replace(/\s/g, '')) + '"' +
+                ' onclick="event.stopPropagation()"' +
+                ' aria-label="Chiama il cellulare di ' + esc(nome) + '">📱 Cell.</a>'
     }
     if (c.email) {
       azioni += '<a class="azione-rapida" href="mailto:' + esc(c.email) + '"' +
@@ -8284,7 +8994,7 @@ async function apriContatto(id) {
     el('contatto-lettura-titolo').textContent = '👤 ' + contattoNome(c)
   }
   html('contatto-lettura-banner', '')
-  html('contatto-lettura-azioni', azioniRapideHtml(c.telefono, c.email, contattoNome(c)))
+  html('contatto-lettura-azioni', azioniRapideHtml(c.telefono, c.email, contattoNome(c), c.cellulare))
   html('contatto-lettura-dati', contattoLetturaHtml(c))
   html('contatto-lettura-fatture', loadingRow('Caricamento fatture…'))
   mostraRubricaVista('lettura')
@@ -8318,7 +9028,8 @@ function contattoLetturaHtml(c) {
       : '') +
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Recapiti</div>' +
-    riga('Telefono', esc(c.telefono || '')) +
+    riga('Tel. (fisso)', esc(c.telefono || '')) +
+    riga('Cell.', esc(c.cellulare || '')) +
     riga('Email', esc(c.email || '')) +
     riga('Sito web', esc(c.sito_web || '')) +
     '<div class="ro-sep"></div>' +
@@ -8335,11 +9046,16 @@ function contattoLetturaHtml(c) {
 }
 
 // Gli stessi bottoni «Chiama / Scrivi mail» dell'elenco, su un contatto letto.
-function azioniRapideHtml(tel, email, nome) {
+function azioniRapideHtml(tel, email, nome, cell) {
   var out = ''
   if (tel) {
     out += '<a class="azione-rapida" href="tel:' + esc(String(tel).replace(/\s/g, '')) + '"' +
-           ' aria-label="Chiama ' + esc(nome || '') + '">📞 Chiama ' + esc(tel) + '</a> '
+           ' aria-label="Chiama il fisso di ' + esc(nome || '') + '">📞 Tel. ' + esc(tel) + '</a> '
+  }
+  // FASE 29 — il cellulare ha il suo bottone, con scritto che e' il cellulare.
+  if (cell) {
+    out += '<a class="azione-rapida" href="tel:' + esc(String(cell).replace(/\s/g, '')) + '"' +
+           ' aria-label="Chiama il cellulare di ' + esc(nome || '') + '">📱 Cell. ' + esc(cell) + '</a> '
   }
   if (email) {
     out += '<a class="azione-rapida" href="mailto:' + esc(email) + '"' +
@@ -8654,6 +9370,7 @@ async function modificaContatto(id) {
   if (el('c-citta'))     el('c-citta').value     = c.citta || ''
   impostaPaese('c-paese', c.paese || PAESE_PREDEFINITO)
   if (el('c-telefono'))  el('c-telefono').value  = c.telefono || ''
+  if (el('c-cellulare')) el('c-cellulare').value = c.cellulare || ''   // FASE 29
   if (el('c-email'))     el('c-email').value     = c.email || ''
   if (el('c-sito'))      el('c-sito').value      = c.sito_web || ''
   if (el('c-uid'))       el('c-uid').value       = c.uid_partita_iva || ''
@@ -8690,9 +9407,10 @@ function chiudiSchedaContatto() {
 // così si vede subito che il numero inserito è utilizzabile.
 function renderAzioniRapide() {
   var tel   = getVal('c-telefono')
+  var cell  = getVal('c-cellulare')
   var email = getVal('c-email')
-  var out = (tel || email)
-    ? azioniRapideHtml(tel, email, getVal('c-ragione') || getVal('c-cognome'))
+  var out = (tel || cell || email)
+    ? azioniRapideHtml(tel, email, getVal('c-ragione') || getVal('c-cognome'), cell)
     : '<div class="dim" style="font-size:12px">Inserisci telefono o email: qui compaiono i pulsanti per chiamare e scrivere.</div>'
   html('contatto-azioni-rapide', out)
 }
@@ -8749,6 +9467,9 @@ function raccogliContatto() {
   // scelta: altrimenti si forza false, cosi' una spunta rimasta nascosta da un
   // cambio di categoria non finisce salvata. Se la migrazione non e' stata
   // lanciata le due colonne non esistono e non si scrivono affatto.
+  // FASE 29 — il cellulare entra nel payload solo se la colonna esiste.
+  if (contattiHaCellulare) payload.cellulare = getVal('c-cellulare') || null
+
   if (contattiDoppiaCategoria) {
     payload.e_cliente = (categoria !== 'cliente') &&
       !!(el('c-anche-cliente') && el('c-anche-cliente').checked)
@@ -8809,7 +9530,7 @@ function mostraAvvisoDoppione(simili) {
   var forte = simili.some(function (s) { return s.forte })
   var righe = simili.map(function (s) {
     var x = s.c
-    var dettagli = [x.citta, x.telefono].filter(Boolean).join(' · ')
+    var dettagli = [x.citta, x.telefono, x.cellulare].filter(Boolean).join(' · ')
     return '<div class="dop-riga">' +
              '<div class="dop-chi">' +
                '<strong>' + esc(contattoNome(x)) + '</strong>' +
@@ -8978,6 +9699,15 @@ function rubricaCampi(prefix) {
              indirizzo: 'f-cli-indirizzo', paese: 'f-cli-paese', uid: 'f-cli-iva',
              btnSfoglia: 'f-cli-sfoglia' }
   }
+  // FASE 29 — 'o' e' l'offerta del fornitore. Come l'acquisto, ma con un
+  // filtro: nell'elenco compaiono SOLO i contatti segnati come fornitore
+  // (categoria, o spunta «anche fornitore»).
+  if (prefix === 'o') {
+    return { testo: 'off-fornitore', hidden: 'off-contatto-id', suggest: 'off-fornitore-suggest',
+             legato: 'off-contatto-legato', gruppo: null, scadenza: null,
+             data: 'off-data', categoria: 'fornitore', soloCategoria: 'fornitore',
+             btnSfoglia: 'off-fornitore-sfoglia' }
+  }
   // FASE 21 — 'b' e' la busta. Niente gruppo, niente scadenza: si sta solo
   // scrivendo un indirizzo su un pezzo di carta.
   if (prefix === 'b') {
@@ -9017,6 +9747,7 @@ async function rubricaSuggerisci(prefix) {
   var termini = q.split(/\s+/)
   var trovati = (contattiCache || []).filter(function (x) {
     if (x.attivo === false) return false
+    if (c.soloCategoria && !contattoInCategoria(x, c.soloCategoria)) return false   // FASE 29
     var hay = (contattoNome(x) + ' ' + (x.citta || '') + ' ' + (x.email || '')).toLowerCase()
     return termini.every(function (t) { return hay.indexOf(t) !== -1 })
   }).slice(0, 8)
@@ -9036,7 +9767,11 @@ async function rubricaSfoglia(prefix) {
     return
   }
   try { await loadContatti() } catch (e) { /* l'elenco è un aiuto, non un requisito */ }
-  var tutti = (contattiCache || []).filter(function (x) { return x.attivo !== false })
+  var tutti = (contattiCache || []).filter(function (x) {
+    if (x.attivo === false) return false
+    if (c.soloCategoria && !contattoInCategoria(x, c.soloCategoria)) return false   // FASE 29
+    return true
+  })
   tutti.sort(function (a, b) { return contattoNome(a).localeCompare(contattoNome(b), 'it') })
   mostraSuggerimenti(prefix, tutti, true)
   if (el(c.testo)) el(c.testo).focus()
@@ -9110,6 +9845,11 @@ async function scegliContatto(prefix, id) {
   if (el(c.testo))  el(c.testo).value = contattoNome(x)
   if (el(c.hidden)) el(c.hidden).value = id
   chiudiSuggerimenti(prefix)
+
+  // FASE 29 — scelto il fornitore sull'acquisto, le sue offerte vanno in cima.
+  if (prefix === 'a' && typeof riempiTendinaOfferte === 'function') {
+    riempiTendinaOfferte(getVal('a-offerta') || null)
+  }
 
   // FASE 21 — sulla busta l'indirizzo si RIFA' ogni volta che si sceglie un
   // destinatario: qui la regola «solo se vuoto» sarebbe d'impiccio, perche'
@@ -9305,30 +10045,42 @@ function proponiStatoDaData() {
 // Il pezzo del cantiere non c'e': vedi nomeClientePerFile() qui sotto e il
 // riepilogo della FASE 20 — sulla fattura di vendita un cantiere non e'
 // registrato da nessuna parte, e inventarlo sarebbe peggio che ometterlo.
+// FASE 29 — <numero fattura>_<COGNOME NOME o ragione sociale>
+// Esempio: 2026-09-006_TAMAGNI LUCA. Il numero e' quello vero della fattura,
+// nel formato con il mese; il cliente e' la ragione sociale se e' un'azienda,
+// altrimenti cognome e nome, in maiuscolo. Per una nota di credito il numero
+// porta gia' il suo «NC-», per una bozza si scrive «bozza».
 function nomeFilePdfFattura(f) {
   if (!f) return 'Fattura'
-  var tipo = (f.tipo === 'nota_credito') ? 'NotaCredito' : 'Fattura'
-  var num  = f.numero || 'bozza'
-  // Una bozza non ha ancora una data di emissione: si usa oggi, cosi' il file
-  // non nasce senza data. dataISO()/oggiISO(), mai toISOString().
-  var data = f.data_emissione || oggiISO()
-  var chi  = nomeClientePerFile(f.cliente_nome)
-  return unisciParti([data, tipo, num, chi], '_').replace(/\s+/g, '_')
+  var num = f.numero || 'bozza'
+  var chi = nomeClientePerFile(f.cliente_nome)
+  return sanificaNomeFile(chi ? (num + '_' + chi) : num)
 }
 
-// Il nome del cliente ridotto a qualcosa che un file system accetta, INTERO:
-// accenti sciolti nella lettera semplice, spazi in trattino, il resto via.
-// Si taglia solo se e' davvero lunghissimo, e mai a meta' di una parola.
+// Il cliente come va nel nome del file: maiuscolo, accenti sciolti nella
+// lettera semplice (una lettera accentata in un nome di file non e' sempre
+// benvenuta), spazi lasciati. Se e' lunghissimo si taglia a fine parola.
 function nomeClientePerFile(nome) {
-  var s = String(nome == null ? '' : nome)
+  var s = String(nome == null ? '' : nome).trim()
+  if (!s) return ''
   if (s.normalize) s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-  s = s.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-  if (s.length <= 48) return s
-  // Taglio all'ultimo trattino prima del limite: meglio un nome piu' corto di
-  // una parola spezzata a meta'.
-  var tagliato = s.slice(0, 48)
-  var ultimo = tagliato.lastIndexOf('-')
-  return (ultimo > 12 ? tagliato.slice(0, ultimo) : tagliato).replace(/-+$/, '')
+  s = s.toUpperCase().replace(/\s+/g, ' ')
+  if (s.length <= 60) return s
+  var tagliato = s.slice(0, 60)
+  var ultimo = tagliato.lastIndexOf(' ')
+  return (ultimo > 12 ? tagliato.slice(0, ultimo) : tagliato).trim()
+}
+
+// I caratteri che Windows non accetta in un nome di file, tolti — non
+// sostituiti con un trattino, cosi' il nome resta pulito. I punti a fine
+// nome e gli spazi doppi si sistemano insieme.
+function sanificaNomeFile(s) {
+  return String(s == null ? '' : s)
+    .replace(/[\/\\:*?"<>|]/g, '')
+    .replace(/[\x00-\x1f]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .trim() || 'Fattura'
 }
 
 async function scaricaFatturaPDF() {
@@ -11576,7 +12328,12 @@ function quotaCantiere(r, cantiereId) {
   // Se le quote non tornano col totale (documento vecchio, o modificato a mano
   // nel database) si ripiega sulla proporzione fra le quote stesse: meglio una
   // ripartizione coerente che un numero fuori scala.
-  var frazione = (Math.abs(totQuote) > 0.005) ? (mia / totQuote) : 0
+  // FASE 29 — una riga SOLA senza importi (classificazione salvata prima della
+  // FASE 10, quando imponibile e iva_importo non c'erano) vuol dire «tutto il
+  // documento qui»: frazione 1, non 0. Con la frazione a 0 quel documento
+  // spariva dal suo cantiere senza che nessuno se ne accorgesse.
+  var frazione = (Math.abs(totQuote) > 0.005) ? (mia / totQuote)
+               : (quote.length === 1 ? 1 : 0)
   return { importo: (Math.abs(imp) > 0.005 ? imp * frazione : mia), frazione: frazione }
 }
 
@@ -11597,8 +12354,11 @@ function quotaFuoriCantiere(r) {
     totQuote += quote[i].quota
     if (!quote[i].cantiere_id) mia += quote[i].quota
   }
-  if (Math.abs(mia) < 0.005) return null
-  var frazione = (Math.abs(totQuote) > 0.005) ? (mia / totQuote) : 0
+  // FASE 29 — stessa regola di quotaCantiere: una riga sola senza importi e
+  // senza cantiere e' «tutto a magazzino».
+  var unicaSenzaImporti = (quote.length === 1 && Math.abs(totQuote) < 0.005 && !quote[0].cantiere_id)
+  if (Math.abs(mia) < 0.005 && !unicaSenzaImporti) return null
+  var frazione = (Math.abs(totQuote) > 0.005) ? (mia / totQuote) : (unicaSenzaImporti ? 1 : 0)
   return { importo: (Math.abs(imp) > 0.005 ? imp * frazione : mia), frazione: frazione }
 }
 
@@ -13783,6 +14543,7 @@ var vistaCorrente = {}      // pagina -> sottolivello attuale, es. {fatture: 'de
 var LIVELLI = {
   fatture:   { livelli: ['list', 'detail', 'edit'],   applica: 'showFattureView' },
   acquisti:  { livelli: ['list', 'detail', 'edit'],   applica: 'showAcquistiView' },
+  offerte:   { livelli: ['list', 'detail', 'edit'],   applica: 'showOfferteView' },   // FASE 29
   // FASE 18 — «lettura» sta fra elenco e modulo: Indietro dal modulo torna
   // alla scheda letta, e da li' all'elenco.
   rubrica:   { livelli: ['lista', 'lettura', 'scheda'], applica: 'mostraRubricaVista' },
@@ -13843,6 +14604,7 @@ function caricaPagina(pageId) {
     if (pageId === 'export')      { initExportPage() }
     if (pageId === 'fatture')     { initFatturePage() }
     if (pageId === 'acquisti')    { initAcquistiPage() }
+    if (pageId === 'offerte')     { initOffertePage() }
     if (pageId === 'rubrica')     { initRubricaPage() }
     if (pageId === 'codici')      { initCodiciPage() }
     if (pageId === 'busta')       { initBustaPage() }
@@ -14371,6 +15133,38 @@ function allegatiDi(tabella, id) {
 
 function contaAllegati(tabella, id) { return allegatiDi(tabella, id).length }
 
+// FASE 29 — tutti gli allegati di un documento, in sola visualizzazione.
+// Prima il bottone negli elenchi apriva SOLO IL PRIMO file, e per vedere gli
+// altri bisognava entrare in modifica: modificare un documento solo per
+// guardarlo e' sbagliato, e un salvataggio per sbaglio tocca quello che non
+// doveva cambiare.
+function apriAllegatiSolaLettura(tabella, id, nome, bannerId) {
+  var lista = allegatiDi(tabella, id)
+  var titolo = el('allegati-title')
+  if (titolo) titolo.textContent = '\ud83d\udcce Allegati' + (lista.length ? ' (' + lista.length + ')' : '')
+  html('allegati-overlay-sotto', nome ? esc(nome) : '')
+  html('allegati-overlay-lista', lista.length
+    ? lista.map(function (a) {
+        var t = etichettaTipoAllegato(a.tipo)
+        return '<div class="alleg-riga">' +
+          '<span class="alleg-tipo-fisso">' + t.ic + ' ' + esc(t.et) + '</span>' +
+          '<span class="alleg-nome" title="' + esc(a.path) + '">' +
+            esc(a.nome_file || allegatoNomeFile(a.path)) + '</span>' +
+          '<span class="alleg-azioni">' +
+            '<button type="button" class="icon-btn" onclick="openAllegato(\'' + esc(a.path) +
+              '\', \'' + esc(bannerId || '') + '\')">\ud83d\udcce Apri</button>' +
+          '</span>' +
+        '</div>'
+      }).join('')
+    : '<div class="cru-vuoto">Nessun allegato.</div>')
+  var o = el('allegati-overlay')
+  if (o) { o.style.display = 'flex'; registraAperturaModale('allegati-overlay') }
+}
+
+function chiudiAllegatiOverlay() {
+  var o = el('allegati-overlay'); if (o) o.style.display = 'none'
+}
+
 // La spia negli elenchi: il NUMERO, non un generico «Allegato». Sapere che ce
 // ne sono tre senza aprire la scheda e' il punto di tutta la fase.
 function badgeAllegati(tabella, id, bannerId) {
@@ -14378,9 +15172,15 @@ function badgeAllegati(tabella, id, bannerId) {
   // Il caso «nessuno» e' quello che conta: e' il giustificativo mancante, e
   // deve vedersi. In grigio, perche' non e' un errore — e' una cosa da fare.
   if (!n) return '<span class="alleg-nessuno">⚠️ Nessun allegato</span>'
+  // FASE 29 — con un allegato solo si apre direttamente il file; con piu' di
+  // uno si apre l'elenco completo, in sola visualizzazione. Prima si apriva
+  // sempre e solo il primo, e gli altri restavano invisibili.
   var primo = allegatiDi(tabella, id)[0]
-  return '<button class="icon-btn" title="' + (n === 1 ? 'Apri l allegato' : 'Apri il primo dei ' + n + ' allegati') +
-    '" onclick="event.stopPropagation(); openAllegato(\'' + esc(primo.path) + '\', \'' + esc(bannerId || '') + '\')">📎 ' +
+  var azione = (n === 1)
+    ? 'openAllegato(\'' + esc(primo.path) + '\', \'' + esc(bannerId || '') + '\')'
+    : 'apriAllegatiSolaLettura(\'' + esc(tabella) + '\', \'' + esc(id) + '\', \'\', \'' + esc(bannerId || '') + '\')'
+  return '<button class="icon-btn" title="' + (n === 1 ? 'Apri l allegato' : 'Vedi tutti i ' + n + ' allegati') +
+    '" onclick="event.stopPropagation(); ' + azione + '">📎 ' +
     n + (n === 1 ? ' allegato' : ' allegati') + '</button>'
 }
 
@@ -14436,6 +15236,7 @@ function boxAllegatiHtml(tabella, id, nome) {
 function bannerAllegatiDi(tabella) {
   if (tabella === 'tm_conta_fatture') return 'fatture-allegato-banner'
   if (tabella === 'tm_conta_fatture_acquisto') return 'acquisti-detail-banner'
+  if (tabella === 'tm_conta_offerte') return 'offerte-detail-banner'   // FASE 29
   return 'inserimento-banner'
 }
 
@@ -15373,7 +16174,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '48'
+var VERSIONE = '49'
 
 function controllaVersionePagina() {
   try {
@@ -15794,6 +16595,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'export')      { initExportPage() }
       if (pageId === 'fatture')     { initFatturePage() }
       if (pageId === 'acquisti')    { initAcquistiPage() }
+      if (pageId === 'offerte')     { initOffertePage() }
       if (pageId === 'rubrica')     { initRubricaPage() }
       if (pageId === 'codici')      { initCodiciPage() }
       if (pageId === 'busta')       { initBustaPage() }
@@ -15909,7 +16711,7 @@ function closeSidebar() {
 // Senza questo resterebbe aperto sopra il resto del modulo.
 document.addEventListener('click', function (ev) {
   // FASE 27 — gli stessi tre gesti sui menu dei cantieri.
-  ;['a', 'm', 'v'].forEach(function (pfx) {
+  ;['a', 'm', 'v', 'o'].forEach(function (pfx) {
     var cc = cantiereCampi(pfx)
     var bx = el(cc.suggest)
     if (!bx || !bx.innerHTML) return
@@ -15919,7 +16721,7 @@ document.addEventListener('click', function (ev) {
     if (bott && (bott === ev.target || bott.contains(ev.target))) return
     html(cc.suggest, '')
   })
-  ;['f', 'a', 'v', 'b'].forEach(function (prefix) {
+  ;['f', 'a', 'v', 'b', 'o'].forEach(function (prefix) {
     var c = rubricaCampi(prefix)
     var box = el(c.suggest)
     if (!box || !box.innerHTML) return
