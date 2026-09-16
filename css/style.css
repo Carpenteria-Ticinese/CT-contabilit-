@@ -2899,3 +2899,19 @@ tr.riga-fuori-cantiere td {
 
 /* Il badge nel menu */
 .nav-badge.badge-conferma { background: var(--warn); color: #fff; }
+
+/* == v50 — numero di posizione e cambio tipo nell'editor righe ============ */
+.cell-pos {
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+  padding-right: 8px;
+}
+.riga-titolo .cell-pos { color: var(--text); font-weight: 700; }
+.cell-azioni { white-space: nowrap; }
+.cell-azioni .icon-btn { margin-right: 4px; }
+.icon-btn.cambia-tipo { font-size: 11.5px; }
+
+/* == v51 — «Incassa» / «Paga» sulla riga dell'elenco ====================== */
+.icon-btn.incasso { border-color: var(--ok); color: var(--ok); font-weight: 600; }
