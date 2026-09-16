@@ -235,6 +235,25 @@ function badgePagamento(verso, stato) {
   return badge(e.cls, e.icona + ' ' + e.testo)
 }
 
+// 52·C — lo stesso badge, con il residuo in cifra. La parola e' quella di
+// etichettaPagamento (una fonte sola); il numero viene dai pagamenti in cache,
+// che l'elenco ha appena riletto con loadPagamenti(). Il testo c'e' sempre:
+// il colore e' un aiuto, mai l'unica informazione.
+//   aperto   -> «🔵 Non incassato · 12.400,00 CHF»
+//   parziale -> «🟠 Incassato in parte — residuo 3.200,00 CHF»
+//   pagato   -> «✅ Incassato»
+function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
+  var e = etichettaPagamento(verso, stato)
+  var cifra = ''
+  // La cifra solo se i pagamenti sono stati letti davvero: senza, si omette.
+  // Mai uno zero al posto di un dato che non c'e'.
+  if (stato !== 'pagato' && cacheOk('pagamenti')) {
+    var residuo = round2((safeNum(totale) || 0) - totalePagatoDi(tabella, id))
+    cifra = (stato === 'parziale' ? ' — residuo ' : ' · ') + fmtNumIt(residuo) + ' CHF'
+  }
+  return badge(e.cls, e.icona + ' ' + e.testo + cifra)
+}
+
 // Testo del bottone che porta ALLO stato indicato.
 // Deriva dallo stesso vocabolario dei badge, cosi' anche le azioni dicono
 // «Segna da incassare» su una vendita e «Segna pagato» su un acquisto, senza
@@ -708,7 +727,7 @@ async function loadCanalA() {
 
 // ─── CANALE B — legge tm_conta_movimenti_propri ────────────────────────────
 async function loadCanalB() {
-  if (!currentAziendaId) return []
+  await richiediAccesso('loadCanalB')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb
       .from('tm_conta_movimenti_propri')
@@ -1051,7 +1070,7 @@ async function ensureContiIva(force) {
   // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
   // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
   // Stessa guardia di loadContatti e loadCantieri.
-  if (!currentAziendaId) return
+  await richiediAccesso('ensureContiIva')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb
       .from('tm_conta_piano_conti')
@@ -1119,7 +1138,7 @@ async function loadCantieri(force) {
   // anche dopo il login. E' lo stesso caso per cui loadContatti ha gia' la sua
   // guardia, con lo stesso commento: senza sessione non si legge niente, ma
   // non e' una lettura riuscita.
-  if (!currentAziendaId) { cantieriCache = cantieriCache || []; return }
+  await richiediAccesso('loadCantieri')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     // FASE 6A — servono anche luogo e stato: il luogo distingue due cantieri
     // con lo stesso nome, lo stato decide l'ordine della tendina.
@@ -3466,10 +3485,13 @@ async function initFatturePage() {
 }
 
 async function loadFattureList() {
-  try { await loadAllegati() } catch (_) {}
-  if (!currentAziendaId) { html('fatture-table', '<div class="dim">Accedi per vedere le fatture.</div>'); return }
   html('fatture-table', loadingRow('Caricamento fatture…'))
   try {
+    // 52·B — senza sessione la RLS darebbe zero righe e un elenco vuoto che
+    // sembra vero. La guardia lancia, l'errore finisce nella tabella, e
+    // fattureList resta com'era: non si considera valido un elenco vuoto.
+    // 52·B1 — idem se l'azienda non e' determinata.
+    await richiediAccesso('lettura delle fatture')
     const { data, error } = await sb
       .from('tm_conta_fatture')
       .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at')
@@ -3477,10 +3499,18 @@ async function loadFattureList() {
       .order('created_at', { ascending: false })
     if (error) throw error
     fattureList = data || []
-    try { await loadAllegati() } catch (eA) { /* il conteggio e' un di piu' */ }   // FASE 29
+    // I dati di contorno — pagamenti (per il residuo in cifra) e allegati — non
+    // devono far sparire l'elenco se falliscono, ma nemmeno fallire in silenzio.
+    // La PAROLA dello stato viene dal trigger ed e' gia' nella SELECT: e' vera
+    // anche senza i pagamenti. La CIFRA si omette e il banner lo dice.
+    var contorno = []
+    try { await loadPagamenti() } catch (eP) { contorno.push('residui non disponibili: ' + (eP.message || eP)) }
+    try { await loadAllegati() } catch (eA) { contorno.push('allegati: ' + (eA.message || eA)) }
     renderFattureTable()
+    if (contorno.length) showFattureBanner('fatture-list-banner', 'warn',
+      'Elenco caricato, ma non tutto: ' + contorno.join(' · '))
   } catch (e) {
-    html('fatture-table', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
+    html('fatture-table', '<p style="color:var(--err)">❌ Elenco non caricato: ' + esc(e.message || e) + '</p>')
   }
 }
 
@@ -3509,7 +3539,19 @@ function fattureRowActions(f) {
          'onclick="event.stopPropagation(); apriRegistraPagamento(\'tm_conta_fatture\', \'' + f.id + '\', ' +
          (safeNum(f.totale) || 0) + ', \'entrata\', \'' +
          esc(String(f.cliente_nome || '').replace(/\x27/g, '')) + '\')">💳 Incassa</button>'
+  } else if (f.stato !== 'emessa' || f.tipo === 'nota_credito') {
+    // 52·D — dove non si puo' incassare il bottone c'e' lo stesso, grigio, e
+    // dice perche' nel testo: un bottone che sparisce lascia cercare.
+    var perche = f.stato === 'bozza' ? 'bozza, non emessa'
+               : f.stato === 'annullata' ? 'fattura annullata'
+               : f.tipo === 'nota_credito' ? 'nota di credito: non si incassa'
+               : 'non emessa'
+    a += '<button class="icon-btn incasso" disabled title="Non si può incassare: ' + esc(perche) + '">' +
+         '💳 Incassa — ' + esc(perche) + '</button>'
   }
+  // 52·E — l'ultimo pagamento si annulla dalla riga, con la stessa DELETE e la
+  // stessa conferma della scheda.
+  if (f.stato === 'emessa') a += bottoneAnnullaUltimo('tm_conta_fatture', f.id)
   return a
 }
 
@@ -3572,7 +3614,9 @@ function renderFattureTable() {
       '<td>' + statoFatturaBadge(f.stato) +
         // L'incasso si mostra solo sulle fatture emesse: su una bozza non
         // significa niente, su una annullata sarebbe fuorviante.
-        (f.stato === 'emessa' ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '') +
+        (f.stato === 'emessa' && f.tipo !== 'nota_credito'
+          ? ' ' + badgePagamentoConResiduo('entrata', f.stato_pagamento, 'tm_conta_fatture', f.id, f.totale)
+          : (f.stato === 'emessa' ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '')) +
         // FASE 7 — si vede a colpo d'occhio a quali fatture manca il PDF: senza
         // questa spia il pacchetto esce incompleto e ci si accorge solo dopo.
         (f.stato === 'emessa' && !contaAllegati('tm_conta_fatture', f.id)
@@ -4633,7 +4677,7 @@ function ibanLeggibile(iban) {
 
 async function loadIbanRubrica(force) {
   if (ibanRubrica !== null && !force) return
-  if (!currentAziendaId) { ibanRubrica = []; return }
+  await richiediAccesso('loadIbanRubrica')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb
       .from('tm_conta_iban')
@@ -4827,7 +4871,7 @@ async function loadAziendaInfo() {
   //    a posto. Sulla busta sparivano via e NPA del mittente.
   //
   // Percio': senza sessione non si scrive niente in cache e si riprova dopo.
-  if (!currentAziendaId) return
+  await richiediAccesso('loadAziendaInfo')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb.from('tm_aziende').select('*').eq('id', currentAziendaId).single()
     if (error) throw error
@@ -4905,7 +4949,11 @@ async function viewFattura(id) {
       await loadPagamenti(); await loadRate()
       html('fatture-pagamenti', f.stato === 'bozza' ? ''
         : boxPagamentiHtml('tm_conta_fatture', f.id, f.totale, 'entrata', f.cliente_nome))
-    } catch (ePag) { html('fatture-pagamenti', '') }
+    } catch (ePag) {
+      // 52·B — un riquadro vuoto sembra «nessun pagamento»: si dice cosa manca.
+      html('fatture-pagamenti', '<div class="card"><div class="card-title">💳 Pagamenti</div>' +
+        '<p style="color:var(--err)">❌ Pagamenti non letti: ' + esc(ePag.message || ePag) + '</p></div>')
+    }
     // Il riquadro della classificazione: c'e' solo sui documenti veri, non
     // sulle bozze, che non sono ancora niente da classificare.
     if (f.stato === 'bozza') html('fatture-classificazione', '')
@@ -5389,7 +5437,11 @@ function renderAcquistoDetail(a) {
   loadPagamenti().then(function () { return loadRate() }).then(function () {
     html('acquisti-pagamenti',
       boxPagamentiHtml('tm_conta_fatture_acquisto', a.id, a.importo, 'uscita', a.fornitore))
-  }).catch(function () { html('acquisti-pagamenti', '') })
+  }).catch(function (ePag) {
+    // 52·B — un riquadro vuoto sembra «nessun pagamento»: si dice cosa manca.
+    html('acquisti-pagamenti', '<div class="card"><div class="card-title">💳 Pagamenti</div>' +
+      '<p style="color:var(--err)">❌ Pagamenti non letti: ' + esc(ePag.message || ePag) + '</p></div>')
+  })
   // Separata dai pagamenti: se la lettura dei pagamenti fallisce, la
   // classificazione non c'entra e non deve sparire con loro.
   aggiornaBoxClassificazione('tm_conta_fatture_acquisto', a.id, 'acquisti-classificazione', a)
@@ -5439,16 +5491,10 @@ async function initAcquistiPage() {
 }
 
 async function loadAcquistiList() {
-  // Gli allegati servono a disegnare «📎 3» su ogni riga: si leggono prima,
-  // una volta sola, non una query per riga.
-  try { await loadAllegati() } catch (_) {}
-  // Le chiavi dei doppioni: una query sua, tre colonne, cosi' la spia non
-  // dipende da quali righe l'elenco ha caricato.
-  try { await caricaChiaviDoppioni(true) } catch (_) {}
-  try { await refreshDaConfermareCount() } catch (_) {}
-  if (!currentAziendaId) { html('acquisti-table', '<div class="dim">Accedi per vedere le fatture d\'acquisto.</div>'); return }
   html('acquisti-table', loadingRow('Caricamento…'))
   try {
+    // 52·B / B1 — vedi loadFattureList: sessione e azienda prima, elenco dopo.
+    await richiediAccesso('lettura delle fatture d\'acquisto')
     const { data, error } = await sb
       .from('tm_conta_fatture_acquisto')
       .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id, origine, stato_conferma')
@@ -5456,13 +5502,22 @@ async function loadAcquistiList() {
       .order('data', { ascending: false })
     if (error) throw error
     acquistiList = data || []
-    // FASE 6A — il cantiere di ogni fattura sta nelle classificazioni: servono
-    // la mappa e i nomi dei cantieri prima di disegnare la tabella.
-    try { await loadCantieri(); await loadMappaCantieri(true) } catch (_) { /* la tabella si mostra lo stesso */ }
+    // I dati di contorno — pagamenti, allegati, doppioni, badge, cantieri — non
+    // devono far sparire l'elenco se falliscono, ma nemmeno fallire in silenzio.
+    // Vedi loadFattureList per i pagamenti: parola si', cifra omessa.
+    var contorno = []
+    try { await loadPagamenti() } catch (eP) { contorno.push('residui non disponibili: ' + (eP.message || eP)) }
+    try { await loadAllegati() } catch (eA) { contorno.push('allegati: ' + (eA.message || eA)) }
+    try { await caricaChiaviDoppioni(true) } catch (eD) { contorno.push('doppioni: ' + (eD.message || eD)) }
+    try { await refreshDaConfermareCount() } catch (eC) { contorno.push('da confermare: ' + (eC.message || eC)) }
+    // FASE 6A — il cantiere di ogni fattura sta nelle classificazioni.
+    try { await loadCantieri(); await loadMappaCantieri(true) } catch (eK) { contorno.push('cantieri: ' + (eK.message || eK)) }
     riempiFiltroCantieriAcquisti()
     renderAcquistiTable()
+    if (contorno.length) showFattureBanner('acquisti-list-banner', 'warn',
+      'Elenco caricato, ma non tutto: ' + contorno.join(' · '))
   } catch (e) {
-    html('acquisti-table', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
+    html('acquisti-table', '<p style="color:var(--err)">❌ Elenco non caricato: ' + esc(e.message || e) + '</p>')
   }
 }
 
@@ -5489,6 +5544,8 @@ function acquistiRowActions(a) {
       ? ''
       // v51 — l'icona da sola non diceva niente: ora ha la parola, come tutto.
       : '<button class="icon-btn incasso" title="Registra un pagamento su questa fattura" onclick="event.stopPropagation(); apriRegistraPagamento(\'tm_conta_fatture_acquisto\', \'' + a.id + '\', ' + (safeNum(a.importo) || 0) + ', \'uscita\', \'' + esc(String(a.fornitore || '').replace(/\x27/g, '')) + '\')">💳 Paga</button>') +
+    // 52·E — come sulle fatture di vendita.
+    bottoneAnnullaUltimo('tm_conta_fatture_acquisto', a.id) +
     '<button class="icon-btn danger" title="Elimina" onclick="event.stopPropagation(); deleteAcquisto(\'' + a.id + '\')">🗑️</button>'
 }
 
@@ -5621,7 +5678,7 @@ function renderAcquistiTable() {
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
-      '<td>' + statoAcquistoBadge(a.stato_pagamento) + paySub + '</td>' +
+      '<td>' + badgePagamentoConResiduo('uscita', a.stato_pagamento, 'tm_conta_fatture_acquisto', a.id, a.importo) + paySub + '</td>' +
       '<td>' + etichettaCantiereRiga(cantiereDiAcquisto(a.id), a.id) + '</td>' +
       '<td class="row-actions">' + acquistiRowActions(a) + '</td>' +
     '</tr>'
@@ -6020,16 +6077,15 @@ async function saveAcquisto() {
         if (totalePagatoDi('tm_conta_fatture_acquisto', editingAcquistoId) > 0.005) {
           throw new Error('la fattura ha già dei pagamenti: registrali dalla scheda')
         }
-        const { error: ePag } = await sb.from('tm_conta_pagamenti').insert({
-          azienda_id: currentAziendaId,
-          tabella_origine: 'tm_conta_fatture_acquisto',
-          id_origine: editingAcquistoId,
-          data: dataPag,
-          importo: payload.importo,
-          metodo: getVal('a-pag-metodo') || null,
-          created_by: currentUser ? currentUser.id : null
-        }).select()
-        if (ePag) throw ePag
+        // 52·A — passa dalla stessa scrittura di tutti gli altri pagamenti:
+        // stesso controllo dello sforamento, stessa guardia di sessione.
+        // Totale e importo sono LO STESSO valore (a-importo, validato > 0):
+        // l'eccedenza e' impossibile, e una domanda a meta' salvataggio non ha
+        // senso. Il controllo gira lo stesso, con la risposta gia' data.
+        await scriviPagamento(
+          { tabella: 'tm_conta_fatture_acquisto', id: editingAcquistoId, importo: payload.importo },
+          { data: dataPag, importo: payload.importo, metodo: getVal('a-pag-metodo') || null },
+          null, { confermaEccedenza: true })
         invalidaCachePagamenti()
       } catch (errPag) {
         pagamentoFallito = errPag.message || String(errPag)
@@ -6532,16 +6588,13 @@ async function handleInserimentoSubmit(event) {
       // il movimento a 'pagato' da solo.
       if (giaPagato && creatoMov && creatoMov[0]) {
         try {
-          const { error: ePag } = await sb.from('tm_conta_pagamenti').insert({
-            azienda_id: currentAziendaId,
-            tabella_origine: 'tm_conta_movimenti_propri',
-            id_origine: creatoMov[0].id,
-            data: dataPag || dataVal,
-            importo: importoVal,
-            note: 'Registrato alla creazione con «gia pagata».',
-            created_by: currentUser.id
-          }).select()
-          if (ePag) throw ePag
+          // 52·A — stessa scrittura di tutti gli altri pagamenti.
+          // Stesso valore per totale e importo (f-importo, validato > 0): nessuna
+          // domanda a meta' salvataggio.
+          await scriviPagamento(
+            { tabella: 'tm_conta_movimenti_propri', id: creatoMov[0].id, importo: importoVal },
+            { data: dataPag || dataVal, importo: importoVal, note: 'Registrato alla creazione con «gia pagata».' },
+            null, { confermaEccedenza: true })
           invalidaCachePagamenti()
         } catch (ePg) {
           showInserimentoBanner('warn', 'Movimento salvato, pagamento NO',
@@ -7062,7 +7115,7 @@ async function loadGruppi(force) {
   // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
   // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
   // Stessa guardia di loadContatti e loadCantieri.
-  if (!currentAziendaId) { gruppiCache = gruppiCache || []; return gruppiCache }
+  await richiediAccesso('loadGruppi')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb
       .from('tm_conta_gruppi')
@@ -7117,7 +7170,7 @@ async function loadContatti(force) {
   if (cacheOk('contatti') && !force) return contattiCache || []
   // Senza sessione non si legge niente, ma non e' una lettura riuscita:
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
-  if (!currentAziendaId) { contattiCache = []; return contattiCache }
+  await richiediAccesso('loadContatti')   // 52·B1: mai un elenco vuoto per silenzio
   var campiBase = 'id, categoria, ragione_sociale, nome, cognome, indirizzo, cap, citta, paese,' +
                   ' telefono, email, sito_web, uid_partita_iva, iban, gruppo_default,' +
                   ' giorni_pagamento, note, attivo'
@@ -8331,7 +8384,7 @@ function badgeStatoOfferta(s) {
 // in cache per tutta la sessione.
 async function loadOfferte(force) {
   if (offerteCache && !force) return offerteCache
-  if (!currentAziendaId) return offerteCache || []
+  await richiediAccesso('loadOfferte')   // 52·B1: mai un elenco vuoto per silenzio
   const { data, error } = await sb.from('tm_conta_offerte')
     .select('id, contatto_id, fornitore, data, riferimento, cantiere_id, stato, valuta, totale, note, created_at')
     .eq('azienda_id', currentAziendaId)
@@ -10241,7 +10294,7 @@ async function loadFlussi(force) {
   if (cacheOk('flussi') && !force) return flussiCache || []
   // Senza sessione non si legge niente, ma non e' una lettura riuscita:
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
-  if (!currentAziendaId) { flussiCache = []; return flussiCache }
+  await richiediAccesso('loadFlussi')   // 52·B1: mai un elenco vuoto per silenzio
   const { data, error } = await sb
     .from('v_conta_flussi')
     .select('id_origine, tabella_origine, origine_tipo, verso, contatto_id, controparte_nome, descrizione,' +
@@ -10260,7 +10313,7 @@ async function loadIvaPeriodi(force) {
   // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
   // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
   // Stessa guardia di loadContatti e loadCantieri.
-  if (!currentAziendaId) { ivaPeriodiCache = ivaPeriodiCache || []; return ivaPeriodiCache }
+  await richiediAccesso('loadIvaPeriodi')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb
       .from('tm_conta_iva_periodi')
@@ -11105,7 +11158,7 @@ async function loadImpostazioniConta(force) {
   // «vero» in JavaScript — restava in cache per tutta la sessione anche dopo
   // il login. Le impostazioni della busta e della taratura sparivano cosi'.
   // Adesso senza sessione non si scrive niente in cache: si riprova dopo.
-  if (!currentAziendaId) return impostazioniConta || {}
+  await richiediAccesso('loadImpostazioniConta')   // 52·B1: mai un elenco vuoto per silenzio
   impostazioniConta = {}
   try {
     const { data, error } = await sb
@@ -11404,7 +11457,8 @@ function rigaScadenza(r, blocco) {
         'onclick="segnaSaldatoDaScadenze(\'' + esc(r.tabella_origine) + '\', \'' + esc(r.id_origine) +
           '\', \'' + esc(r.verso) + '\', ' + (r._importoRata != null ? r._importoRata
             : (safeNum(r.residuo) != null ? safeNum(r.residuo) : (safeNum(r.importo_totale) || 0))) +
-          (r._rata ? ', \'' + esc(r._rata.id) + '\'' : '') + ')">' +
+          ', ' + (r._rata ? '\'' + esc(r._rata.id) + '\'' : 'null') +
+          ', ' + (safeNum(r.importo_totale) != null ? safeNum(r.importo_totale) : 'null') + ')">' +
         // Il testo dice CHE COSA si sta saldando: la rata o tutto il resto.
         '✅ ' + (r._rata ? 'Salda la rata ' + r._rata.numero_rata
                           : 'Salda ' + esc(e.testo.toLowerCase())) + '</button>' +
@@ -11425,26 +11479,34 @@ function rigaScadenza(r, blocco) {
 // FASE 8 — non si scrive piu' lo stato: si registra il PAGAMENTO, e lo stato
 // lo ricalcola il trigger. L'importo e' il residuo, oppure la rata se il
 // documento ne ha una in scadenza: e' quello che si sta davvero pagando.
-async function segnaSaldatoDaScadenze(tabella, id, verso, importoDaSaldare, idRata) {
+async function segnaSaldatoDaScadenze(tabella, id, verso, importoDaSaldare, idRata, totaleDoc) {
   if (!currentAziendaId) return
   var e = etichettaPagamento(verso, 'pagato')
   try {
     var imp = safeNum(importoDaSaldare)
     if (imp == null || imp <= 0) throw new Error('Importo da saldare non valido.')
 
-    const { data: creato, error } = await sb.from('tm_conta_pagamenti').insert({
-      azienda_id: currentAziendaId,
-      tabella_origine: tabella, id_origine: id,
-      data: oggiISO(), importo: imp,
-      created_by: currentUser ? currentUser.id : null
-    }).select()
-    if (error) throw error
+    // 52·A — stessa scrittura di tutti gli altri pagamenti, con il totale del
+    // documento per il controllo dello sforamento. Sotto soglia si chiede.
+    var doc = { tabella: tabella, id: id, importo: totaleDoc }
+    var valori = { data: oggiISO(), importo: imp }
+    var creato
+    try {
+      creato = await scriviPagamento(doc, valori, null, {})
+    } catch (e1) {
+      if (e1.codice !== 'eccedenza') throw e1
+      if (!window.confirm('Il pagamento supera il totale del documento.\n\n' + e1.message +
+          '\n\nRegistrarlo lo stesso? (arrotondamento, spese bancarie)')) {
+        throw new Error('annullato.')
+      }
+      creato = await scriviPagamento(doc, valori, null, { confermaEccedenza: true })
+    }
 
-    if (idRata && creato && creato[0]) {
-      try {
-        await sb.from('tm_conta_rate').update({ pagamento_id: creato[0].id })
-          .eq('id', idRata).eq('azienda_id', currentAziendaId).select()
-      } catch (eR) { console.warn('Rata non collegata:', eR.message || eR) }
+    var avvisoRata = null
+    if (idRata && creato) {
+      const { error: eRata } = await sb.from('tm_conta_rate').update({ pagamento_id: creato.id })
+        .eq('id', idRata).eq('azienda_id', currentAziendaId).select()
+      if (eRata) avvisoRata = 'Pagamento registrato, ma la rata NON è stata collegata: ' + (eRata.message || eRata)
     }
     invalidaCachePagamenti()
     await loadFlussi(true); await loadPagamenti(true); await loadRate(true)
@@ -11453,7 +11515,8 @@ async function segnaSaldatoDaScadenze(tabella, id, verso, importoDaSaldare, idRa
     // rifanno senza ricaricare la pagina.
     renderScadenze()
     await refreshScadenzeCount()
-    showScadenzeBanner('ok', 'Segnato come ' + e.testo.toLowerCase() + ' in data odierna.')
+    if (avvisoRata) showScadenzeBanner('warn', avvisoRata)
+    else showScadenzeBanner('ok', 'Segnato come ' + e.testo.toLowerCase() + ' in data odierna.')
   } catch (err) {
     var m = String(err.message || err)
     if (m.indexOf('sola lettura') !== -1 || m.indexOf('immutabil') !== -1) {
@@ -11981,7 +12044,7 @@ async function loadSpeseCantiere(force) {
   // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
   // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
   // Stessa guardia di loadContatti e loadCantieri.
-  if (!currentAziendaId) { speseCantiereCache = speseCantiereCache || []; return speseCantiereCache }
+  await richiediAccesso('loadSpeseCantiere')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb.from('spese')
       .select('id, cantiere_id, data, descrizione, importo, valuta, note')
@@ -12001,7 +12064,7 @@ async function loadRegiaCantiere(force) {
   // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
   // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
   // Stessa guardia di loadContatti e loadCantieri.
-  if (!currentAziendaId) { regiaCantiereCache = regiaCantiereCache || []; return regiaCantiereCache }
+  await richiediAccesso('loadRegiaCantiere')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb.from('regia')
       .select('id, cantiere_id, data, descrizione, quantita, um, prezzo_unitario, fatturato')
@@ -12021,7 +12084,7 @@ async function loadGiornate(force) {
   // FASE 22 — senza sessione non si legge niente, ma non e' una lettura
   // riuscita: segnarla tale bloccherebbe ogni tentativo dopo il login.
   // Stessa guardia di loadContatti e loadCantieri.
-  if (!currentAziendaId) { giornateCache = giornateCache || []; return giornateCache }
+  await richiediAccesso('loadGiornate')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb.from('giornate')
       .select('id, cantiere_id, data, ore_totali, note')
@@ -12295,7 +12358,7 @@ var docCantiereMap = null
 
 async function loadCantiereDocumenti(force) {
   if (docCantiereMap && !force) return docCantiereMap
-  if (!currentAziendaId) { return docCantiereMap || {} }   // niente sessione: non si segna
+  await richiediAccesso('loadCantiereDocumenti')   // 52·B1: mai un elenco vuoto per silenzio
   var mappa = {}
   var fonti = [
     { tabella: 'tm_conta_fatture',          tipo: 'fattura'  },
@@ -12325,7 +12388,7 @@ async function loadCantiereDocumenti(force) {
 async function loadMappaCantieri(force) {
   if (classCantiereMap && !force) return classCantiereMap
   classCantiereMap = {}
-  if (!currentAziendaId) return classCantiereMap
+  await richiediAccesso('loadMappaCantieri')   // 52·B1: mai un elenco vuoto per silenzio
   await loadCantiereDocumenti(force)
   try {
     const { data, error } = await sb.from('tm_conta_classificazioni')
@@ -13846,21 +13909,19 @@ let docPagamentoCorrente = null   // {tabella, id, importo, verso, nome} nella m
 
 async function loadPagamenti(force) {
   if (cacheOk('pagamenti') && !force) return pagamentiCache || []
-  // Senza sessione non si legge niente, ma non e' una lettura riuscita:
-  // segnarla tale bloccherebbe ogni tentativo dopo il login.
-  if (!currentAziendaId) { pagamentiCache = []; return pagamentiCache }
-  try {
-    const { data, error } = await sb.from('tm_conta_pagamenti')
-      .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note')
-      .eq('azienda_id', currentAziendaId)
-      .order('data')
-    if (error) throw error
-    pagamentiCache = data || []
-    segnaCacheOk('pagamenti')
-  } catch (e) {
-    pagamentiCache = pagamentiCache || []   // non riuscita: il prossimo tentativo riprova
-    console.warn('Pagamenti non letti:', e.message || e)
-  }
+  // Mai loggato: non e' un errore e non e' una lettura riuscita.
+  await richiediAccesso('loadPagamenti')   // 52·B1: mai un elenco vuoto per silenzio
+  // 52·B — sessione assente: si lancia. Niente catch qui: l'errore risale a
+  // chi ha chiesto i pagamenti, che lo mostra dove serve. La cache resta
+  // com'era e NON viene segnata buona: zero righe con la sessione valida
+  // sono un risultato vero, zero righe senza sessione no.
+  const { data, error } = await sb.from('tm_conta_pagamenti')
+    .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note')
+    .eq('azienda_id', currentAziendaId)
+    .order('data')
+  if (error) throw error
+  pagamentiCache = data || []
+  segnaCacheOk('pagamenti')
   return pagamentiCache
 }
 
@@ -13868,7 +13929,7 @@ async function loadRate(force) {
   if (cacheOk('rate') && !force) return rateCache || []
   // Senza sessione non si legge niente, ma non e' una lettura riuscita:
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
-  if (!currentAziendaId) { rateCache = []; return rateCache }
+  await richiediAccesso('loadRate')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb.from('tm_conta_rate')
       .select('id, tabella_origine, id_origine, numero_rata, data_prevista, importo_previsto, pagamento_id, note')
@@ -13894,6 +13955,29 @@ function rateDi(tabella, id) {
     return r.tabella_origine === tabella && r.id_origine === id
   }).sort(function (a, b) { return a.numero_rata - b.numero_rata })
 }
+// 52·E — l'ULTIMO pagamento di un documento: il piu' recente per data, e a
+// parita' di data quello registrato per ultimo (created_at). Serve ad
+// «Annulla ultimo» dalla riga, che passa poi da eliminaPagamento: la stessa
+// DELETE della scheda, con la stessa conferma che nomina importo e data.
+function ultimoPagamentoDi(tabella, id) {
+  var lista = pagamentiDi(tabella, id).slice().sort(function (a, b) {
+    if (a.data !== b.data) return a.data < b.data ? -1 : 1
+    return String(a.created_at || '') < String(b.created_at || '') ? -1 : 1
+  })
+  return lista.length ? lista[lista.length - 1] : null
+}
+
+// Il bottone «Annulla ultimo» per la riga di un elenco. Vuoto se non c'e'
+// niente da annullare. Nomina gia' nel titolo QUALE pagamento toglierebbe.
+function bottoneAnnullaUltimo(tabella, id) {
+  var u = ultimoPagamentoDi(tabella, id)
+  if (!u) return ''
+  var imp = fmtNumIt(u.importo), dt = fmtDate(u.data)
+  return '<button class="icon-btn annulla-pag" title="Elimina l\'ultimo pagamento: ' + esc(imp) + ' CHF del ' + esc(dt) + '" ' +
+    'onclick="event.stopPropagation(); eliminaPagamento(\'' + esc(u.id) + '\', \'' + esc(imp) + '\', \'' + esc(dt) + '\')">' +
+    '↩️ Annulla ultimo</button>'
+}
+
 function totalePagatoDi(tabella, id) {
   return pagamentiDi(tabella, id).reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
 }
@@ -13974,8 +14058,18 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
   vestiFinestraPagamento(false)
   docPagamentoCorrente = { tabella: tabella, id: id, importo: safeNum(importoDoc) || 0,
                            verso: verso || 'uscita', nome: nome || '' }
-  await loadPagamenti(true)
-  await loadRate(true)
+  try {
+    await loadPagamenti(true)
+    await loadRate(true)
+  } catch (eL) {
+    // 52·B — parte da un clic: senza questo l'errore finirebbe solo in console
+    // e la finestra non si aprirebbe, senza dire perche'.
+    docPagamentoCorrente = null
+    var idBanner = tabella === 'tm_conta_fatture' ? 'fatture-list-banner'
+                 : tabella === 'tm_conta_fatture_acquisto' ? 'acquisti-list-banner' : 'inserimento-banner'
+    showFattureBanner(idBanner, 'err', 'Impossibile aprire il pagamento: ' + (eL.message || eL))
+    return
+  }
 
   var gia = totalePagatoDi(tabella, id)
   var residuo = docPagamentoCorrente.importo - gia
@@ -14061,61 +14155,222 @@ function controllaImportoPagamento() {
   }
 }
 
+// ── La sessione ─────────────────────────────────────────────────────────────
+// Con la sessione assente Supabase risponde ZERO righe senza errore, per via
+// della RLS: un elenco vuoto che sembra vero. Prima di ogni lettura che conta
+// si chiede la sessione, e se manca si lancia: chi chiama mostra l'errore e
+// NON segna la cache come buona.
+//
+// Nessun confronto con l'orologio del PC: un token scaduto lo scopre la
+// lettura stessa, che il server rifiuta. Un controllo sull'ora locale puo'
+// solo sbagliare, rifiutando una sessione valida perche' l'orologio e' avanti.
+async function richiediSessione(perCosa) {
+  var sessione = null
+  try { sessione = (await sb.auth.getSession()).data.session } catch (_) { sessione = null }
+  if (!sessione) {
+    throw new Error('Sessione assente' + (perCosa ? ' — ' + perCosa : '') +
+                    '. Esci, rientra e riprova.')
+  }
+  return sessione
+}
+
+// Azienda non determinata → si lancia. Prima molti caricatori tornavano un
+// elenco vuoto senza dire niente: con la sessione valida ma il profilo non
+// ancora caricato (primo avvio), tutto risultava «da incassare» e nessuno
+// poteva accorgersene. E' la trappola dei cantieri invisibili, e stava PRIMA
+// della guardia di sessione, quindi le sopravviveva.
+function richiediAzienda() {
+  if (!currentAziendaId) {
+    throw new Error('Azienda non determinata: elenco non attendibile. Ricarica la pagina.')
+  }
+}
+
+// Le due guardie insieme, nell'ordine giusto: prima la sessione (il messaggio
+// dice «rientra»), poi l'azienda (il messaggio dice «ricarica»).
+async function richiediAccesso(perCosa) {
+  await richiediSessione(perCosa)
+  richiediAzienda()
+}
+
+// ── Lo sforamento ───────────────────────────────────────────────────────────
+// Fin qui si poteva registrare piu' di quanto valeva il documento, senza che
+// nessuno lo dicesse. Da qui in poi il controllo sta DENTRO la scrittura, in un
+// posto solo: vale dalla scheda, dall'elenco e da qualunque altro punto che
+// registri un pagamento, oggi o domani.
+//
+// Sotto questa soglia l'eccedenza e' quasi sempre un arrotondamento o le spese
+// bancarie che il cliente ha aggiunto: si avvisa e si chiede conferma. Sopra,
+// e' un errore di battitura o un pagamento sul documento sbagliato: si blocca.
+var SOGLIA_ECCEDENZA_CHF = 5.00
+
+// Le cinque cifre, una per riga. Le stesse nella domanda e nel blocco.
+// Il numero e' incolonnato a destra: in una finestra di conferma il carattere
+// non e' a spaziatura fissa, quindi l'allineamento e' approssimato — ma una
+// cifra per riga si legge comunque, cinque su una riga sola no.
+function testoCifrePagamento(totale, gia, residuo, imp, eccedenza) {
+  function riga(et, v) {
+    var n = fmtNumIt(v) + ' CHF'
+    while ((et + n).length < 34) et += ' '
+    return et + n
+  }
+  return riga('Totale documento:', totale) + '\n' +
+         riga('Già pagato:', gia) + '\n' +
+         riga('Residuo:', residuo) + '\n' +
+         riga('Importo inserito:', imp) + '\n' +
+         riga('Eccedenza:', eccedenza)
+}
+
+// La scrittura vera del pagamento. Non legge nessun campo della finestra:
+// riceve i valori e basta. Restituisce la riga creata (null in modifica).
+//
+//   d          = { tabella, id, importo }   il documento e il suo totale
+//   valori     = { data, importo, metodo, riferimento }
+//   idModifica = id del pagamento che si sta correggendo, o null
+//   opzioni    = { confermaEccedenza: true } dopo che l'utente ha detto si'
+//
+// Se l'eccedenza e' sotto soglia e non e' stata confermata, lancia un errore
+// con codice 'eccedenza' e i numeri dentro: chi chiama decide come chiedere.
+async function scriviPagamento(d, valori, idModifica, opzioni) {
+  opzioni = opzioni || {}
+  var data = valori.data
+  var imp = safeNum(valori.importo)
+  if (!data) throw new Error('Serve la data del pagamento.')
+  if (!validaData(data)) throw new Error('La data del pagamento non è valida.')
+  // Zero o negativo si rifiuta: non e' un pagamento.
+  if (imp == null || imp <= 0) throw new Error('L\'importo deve essere maggiore di zero.')
+
+  // ── Fallire chiuso ────────────────────────────────────────────────────
+  // Con la sessione scaduta Supabase risponde ZERO righe senza errore: il
+  // controllo vedrebbe «niente pagato» e lascerebbe registrare un secondo
+  // pagamento su una fattura gia' saldata — cioe' causerebbe il danno che
+  // deve impedire. Quindi: prima la sessione, e se manca non si scrive.
+  // Sessione assente → non si scrive. Un token scaduto lo scopre la lettura
+  // qui sotto, che fallisce e blocca: e' lei l'autorita', non l'orologio.
+  await richiediSessione('il pagamento NON è stato registrato')
+
+  // I pagamenti gia' registrati si leggono ADESSO, dritti dal database, con
+  // una lettura loro: non la cache (che potrebbe essere di quando si e'
+  // aperta la finestra, o vuota per un errore ingoiato) e non loadPagamenti,
+  // che serve gli elenchi e ha le sue regole. Se questa lettura fallisce, non
+  // si scrive: un controllo che non puo' contare non e' un controllo.
+  // Niente filtro su azienda_id: tabella_origine + id_origine identificano il
+  // documento da soli, e a tenere fuori le altre aziende ci pensa la RLS. Un
+  // currentAziendaId vuoto o vecchio con la sessione valida darebbe zero righe
+  // senza errore — e zero righe qui vuol dire «via libera».
+  const { data: giaRegistrati, error: eLettura } = await sb.from('tm_conta_pagamenti')
+    .select('id, importo')
+    .eq('tabella_origine', d.tabella)
+    .eq('id_origine', d.id)
+  if (eLettura) throw new Error('Non riesco a leggere i pagamenti già registrati, quindi NON scrivo: ' + (eLettura.message || eLettura))
+  var giaPagato = (giaRegistrati || [])
+    .filter(function (p) { return !idModifica || p.id !== idModifica })   // in modifica, se stesso non conta
+    .reduce(function (sum, p) { return sum + (safeNum(p.importo) || 0) }, 0)
+
+  // Il totale del documento. Se salta il controllo lo decide l'ORIGINE, non
+  // il valore: un movimento proprio non ha un totale, e li' il controllo si
+  // salta legittimamente. Una fattura, di vendita o d'acquisto, il totale ce
+  // l'ha sempre — se qui manca o e' zero, qualcosa a monte e' sbagliato, e la
+  // risposta giusta e' NON scrivere, non «lasciar passare tanto e' zero»:
+  // sarebbe un controllo che chiunque puo' disattivare per sbaglio.
+  var totaleDoc = safeNum(d.importo)
+  var senzaTotale = (d.tabella === 'tm_conta_movimenti_propri')
+  if (!senzaTotale && (totaleDoc == null || totaleDoc <= 0)) {
+    throw new Error('Documento senza importo: non posso verificare lo sforamento, quindi il pagamento NON è stato registrato.')
+  }
+  if (!senzaTotale) {
+    var residuo = round2(totaleDoc - giaPagato)
+    var eccedenza = round2(giaPagato + imp - totaleDoc)
+    if (eccedenza > 0.005) {
+      var cifre = testoCifrePagamento(totaleDoc, giaPagato, residuo, imp, eccedenza)
+      if (eccedenza > SOGLIA_ECCEDENZA_CHF) {
+        throw new Error('Pagamento NON registrato: supera il totale del documento.\n\n' + cifre)
+      }
+      if (!opzioni.confermaEccedenza) {
+        var e = new Error(cifre)
+        e.codice = 'eccedenza'
+        e.eccedenza = eccedenza
+        throw e
+      }
+    }
+  }
+
+  var campi = {
+    data: data,
+    importo: imp,
+    metodo: valori.metodo || null,
+    riferimento: valori.riferimento || null
+  }
+  if (valori.note) campi.note = valori.note
+
+  if (idModifica) {
+    // Correzione di un pagamento esistente. Non si toccano ne' il documento
+    // ne' la rata collegata: cambiano solo i quattro valori del versamento.
+    // Il trigger trg_pagamenti_ricalcola rifa' da solo stato e data del
+    // documento, anche in UPDATE.
+    const { error: eUp } = await sb.from('tm_conta_pagamenti').update(campi)
+      .eq('id', idModifica).eq('azienda_id', currentAziendaId).select()
+    if (eUp) throw eUp
+    return null
+  }
+
+  campi.azienda_id = currentAziendaId
+  campi.tabella_origine = d.tabella
+  campi.id_origine = d.id
+  campi.created_by = currentUser ? currentUser.id : null
+  const { data: nuovo, error } = await sb.from('tm_conta_pagamenti').insert(campi).select()
+  if (error) throw error
+  return (nuovo && nuovo[0]) || null
+}
+
+// La finestra: legge i campi, passa tutto a scriviPagamento(), gestisce la
+// domanda sull'eccedenza, collega la rata, chiude.
 async function salvaPagamento() {
   if (!docPagamentoCorrente) return
   var d = docPagamentoCorrente
   var btn = el('pag-salva-btn')
   try {
-    var data = getVal('pag-data')
-    var imp = safeNum(getVal('pag-importo'))
-    if (!data) throw new Error('Serve la data del pagamento.')
-    if (!validaData(data)) throw new Error('La data del pagamento non è valida.')
-    // Zero o negativo si rifiuta: non e' un pagamento.
-    if (imp == null || imp <= 0) throw new Error('L\'importo deve essere maggiore di zero.')
-
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
 
-    var creato = null
-    if (pagamentoInModifica) {
-      // Correzione di un pagamento esistente. Non si toccano ne' il documento
-      // ne' la rata collegata: cambiano solo i quattro valori del versamento.
-      // Il trigger trg_pagamenti_ricalcola rifa' da solo stato e data del
-      // documento, anche in UPDATE: se l'importo cala, «Pagato» torna
-      // «Pagato in parte» senza che nessuno lo scriva a mano.
-      const { error: eUp } = await sb.from('tm_conta_pagamenti').update({
-        data: data,
-        importo: imp,
-        metodo: getVal('pag-metodo') || null,
-        riferimento: getVal('pag-riferimento') || null
-      }).eq('id', pagamentoInModifica).eq('azienda_id', currentAziendaId).select()
-      if (eUp) throw eUp
-    } else {
-      const { data: nuovo, error } = await sb.from('tm_conta_pagamenti').insert({
-        azienda_id: currentAziendaId,
-        tabella_origine: d.tabella,
-        id_origine: d.id,
-        data: data,
-        importo: imp,
-        metodo: getVal('pag-metodo') || null,
-        riferimento: getVal('pag-riferimento') || null,
-        created_by: currentUser ? currentUser.id : null
-      }).select()
-      if (error) throw error
-      creato = nuovo
+    var valori = {
+      data: getVal('pag-data'),
+      importo: getVal('pag-importo'),
+      metodo: getVal('pag-metodo') || null,
+      riferimento: getVal('pag-riferimento') || null
     }
 
-    // La rata scelta si collega al pagamento appena creato.
+    var creato
+    try {
+      creato = await scriviPagamento(d, valori, pagamentoInModifica, {})
+    } catch (e1) {
+      if (e1.codice !== 'eccedenza') throw e1
+      // Sotto soglia: si chiede, con i numeri davanti. Il si' vale per questo
+      // salvataggio e basta.
+      if (!window.confirm('Il pagamento supera il totale del documento.\n\n' + e1.message +
+          '\n\nRegistrarlo lo stesso? (arrotondamento, spese bancarie)')) {
+        throw new Error('Pagamento non registrato: annullato.')
+      }
+      creato = await scriviPagamento(d, valori, pagamentoInModifica, { confermaEccedenza: true })
+    }
+
+    // La rata scelta si collega al pagamento appena creato. Se il collegamento
+    // fallisce il pagamento c'e' comunque: lo si dice, non si ingoia.
     var idRata = pagamentoInModifica ? '' : getVal('pag-rata')
-    if (idRata && creato && creato[0]) {
+    var avvisoRata = null
+    if (idRata && creato) {
       const { error: eRata } = await sb.from('tm_conta_rate')
-        .update({ pagamento_id: creato[0].id })
+        .update({ pagamento_id: creato.id })
         .eq('id', idRata).eq('azienda_id', currentAziendaId).select()
-      if (eRata) console.warn('Rata non collegata:', eRata.message)
+      if (eRata) avvisoRata = 'Pagamento registrato, ma la rata NON è stata collegata: ' + (eRata.message || eRata)
     }
 
     invalidaCachePagamenti()
     chiudiRegistraPagamento()
     await ricaricaDopoPagamento(d)
+    if (avvisoRata) {
+      var idBanner = d.tabella === 'tm_conta_fatture' ? 'fatture-list-banner'
+                   : d.tabella === 'tm_conta_fatture_acquisto' ? 'acquisti-list-banner' : 'inserimento-banner'
+      showFattureBanner(idBanner, 'warn', avvisoRata)
+    }
   } catch (e) {
     var m = String(e.message || e)
     // Il trigger di immutabilita' non deve entrarci: se compare, e' un segnale.
@@ -14124,7 +14379,7 @@ async function salvaPagamento() {
           'Non va aggirato: segnalalo. Messaggio: ' + m
     }
     html('pag-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
-      '<div class="msg">' + esc(m) + '</div></div>')
+      '<div class="msg" style="white-space:pre-line">' + esc(m) + '</div></div>')
   } finally {
     if (btn) {
       btn.disabled = false
@@ -14153,7 +14408,14 @@ async function ricaricaDopoPagamento(d) {
     if (currentPage === 'scadenze') { await loadFlussi(true); renderScadenze() }
     if (currentPage === 'cruscotto') { await loadFlussi(true); renderCruscotto() }
     await refreshScadenzeCount()
-  } catch (e) { console.warn('Ricarica dopo pagamento:', e.message || e) }
+  } catch (e) {
+    // 52·B — il pagamento e' scritto; se l'elenco non si ridisegna lo si dice,
+    // altrimenti si guarda una riga vecchia credendola aggiornata.
+    var idBanner = d.tabella === 'tm_conta_fatture' ? 'fatture-list-banner'
+                 : d.tabella === 'tm_conta_fatture_acquisto' ? 'acquisti-list-banner' : 'inserimento-banner'
+    showFattureBanner(idBanner, 'warn',
+      'Pagamento registrato, ma l\'elenco non si è aggiornato: ' + (e.message || e) + ' — ricarica la pagina.')
+  }
 }
 
 // ── Elenco dei pagamenti nella scheda del documento ─────────────────────────
@@ -14250,6 +14512,7 @@ async function eliminaPagamento(idPagamento, importoTesto, dataTesto) {
     invalidaCachePagamenti()
     if (pg) await ricaricaDopoPagamento({ tabella: pg.tabella_origine, id: pg.id_origine })
   } catch (e) {
+    // 52·E — dalla riga come dalla scheda: l'errore si vede, non si ingoia.
     window.alert('Pagamento non eliminato: ' + (e.message || e))
   }
 }
@@ -15000,7 +15263,7 @@ function classificazioniDi(origineTipo, origineId) {
 // senza questa lettura le schede mostrerebbero «non classificato» per tutto.
 async function assicuraClassificazioni(force) {
   if (classByKey && Object.keys(classByKey).length && !force) return classByKey
-  if (!currentAziendaId) return classByKey
+  await richiediAccesso('assicuraClassificazioni')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb.from('tm_conta_classificazioni')
       .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at')
@@ -15157,7 +15420,7 @@ async function loadAllegati(force) {
   if (cacheOk('allegati') && !force) return allegatiCache || []
   // Senza sessione non si legge niente, ma non e' una lettura riuscita:
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
-  if (!currentAziendaId) { allegatiCache = []; return allegatiCache }
+  await richiediAccesso('loadAllegati')   // 52·B1: mai un elenco vuoto per silenzio
 
   var COLONNE_BASE = 'id, tabella_origine, id_origine, tipo, path, nome_file, dimensione, created_at'
   // FASE 22 — le quattro colonne della polizza QR: senza, la stampa non
@@ -16145,7 +16408,7 @@ var chiaviCaricate = false
 async function caricaChiaviDoppioni(force) {
   if (chiaviCaricate && !force) return chiaviDoppioni
   chiaviDoppioni = {}
-  if (!currentAziendaId) return chiaviDoppioni
+  await richiediAccesso('caricaChiaviDoppioni')   // 52·B1: mai un elenco vuoto per silenzio
   const { data, error } = await sb.from('tm_conta_fatture_acquisto')
     .select('id, fornitore, numero_fornitore, data, importo, valuta')
     .eq('azienda_id', currentAziendaId)
@@ -16246,7 +16509,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '51'
+var VERSIONE = '52'
 
 function controllaVersionePagina() {
   try {
