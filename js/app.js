@@ -2380,6 +2380,17 @@ function prettyAuditValue(field, val) {
   if (comp) return fmtNumIt(parseFloat(comp[1])) + ' CHF del ' + fmtDate(comp[2])
   return String(val)
 }
+// L'ora di adesso, «14:32». Serve alle conferme di salvataggio: «Bozza
+// salvata» da solo non dice se e' quella di un minuto fa o di ieri.
+function oraAdesso() {
+  try {
+    return new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+  } catch (_) {
+    var d = new Date()
+    return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2)
+  }
+}
+
 function fmtDateTime(ts) {
   if (!ts) return '—'
   try {
@@ -3488,6 +3499,17 @@ function fattureRowActions(f) {
     a += '<button class="icon-btn classify" onclick="event.stopPropagation(); editFattura(\'' + f.id + '\')">✏️</button>' +
          '<button class="icon-btn danger" onclick="event.stopPropagation(); deleteBozza(\'' + f.id + '\')">🗑️</button>'
   }
+  // v51 — l'incasso si registra dalla riga, senza aprire la fattura. Stessa
+  // finestra della scheda (apriRegistraPagamento): una strada sola, l'importo
+  // si sceglie li' perche' puo' essere un acconto. Compare solo su una fattura
+  // emessa e non ancora incassata per intero; le note di credito non si
+  // incassano, e le bozze non sono ancora niente.
+  if (f.stato === 'emessa' && f.tipo !== 'nota_credito' && f.stato_pagamento !== 'pagato') {
+    a += '<button class="icon-btn incasso" title="Registra un incasso su questa fattura" ' +
+         'onclick="event.stopPropagation(); apriRegistraPagamento(\'tm_conta_fatture\', \'' + f.id + '\', ' +
+         (safeNum(f.totale) || 0) + ', \'entrata\', \'' +
+         esc(String(f.cliente_nome || '').replace(/\x27/g, '')) + '\')">💳 Incassa</button>'
+  }
   return a
 }
 
@@ -3581,9 +3603,9 @@ function ivaAliquotaById(id) {
 // mancavano: l'unita' accanto alla quantita', e le righe-titolo che
 // raggruppano le voci senza avere un importo proprio.
 //
-// La numerazione di posizione (a., a.1., b., b.1.) NON si salva: si calcola
-// alla stampa. Salvarla vorrebbe dire ritrovarsi numeri sbagliati la prima
-// volta che si toglie una riga in mezzo.
+// La numerazione di posizione (1, 2, 3, 3.1, 3.2, 4) NON si salva: si calcola
+// dalla posizione, ogni volta. Salvarla vorrebbe dire ritrovarsi numeri
+// sbagliati la prima volta che si toglie una riga in mezzo.
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Le unita' che si usano davvero in carpenteria. Sono SUGGERIMENTI: il campo
@@ -3603,40 +3625,38 @@ function isRigaTitolo(r) {
   return !!r && r.tipo_riga === 'titolo'
 }
 
-// a, b, c … z, poi aa, ab. Oltre le ventisei lettere non ci si arriva su una
-// fattura, ma un titolo senza numero sarebbe peggio di un numero strano.
-function letteraPosizione(i) {
-  var s = ''
-  i = i + 1
-  while (i > 0) {
-    var resto = (i - 1) % 26
-    s = String.fromCharCode(97 + resto) + s
-    i = Math.floor((i - 1) / 26)
-  }
-  return s
-}
-
-// La numerazione, calcolata in un colpo solo su tutte le righe:
-//   titolo                  -> 'a.'   'b.'   'c.'
-//   voce sotto un titolo    -> 'a.1.' 'a.2.' 'b.1.'
-//   voce prima di ogni titolo (o fattura senza titoli, com'e' oggi) -> '1.' '2.'
+// La numerazione, calcolata in un colpo solo su tutte le righe. Solo cifre e
+// punti, mai lettere: «a.» e «a.1.» non li leggeva nessuno.
+//
+//   riga normale fuori da ogni titolo  -> l'intero successivo:   1, 2
+//   titolo                             -> l'intero successivo:   3
+//   righe sotto quel titolo            -> il decimale del titolo: 3.1, 3.2
+//   il titolo successivo               -> l'intero successivo:   4
+//
+// Una riga normale che viene DOPO un titolo sta sotto quel titolo, finche' non
+// ne arriva un altro: il modello dati (tipo_riga = voce | titolo) non ha un
+// modo di dire «qui il gruppo finisce». Per chiudere un gruppo si apre il
+// successivo.
+//
+// E' l'UNICA funzione che numera: la usano l'editor, l'anteprima e il PDF.
 // Torna un array parallelo a `righe`.
 function posizioniRighe(righe) {
   var out = []
-  var titoliVisti = -1     // -1 = nessun titolo ancora incontrato
-  var sotto = 0            // voci sotto il titolo corrente
-  var semplice = 0         // voci prima di qualsiasi titolo
+  var intero = 0           // l'ultimo numero intero assegnato
+  var sotto = 0            // righe sotto il titolo corrente
+  var dentroTitolo = false // true dopo un titolo, finche' non ne arriva un altro
   for (var i = 0; i < (righe || []).length; i++) {
     if (isRigaTitolo(righe[i])) {
-      titoliVisti++
+      intero++
       sotto = 0
-      out.push(letteraPosizione(titoliVisti) + '.')
-    } else if (titoliVisti >= 0) {
+      dentroTitolo = true
+      out.push(String(intero))
+    } else if (dentroTitolo) {
       sotto++
-      out.push(letteraPosizione(titoliVisti) + '.' + sotto + '.')
+      out.push(intero + '.' + sotto)
     } else {
-      semplice++
-      out.push(semplice + '.')
+      intero++
+      out.push(String(intero))
     }
   }
   return out
@@ -3924,6 +3944,8 @@ function renderRigheEditor() {
   var tb = el('fatture-righe')
   if (!tb) return
   var ivaOn = isSoggettoIva()
+  // Lo stesso numero che si vedra' in anteprima e sul PDF: stessa funzione.
+  var posizioni = posizioniRighe(fatturaRighe)
   var rows = ''
   for (var i = 0; i < fatturaRighe.length; i++) {
     var r = fatturaRighe[i]
@@ -3937,6 +3959,7 @@ function renderRigheEditor() {
                      '<td></td>' + (ivaOn ? '<td></td>' : '')
     rows +=
       '<tr' + (titolo ? ' class="riga-titolo"' : '') + '>' +
+        '<td class="cell-pos">' + esc(posizioni[i]) + '</td>' +
         // FASE 20 — descrizione su piu' righe: e' la parte che legge il
         // cliente, e su una riga sola il testo lungo spariva a destra. Il
         // «\n» dopo il tag e' voluto: l'HTML scarta il primo a capo dentro un
@@ -3966,7 +3989,14 @@ function renderRigheEditor() {
           '<td class="num" id="imp-cell-' + i + '">' + importoRigaTesto(calc.imponibile) + '</td>' +
           (ivaOn ? '<td class="num" id="iva-cell-' + i + '">' + importoRigaTesto(calc.iva) + '</td>' : '')
         ) +
-        '<td><button class="icon-btn danger" title="Rimuovi riga" onclick="removeRiga(' + i + ')">✕</button></td>' +
+        // Il tipo e' una proprieta' della riga, non un altro tipo di riga: si
+        // cambia qui, restando dove si e', senza cancellare e riscrivere.
+        '<td class="cell-azioni">' +
+          '<button type="button" class="icon-btn cambia-tipo" onclick="cambiaTipoRiga(' + i + ')" title="' +
+            (titolo ? 'Torna a riga normale, con quantita e prezzo' : 'Trasforma in titolo di gruppo') + '">' +
+            (titolo ? '📝 Riga normale' : '📌 Titolo') + '</button>' +
+          '<button type="button" class="icon-btn danger" title="Rimuovi riga" onclick="removeRiga(' + i + ')">✕</button>' +
+        '</td>' +
       '</tr>'
   }
   tb.innerHTML = rows
@@ -4017,6 +4047,27 @@ function addTitolo() {
 
 function addRiga() {
   fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce', sconto_pct: '' })
+  renderRigheEditor()
+}
+
+// Titolo <-> riga normale, sulla riga dov'e'. Cambia SOLO tipo_riga: quantita,
+// prezzo, unita' e sconto restano sull'oggetto anche quando la riga e' un
+// titolo — importiRiga() li ignora, quindi non pesano sui totali — e tornano
+// visibili se la riga torna normale. Niente si perde in silenzio finche' non
+// si salva: al salvataggio un titolo va nel database con quantita e prezzo a
+// zero (replaceRighe), e da li' non tornano.
+// I numeri di posizione si rifanno col ridisegno; i totali pure.
+function cambiaTipoRiga(i) {
+  var r = fatturaRighe[i]
+  if (!r) return
+  if (isRigaTitolo(r)) {
+    r.tipo_riga = 'voce'
+    // Una riga nata titolo non ha mai avuto una quantita': parte da 1, come
+    // una riga nuova. Se ce l'aveva, la ritrova.
+    if (r.quantita === '' || r.quantita == null || safeNum(r.quantita) === 0) r.quantita = 1
+  } else {
+    r.tipo_riga = 'titolo'
+  }
   renderRigheEditor()
 }
 function removeRiga(i) {
@@ -4226,12 +4277,12 @@ async function proponiTermineAbituale() {
     scadeCache('contatti')
     await loadContatti(true)
     showFattureBanner('fatture-edit-banner', 'ok',
-      'Bozza salvata, e in rubrica ' + contattoNome(c) + ' ora ha ' +
+      'Bozza salvata alle ' + oraAdesso() + ', e in rubrica ' + contattoNome(c) + ' ora ha ' +
       testoTerminePagamento(g).toLowerCase() + '.')
   } catch (e) {
     console.warn('Termine abituale non aggiornato:', e.message || e)
     showFattureBanner('fatture-edit-banner', 'warn',
-      'Bozza salvata. La rubrica però non si è aggiornata: ' + (e.message || e))
+      'Bozza salvata alle ' + oraAdesso() + '. La rubrica però non si è aggiornata: ' + (e.message || e))
   }
 }
 
@@ -4348,9 +4399,9 @@ async function saveBozza() {
     var ncChk = ncStornoCheck()
     if (ncChk.applicable && ncChk.exceeds) {
       showFattureBanner('fatture-edit-banner', 'warn',
-        'Bozza salvata, ma lo storno (' + fmtNum2(ncChk.tot) + ') supera la fattura originale (' + fmtNum2(ncChk.max) + '): riducilo prima di emettere.')
+        'Bozza salvata alle ' + oraAdesso() + ', ma lo storno (' + fmtNum2(ncChk.tot) + ') supera la fattura originale (' + fmtNum2(ncChk.max) + '): riducilo prima di emettere.')
     } else {
-      showFattureBanner('fatture-edit-banner', 'ok', 'Bozza salvata.')
+      showFattureBanner('fatture-edit-banner', 'ok', 'Bozza salvata alle ' + oraAdesso() + '.')
     }
     // FASE 27 — il termine di QUESTA fattura non tocca la rubrica. Se pero'
     // e' diverso da quello del cliente, val la pena chiederlo: e' una domanda,
@@ -4358,7 +4409,10 @@ async function saveBozza() {
     proponiTermineAbituale()
     await loadFattureList()
   } catch (e) {
-    showFattureBanner('fatture-edit-banner', 'err', e.message)
+    // Un errore qui va detto forte: una bozza che si crede salvata e non lo e'
+    // e' un documento contabile perso.
+    showFattureBanner('fatture-edit-banner', 'err',
+      'Bozza NON salvata: ' + (e.message || e) + ' — riprova, o controlla la connessione.')
   } finally {
     if (btn) btn.disabled = false
   }
@@ -4420,8 +4474,18 @@ async function doEmitCorrente() {
     var emessa = Array.isArray(data) ? data[0] : data
     await loadFattureList()
     try { await refreshDaClassificareCount() } catch (_) {}
-    if (emessa && emessa.id) viewFattura(emessa.id)
-    else fattureBackToList()
+    if (emessa && emessa.id) {
+      await viewFattura(emessa.id)
+      // Prima passava alla scheda senza dire niente: il numero era stato
+      // assegnato e nessuno lo diceva. E' l'unico salvataggio che non si puo'
+      // rifare, quindi e' quello che va confermato piu' di tutti.
+      showFattureBanner('fatture-detail-banner', 'ok',
+        (emessa.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura') +
+        (emessa.numero ? ' n. ' + emessa.numero : '') +
+        ' emessa alle ' + oraAdesso() + '. Il numero è assegnato e non cambia più.')
+    } else {
+      fattureBackToList()
+    }
   } catch (e) {
     showFattureBanner('fatture-edit-banner', 'err', 'Emissione: ' + friendlyFatturaError(e))
   } finally {
@@ -5423,7 +5487,8 @@ function acquistiRowActions(a) {
       // FASE 8 — l'icona apre la modale del pagamento invece di segnare
       // pagato in un colpo: l'importo va scelto, puo' essere un acconto.
       ? ''
-      : '<button class="icon-btn" title="Registra un pagamento" onclick="event.stopPropagation(); apriRegistraPagamento(\'tm_conta_fatture_acquisto\', \'' + a.id + '\', ' + (safeNum(a.importo) || 0) + ', \'uscita\', \'\')">💳</button>') +
+      // v51 — l'icona da sola non diceva niente: ora ha la parola, come tutto.
+      : '<button class="icon-btn incasso" title="Registra un pagamento su questa fattura" onclick="event.stopPropagation(); apriRegistraPagamento(\'tm_conta_fatture_acquisto\', \'' + a.id + '\', ' + (safeNum(a.importo) || 0) + ', \'uscita\', \'' + esc(String(a.fornitore || '').replace(/\x27/g, '')) + '\')">💳 Paga</button>') +
     '<button class="icon-btn danger" title="Elimina" onclick="event.stopPropagation(); deleteAcquisto(\'' + a.id + '\')">🗑️</button>'
 }
 
@@ -14073,10 +14138,17 @@ async function ricaricaDopoPagamento(d) {
   try {
     await loadPagamenti(true)
     await loadRate(true)
+    // v51 — la scheda si ridisegna SOLO se era aperta. Chi registra dalla
+    // riga dell'elenco deve restare nell'elenco, dove la riga si aggiorna da
+    // sola: saltare alla scheda ogni volta e' esattamente quello che si
+    // voleva evitare.
+    function aperta(id) { var v = el(id); return !!v && v.style.display !== 'none' }
     if (d.tabella === 'tm_conta_fatture') {
-      await loadFattureList(); await viewFattura(d.id)
+      await loadFattureList()
+      if (aperta('fatture-detail-view')) await viewFattura(d.id)
     } else if (d.tabella === 'tm_conta_fatture_acquisto') {
-      await loadAcquistiList(); await viewAcquisto(d.id)
+      await loadAcquistiList()
+      if (aperta('acquisti-detail-view')) await viewAcquisto(d.id)
     }
     if (currentPage === 'scadenze') { await loadFlussi(true); renderScadenze() }
     if (currentPage === 'cruscotto') { await loadFlussi(true); renderCruscotto() }
@@ -16174,7 +16246,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '49'
+var VERSIONE = '51'
 
 function controllaVersionePagina() {
   try {
