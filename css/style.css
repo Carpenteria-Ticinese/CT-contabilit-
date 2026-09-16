@@ -2915,3 +2915,18 @@ tr.riga-fuori-cantiere td {
 
 /* == v51 — «Incassa» / «Paga» sulla riga dell'elenco ====================== */
 .icon-btn.incasso { border-color: var(--ok); color: var(--ok); font-weight: 600; }
+
+/* 52·A — i messaggi con piu' righe (le cifre del pagamento) vanno a capo */
+.fase-banner .msg { white-space: pre-line; }
+
+/* 52·D — «Incassa» disattivato: grigio, ma con il motivo scritto dentro */
+.icon-btn.incasso:disabled {
+  border-color: var(--border);
+  color: var(--text3);
+  background: var(--bg2);
+  cursor: not-allowed;
+  font-weight: 500;
+  opacity: 1;               /* niente trasparenza: il testo deve restare leggibile */
+}
+/* 52·E — «Annulla ultimo» */
+.icon-btn.annulla-pag { border-color: var(--warn); color: var(--warn); }
