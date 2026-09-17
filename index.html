@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=55" />
+  <link rel="stylesheet" href="css/style.css?v=56" />
 </head>
-<body data-versione="55">
+<body data-versione="56">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -1991,7 +1991,7 @@
           <div class="form-row">
             <div class="form-group" style="flex:2">
               <label for="a-importo" class="form-label">Importo <span class="req" aria-hidden="true">*</span></label>
-              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" onfocus="this.select()" oninput="onAcquistoImportoChange()" />
+              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" onfocus="this.select()" oninput="onAcquistoImportoChange(); avvisoSommaRighe()" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-valuta" class="form-label">Valuta</label>
@@ -2121,6 +2121,38 @@
             💳 Pagamenti parziali o in pi&ugrave; volte: salva la fattura e usa
             <strong>+ Registra pagamento</strong> nella scheda, dove scegli data,
             metodo e riferimento di ogni versamento.
+          </div>
+          <!-- 56·4a — le righe DESCRITTIVE del documento. Descrivono cosa c'è
+               sulla fattura del fornitore; NON contabilizzano (quello lo fa la
+               classificazione) e NON ricalcolano l'importo di testata. -->
+          <div class="form-group" id="a-righe-box">
+            <label class="form-label">Righe del documento <span class="dim">(facoltative — descrivono, non contabilizzano)</span></label>
+            <div class="form-hint" style="margin-bottom:8px">
+              Cosa c'è sulla fattura, articolo per articolo: listino, sconto e netto del fornitore.
+              Il totale resta quello scritto sopra in <strong>Importo</strong>: se le righe non
+              tornano lo vedi qui sotto, ma niente si corregge da solo. Dove va il costo lo dice
+              la classificazione, non queste righe.
+            </div>
+            <div class="table-wrap">
+              <table id="acquisto-righe-tabella">
+                <thead><tr>
+                  <th style="width:90px">Codice</th>
+                  <th>Descrizione</th>
+                  <th style="width:85px;text-align:right">Quantità</th>
+                  <th style="width:70px">U.M.</th>
+                  <th style="width:100px;text-align:right" title="Prezzo unitario di listino del fornitore">Listino</th>
+                  <th style="width:75px;text-align:right" title="Sconto del fornitore, in percentuale">Sconto %</th>
+                  <th style="width:100px;text-align:right" title="Listino meno sconto; si può scrivere a mano">Netto unit.</th>
+                  <th style="width:110px;text-align:right">Importo</th>
+                  <th style="width:90px"></th>
+                </tr></thead>
+                <tbody id="acquisto-righe"></tbody>
+              </table>
+            </div>
+            <div class="form-actions" style="margin-top:8px;justify-content:flex-start">
+              <button type="button" class="btn-secondary" onclick="addRigaAcquisto()">➕ Aggiungi riga</button>
+            </div>
+            <div id="acquisto-righe-avviso" role="status" aria-live="polite"></div>
           </div>
           <div class="form-group">
             <label for="a-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
@@ -2907,7 +2939,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=55"></script>
+<script src="js/app.js?v=56"></script>
 
 </body>
 </html>
