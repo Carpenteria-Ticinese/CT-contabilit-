@@ -5384,13 +5384,17 @@ async function viewAcquisto(id) {
     const { data, error } = await sb.from('tm_conta_fatture_acquisto').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
     await ensureContiIva()
-    renderAcquistoDetail(data)
+    // 56·4a — le righe descrittive: lettura separata. Se fallisce la scheda
+    // si apre lo stesso e lo dice, invece di sparire per una tabella in piu'.
+    var righe = [], erroreRighe = null
+    try { righe = await leggiRigheAcquisto(id) } catch (eR) { erroreRighe = eR.message || String(eR) }
+    renderAcquistoDetail(data, righe, erroreRighe)
   } catch (e) {
     html('acquisti-detail-body', '<p style="color:var(--err)">Errore: ' + esc(e.message || e) + '</p>')
   }
 }
 
-function renderAcquistoDetail(a) {
+function renderAcquistoDetail(a, righe, erroreRighe) {
   function riga(lbl, val, mono) {
     if (val === null || val === undefined || val === '') return ''
     return '<div class="ro-lbl">' + esc(lbl) + '</div><div class="ro-val' + (mono ? ' mono' : '') + '">' + val + '</div>'
@@ -5435,6 +5439,14 @@ function renderAcquistoDetail(a) {
         'I metodi in uso stanno nel riquadro Pagamenti.' +
       '</div>' +
     '</div>'
+  }
+
+  // 56·4a — le righe del documento, se ce ne sono. Descrivono: la somma in
+  // fondo e' informativa, il totale vero resta quello di «Importi».
+  if (erroreRighe) {
+    body += '<div class="righe-avviso warn" style="margin-top:16px">❌ Righe del documento non lette: ' + esc(erroreRighe) + '</div>'
+  } else {
+    body += righeAcquistoHtml(righe, a.importo, a.valuta)
   }
 
   // Gli allegati NON stanno piu' qui: hanno il loro riquadro sotto, che li
@@ -5824,6 +5836,276 @@ async function aggiornaGiaPagata(idAcquisto, importoDoc) {
   }
 }
 
+// ── 56·4a — le righe DESCRITTIVE della fattura d'acquisto ───────────────────
+// Le righe DESCRIVONO: cosa c'e' sul documento del fornitore, articolo per
+// articolo. Le classificazioni CONTABILIZZANO: dove va il costo. Le due cose
+// non si sommano mai fra loro, e nessuna funzione deduce le une dalle altre.
+// L'importo del documento e' quello del campo «Importo» in testata: le righe
+// non lo ricalcolano e non lo sovrascrivono. Se la somma delle righe non torna
+// col totale, si vede (avvisoSommaRighe) e basta: niente si corregge da solo.
+//
+// Editor suo, separato da quello delle vendite: colonne diverse (codice,
+// listino, sconto, netto), niente IVA per riga, niente titoli, niente totali
+// da riscrivere. Generalizzare renderRigheEditor avrebbe voluto dire toccare
+// una funzione che stampa documenti fiscali per un caso che non le somiglia.
+var acquistoRighe = []
+
+function rigaAcquistoVuota() {
+  return { codice_articolo: '', descrizione: '', quantita: '', unita: '',
+           prezzo_listino: '', sconto_pct: '', netto_unitario: '' }
+}
+
+// I due numeri derivati di una riga: il netto unitario e l'importo.
+// netto = listino x (1 - sconto/100), a meno che non sia stato scritto a
+// mano (netto_unitario pieno): allora vale quello. importo = netto x quantita'.
+// Una riga senza quantita' o senza netto e' di sola descrizione: importo null,
+// fuori dalla somma.
+function calcolaRigaAcquisto(r) {
+  var qta = safeNum(r.quantita)
+  var listino = safeNum(r.prezzo_listino)
+  var sconto = safeNum(r.sconto_pct)
+  var netto = safeNum(r.netto_unitario)
+  if (netto == null && listino != null) {
+    netto = round2(listino * (1 - (sconto || 0) / 100))
+  }
+  var importo = (qta != null && netto != null) ? round2(qta * netto) : null
+  return { netto: netto, importo: importo }
+}
+
+function importoRigaAcquistoTesto(v) {
+  return v == null ? '—' : fmtNum2(v)
+}
+
+function renderRigheAcquisto() {
+  var tb = el('acquisto-righe')
+  if (!tb) return
+  var rows = ''
+  for (var i = 0; i < acquistoRighe.length; i++) {
+    var r = acquistoRighe[i]
+    var calc = calcolaRigaAcquisto(r)
+    rows +=
+      '<tr>' +
+        '<td><input class="cell-input cell-codice" maxlength="40" placeholder="—"' +
+          ' value="' + esc(r.codice_articolo || '') + '"' +
+          ' oninput="onRigaAcquistoInput(' + i + ',\'codice_articolo\',this.value)"></td>' +
+        // Stesso textarea delle vendite: il «\n» dopo il tag e' voluto, l'HTML
+        // scarta il primo a capo dentro un textarea.
+        '<td><textarea class="cell-input cell-desc" rows="1" placeholder="Descrizione"' +
+          ' oninput="onRigaAcquistoInput(' + i + ',\'descrizione\',this.value); autoGrowRiga(this)">' +
+          '\n' + esc(r.descrizione || '') + '</textarea></td>' +
+        '<td><input class="cell-input num" type="number" step="0.001" placeholder="—"' +
+          ' value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '"' +
+          ' onfocus="this.select()" oninput="onRigaAcquistoInput(' + i + ',\'quantita\',this.value)"></td>' +
+        '<td><input class="cell-input cell-unita" list="unita-suggerite" maxlength="16" placeholder="—"' +
+          ' value="' + esc(r.unita || '') + '"' +
+          ' oninput="onRigaAcquistoInput(' + i + ',\'unita\',this.value)"></td>' +
+        '<td><input class="cell-input num" type="number" step="0.01" placeholder="—"' +
+          ' value="' + esc(r.prezzo_listino == null ? '' : String(r.prezzo_listino)) + '"' +
+          ' onfocus="this.select()" oninput="onRigaAcquistoInput(' + i + ',\'prezzo_listino\',this.value)"></td>' +
+        '<td><input class="cell-input num cell-sconto" id="acq-sconto-' + i + '" type="number" min="0" max="100" step="0.5" placeholder="—"' +
+          ' value="' + esc(r.sconto_pct == null ? '' : String(r.sconto_pct)) + '"' +
+          ' onfocus="this.select()" oninput="onRigaAcquistoInput(' + i + ',\'sconto_pct\',this.value)"></td>' +
+        '<td><input class="cell-input num" id="acq-netto-' + i + '" type="number" step="0.01" placeholder="—"' +
+          ' value="' + esc(calc.netto == null ? '' : String(calc.netto)) + '"' +
+          ' onfocus="this.select()" oninput="onRigaAcquistoInput(' + i + ',\'netto_unitario\',this.value)"></td>' +
+        '<td class="num" id="acq-imp-' + i + '">' + importoRigaAcquistoTesto(calc.importo) + '</td>' +
+        '<td class="cell-azioni"><button type="button" class="icon-btn danger" title="Rimuovi questa riga"' +
+          ' onclick="removeRigaAcquisto(' + i + ')">✕ Togli</button></td>' +
+      '</tr>'
+  }
+  tb.innerHTML = rows
+  var aree = tb.querySelectorAll('textarea.cell-desc')
+  for (var j = 0; j < aree.length; j++) autoGrowRiga(aree[j])
+  avvisoSommaRighe()
+}
+
+function onRigaAcquistoInput(i, field, value) {
+  var r = acquistoRighe[i]
+  if (!r) return
+  r[field] = value
+  if (field === 'prezzo_listino' || field === 'sconto_pct') {
+    // Listino o sconto cambiati: il netto torna a essere calcolato da loro.
+    r.netto_unitario = ''
+    var calcN = calcolaRigaAcquisto(r)
+    var nettoIn = el('acq-netto-' + i)
+    if (nettoIn) nettoIn.value = calcN.netto == null ? '' : String(calcN.netto)
+  } else if (field === 'netto_unitario') {
+    // Netto scritto a mano: lo sconto diventa quello EFFETTIVO rispetto al
+    // listino, cosi' i tre numeri restano coerenti fra loro. Se il netto
+    // supera il listino non c'e' sconto: il campo si svuota.
+    var listino = safeNum(r.prezzo_listino), netto = safeNum(r.netto_unitario)
+    if (listino != null && listino > 0 && netto != null) {
+      var pct = round2((1 - netto / listino) * 100)
+      r.sconto_pct = (pct > 0 && pct <= 100) ? pct : ''
+      var scIn = el('acq-sconto-' + i)
+      if (scIn) scIn.value = r.sconto_pct === '' ? '' : String(r.sconto_pct)
+    }
+  }
+  var calc = calcolaRigaAcquisto(r)
+  var cell = el('acq-imp-' + i)
+  if (cell) cell.textContent = importoRigaAcquistoTesto(calc.importo)
+  avvisoSommaRighe()
+}
+
+function addRigaAcquisto() {
+  acquistoRighe.push(rigaAcquistoVuota())
+  renderRigheAcquisto()
+  // Il cursore va sulla descrizione della riga appena aggiunta.
+  var tb = el('acquisto-righe')
+  var aree = tb ? tb.querySelectorAll('textarea.cell-desc') : []
+  if (aree.length) aree[aree.length - 1].focus()
+}
+
+function removeRigaAcquisto(i) {
+  acquistoRighe.splice(i, 1)
+  renderRigheAcquisto()
+}
+
+// La somma delle righe quantificate e la differenza col totale di testata.
+// null se non c'e' niente da confrontare (nessuna riga con importo).
+function differenzaRigheAcquisto() {
+  var somma = 0, quante = 0
+  for (var i = 0; i < acquistoRighe.length; i++) {
+    var c = calcolaRigaAcquisto(acquistoRighe[i])
+    if (c.importo != null) { somma = round2(somma + c.importo); quante++ }
+  }
+  if (!quante) return null
+  var totale = safeNum(getVal('a-importo'))
+  return { somma: somma, totale: totale, diff: totale == null ? null : round2(somma - totale), quante: quante }
+}
+
+// L'avviso sotto le righe. Non blocca e non corregge: dice le due cifre.
+// La differenza puo' essere legittima (trasporto o IVA nel totale e non nelle
+// righe, righe incomplete): decide chi guarda.
+function avvisoSommaRighe() {
+  var box = el('acquisto-righe-avviso')
+  if (!box) return
+  var d = differenzaRigheAcquisto()
+  if (!d) { box.innerHTML = ''; return }
+  var valuta = esc(getVal('a-valuta') || 'CHF')
+  var somma = '<strong>' + esc(fmtNumIt(d.somma)) + ' ' + valuta + '</strong>'
+  if (d.totale == null) {
+    box.innerHTML = '<div class="righe-avviso info">ℹ️ Le righe sommano ' + somma +
+      '. Il totale del documento va scritto sopra, in «Importo»: da qui non si ricava.</div>'
+  } else if (Math.abs(d.diff) < 0.005) {
+    box.innerHTML = '<div class="righe-avviso ok">✅ Le righe sommano ' + somma +
+      ', come il totale del documento.</div>'
+  } else {
+    box.innerHTML = '<div class="righe-avviso warn">⚠️ Le righe sommano ' + somma +
+      ', il totale del documento è <strong>' + esc(fmtNumIt(d.totale)) + ' ' + valuta + '</strong>' +
+      ' (differenza ' + esc(fmtNumIt(d.diff)) + '). ' +
+      'Vale il totale scritto in «Importo»: se le righe sono incomplete o il totale comprende IVA o trasporto va bene così, altrimenti controlla.</div>'
+  }
+}
+
+// Lo stesso avviso, come testo, per il banner dopo il salvataggio.
+function testoDifferenzaRighe() {
+  var d = differenzaRigheAcquisto()
+  if (!d || d.totale == null || Math.abs(d.diff) < 0.005) return null
+  var valuta = getVal('a-valuta') || 'CHF'
+  return 'le righe sommano ' + fmtNumIt(d.somma) + ' ' + valuta +
+    ', il totale del documento è ' + fmtNumIt(d.totale) + ' ' + valuta +
+    ' (differenza ' + fmtNumIt(d.diff) + '). Salvato il totale del documento.'
+}
+
+// Le righe dal database, nell'ordine in cui stanno. Lancia se la lettura
+// fallisce: chi chiama decide se fermarsi (modifica) o dirlo (scheda).
+async function leggiRigheAcquisto(acquistoId) {
+  const { data, error } = await sb.from('tm_conta_fatture_acquisto_righe')
+    .select('*').eq('acquisto_id', acquistoId).order('ordine', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+// Dal database all'editor: i null diventano campi vuoti.
+function righeAcquistoPerEditor(righe) {
+  return (righe || []).map(function (r) {
+    return {
+      codice_articolo: r.codice_articolo || '',
+      descrizione:     r.descrizione || '',
+      quantita:        r.quantita == null ? '' : r.quantita,
+      unita:           r.unita || '',
+      prezzo_listino:  r.prezzo_listino == null ? '' : r.prezzo_listino,
+      sconto_pct:      r.sconto_pct == null ? '' : r.sconto_pct,
+      netto_unitario:  r.netto_unitario == null ? '' : r.netto_unitario
+    }
+  })
+}
+
+// Scrive le righe del documento: cancella e riscrive, come replaceRighe
+// sulle vendite. Le righe senza descrizione non sono niente e si scartano.
+// NON tocca tm_conta_fatture_acquisto: l'importo di testata e' gia' salvato,
+// e resta quello.
+async function replaceRigheAcquisto(acquistoId) {
+  const del = await sb.from('tm_conta_fatture_acquisto_righe').delete().eq('acquisto_id', acquistoId).select()
+  if (del.error) throw del.error
+  var payload = []
+  for (var i = 0; i < acquistoRighe.length; i++) {
+    var r = acquistoRighe[i]
+    var desc = (r.descrizione || '').trim()
+    if (!desc) continue
+    var calc = calcolaRigaAcquisto(r)
+    var sconto = safeNum(r.sconto_pct)
+    if (sconto != null && (sconto < 0 || sconto > 100)) sconto = null   // il CHECK lo rifiuterebbe
+    payload.push({
+      acquisto_id:     acquistoId,
+      ordine:          payload.length,
+      codice_articolo: (r.codice_articolo || '').trim() || null,
+      descrizione:     desc,
+      quantita:        safeNum(r.quantita),
+      unita:           (r.unita || '').trim() || null,
+      prezzo_listino:  safeNum(r.prezzo_listino),
+      sconto_pct:      sconto,
+      netto_unitario:  calc.netto,
+      importo_riga:    calc.importo
+    })
+  }
+  if (!payload.length) return 0
+  const ins = await sb.from('tm_conta_fatture_acquisto_righe').insert(payload).select()
+  if (ins.error) throw ins.error
+  return payload.length
+}
+
+// Le righe in sola lettura, per la scheda del documento. Vuoto se non ce ne
+// sono: una fattura senza righe e' normale, non manca niente.
+function righeAcquistoHtml(righe, importoDoc, valuta) {
+  if (!righe || !righe.length) return ''
+  valuta = valuta || 'CHF'
+  var somma = 0, quante = 0, rows = ''
+  for (var i = 0; i < righe.length; i++) {
+    var r = righe[i]
+    var imp = safeNum(r.importo_riga)
+    if (imp != null) { somma = round2(somma + imp); quante++ }
+    rows += '<tr>' +
+      '<td class="mono">' + esc(r.codice_articolo || '') + '</td>' +
+      '<td style="white-space:pre-line">' + esc(r.descrizione || '') + '</td>' +
+      '<td class="num">' + (r.quantita == null ? '' : esc(fmtNumIt(r.quantita))) + '</td>' +
+      '<td>' + esc(etichettaUnita(r.unita)) + '</td>' +
+      '<td class="num">' + (r.prezzo_listino == null ? '' : esc(fmtNumIt(r.prezzo_listino))) + '</td>' +
+      '<td class="num">' + (r.sconto_pct == null ? '' : esc(fmtNumIt(r.sconto_pct)) + ' %') + '</td>' +
+      '<td class="num">' + (r.netto_unitario == null ? '' : esc(fmtNumIt(r.netto_unitario))) + '</td>' +
+      '<td class="num">' + (imp == null ? '' : esc(fmtNumIt(imp))) + '</td>' +
+      '</tr>'
+  }
+  var piede = quante
+    ? '<tr class="righe-acq-somma"><td colspan="7" class="num">Somma delle righe</td>' +
+      '<td class="num">' + esc(fmtNumIt(somma)) + '</td></tr>'
+    : ''
+  var nota = ''
+  var doc = safeNum(importoDoc)
+  if (quante && doc != null && Math.abs(round2(somma - doc)) >= 0.005) {
+    nota = '<div class="righe-avviso warn">⚠️ Le righe sommano <strong>' + esc(fmtNumIt(somma)) + ' ' + esc(valuta) +
+      '</strong>, il totale del documento è <strong>' + esc(fmtNumIt(doc)) + ' ' + esc(valuta) + '</strong>' +
+      ' (differenza ' + esc(fmtNumIt(round2(somma - doc))) + '). Vale il totale del documento.</div>'
+  }
+  return '<div class="ro-section righe-acq-titolo">Righe del documento ' +
+      '<span class="dim">(descrivono cosa c\'è sulla fattura; dove va il costo lo dice la classificazione)</span></div>' +
+    '<div class="table-wrap"><table class="righe-acq-ro"><thead><tr>' +
+      '<th>Codice</th><th>Descrizione</th><th class="num">Quantità</th><th>U.M.</th>' +
+      '<th class="num">Listino</th><th class="num">Sconto</th><th class="num">Netto unit.</th><th class="num">Importo</th>' +
+    '</tr></thead><tbody>' + rows + piede + '</tbody></table></div>' + nota
+}
+
 function fillAcquistoForm(v) {
   v = v || {}
   setVal('a-fornitore', v.fornitore)
@@ -5869,6 +6151,11 @@ function fillAcquistoForm(v) {
   onAcquistoStatoChange()
   updateAcquistoIvaSummary()
   renderAcquistoAllegatoCorrente()   // solo un div: non tocca l'input file
+  // 56·4a — le righe descrittive. Documento nuovo: nessuna riga, si aggiungono
+  // col bottone. In modifica: quelle lette dal database. Vanno DOPO a-importo,
+  // perche' l'avviso sotto le righe lo confronta col totale.
+  acquistoRighe = righeAcquistoPerEditor(v.righe)
+  renderRigheAcquisto()
 }
 
 function clearAcquistoFileInput() {
@@ -5932,6 +6219,10 @@ async function editAcquisto(id) {
   try {
     const { data, error } = await sb.from('tm_conta_fatture_acquisto').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
+    // 56·4a — le righe. Se non si leggono il form NON si apre: salvare con
+    // l'editor vuoto le cancellerebbe (replaceRigheAcquisto cancella e
+    // riscrive), e un errore chiaro e' meglio di righe sparite in silenzio.
+    var righe = await leggiRigheAcquisto(id)
     editingAcquistoId = id
     var vals = {
       fornitore: data.fornitore || '', numero_fornitore: data.numero_fornitore || '',
@@ -5942,7 +6233,8 @@ async function editAcquisto(id) {
       imponibile: data.imponibile, iva_importo: data.iva_importo,
       gruppo_codice: data.gruppo_codice || null, contatto_id: data.contatto_id || null,
       cantiere_id:   data.cantiere_id || null,                     // FASE 27
-      offerta_id:    data.offerta_id || null                       // FASE 29
+      offerta_id:    data.offerta_id || null,                      // FASE 29
+      righe:         righe                                         // 56·4a
     }
     acquistoOriginal = vals
     clearAcquistoFileInput()   // PRIMA di mostrare il form: mai dopo
@@ -5974,6 +6266,9 @@ function collectAcquisto() {
   if (importo == null || importo <= 0) throw new Error('L\'importo dev\'essere un numero positivo.')
   var impo = safeNum(getVal('a-imponibile'))
   var ivaI = safeNum(getVal('a-iva'))
+  // 56·4a — le righe descrittive NON entrano qui: si scrivono a parte
+  // (replaceRigheAcquisto) e non ricalcolano l'importo. Il totale del
+  // documento e' quello scritto in «Importo», righe o non righe.
   return {
     azienda_id:       currentAziendaId,
     fornitore:        fornitore,
@@ -6061,6 +6356,20 @@ async function saveAcquisto() {
       if (error) throw error
       editingAcquistoId = data && data[0] ? data[0].id : null
     }
+    // 56·4a — le righe descrittive, adesso che il documento ha un id. Se la
+    // scrittura fallisce il documento resta salvato e lo si dice: le righe si
+    // rimettono da «Modifica». L'avviso sulla somma si calcola ORA, con il
+    // form ancora pieno.
+    var righeFallite = null
+    if (editingAcquistoId) {
+      try {
+        await replaceRigheAcquisto(editingAcquistoId)
+      } catch (eRighe) {
+        righeFallite = eRighe.message || String(eRighe)
+        console.error('Righe non salvate:', eRighe)
+      }
+    }
+    var differenzaRighe = testoDifferenzaRighe()
     if (fileDaCaricare) {
       allegatoFallito = await creaAllegatoDaForm(
         fileDaCaricare, 'tm_conta_fatture_acquisto', editingAcquistoId)
@@ -6107,20 +6416,32 @@ async function saveAcquisto() {
     await loadAcquistiList()
     try { await refreshDaClassificareCount() } catch (_) {}
     acquistiBackToList()
+    // 56·4a — un banner solo: il testo si compone, e la differenza fra righe
+    // e totale (se c'e') si accoda in fondo, qualunque sia l'esito.
+    var tipoBanner = 'ok', msgBanner
     if (pagamentoFallito) {
-      showFattureBanner('acquisti-list-banner', 'warn',
-        'Fattura salvata MA pagamento NON registrato: ' + pagamentoFallito +
-        '. Registralo dalla scheda con «+ Registra pagamento».')
+      tipoBanner = 'warn'
+      msgBanner = 'Fattura salvata MA pagamento NON registrato: ' + pagamentoFallito +
+        '. Registralo dalla scheda con «+ Registra pagamento».'
+    } else if (righeFallite) {
+      tipoBanner = 'warn'
+      msgBanner = 'Fattura salvata MA righe NON salvate: ' + righeFallite +
+        '. Riaprila con «Modifica», controlla le righe e salva di nuovo.'
     } else if (allegatoFallito) {
-      showFattureBanner('acquisti-list-banner', 'warn', 'Fattura salvata MA allegato NON caricato: ' + allegatoFallito)
+      tipoBanner = 'warn'
+      msgBanner = 'Fattura salvata MA allegato NON caricato: ' + allegatoFallito
     } else if (spuntaPag && spuntaPag.checked) {
-      showFattureBanner('acquisti-list-banner', 'ok',
-        'Fattura d\'acquisto salvata e segnata come pagata.')
+      msgBanner = 'Fattura d\'acquisto salvata e segnata come pagata.'
     } else if (fileDaCaricare) {
-      showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto salvata con allegato «' + fileDaCaricare.name + '».')
+      msgBanner = 'Fattura d\'acquisto salvata con allegato «' + fileDaCaricare.name + '».'
     } else {
-      showFattureBanner('acquisti-list-banner', 'ok', 'Fattura d\'acquisto salvata.')
+      msgBanner = 'Fattura d\'acquisto salvata.'
     }
+    if (differenzaRighe && !righeFallite) {
+      tipoBanner = 'warn'
+      msgBanner += '\n⚠️ Attenzione: ' + differenzaRighe
+    }
+    showFattureBanner('acquisti-list-banner', tipoBanner, msgBanner)
   } catch (e) {
     showFattureBanner('acquisti-edit-banner', 'err', 'Salvataggio: ' + (e.message || e))
   } finally {
@@ -16559,7 +16880,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '55'
+var VERSIONE = '56'
 
 function controllaVersionePagina() {
   try {
