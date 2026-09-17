@@ -14166,6 +14166,39 @@ function controllaImportoPagamento() {
   }
 }
 
+// ── I metodi di pagamento ───────────────────────────────────────────────────
+// UNA lista, in un posto solo. `metodo` in tm_conta_pagamenti e' testo libero:
+// con due tendine scritte a mano nell'HTML prima o poi nascono «PayPal»,
+// «Paypal» e «paypal», e i raggruppamenti si rompono. Le tendine si riempiono
+// da qui all'avvio. I record gia' salvati con «Altro» non si toccano.
+var METODI_PAGAMENTO = [
+  'Bonifico',
+  'Contanti',
+  'TWINT',
+  'PayPal',
+  'Carta / Bancomat',
+  'Addebito diretto (LSV)',
+  'Altro'
+]
+
+function buildMetodoOptions(selected) {
+  var out = '<option value="">— non indicato —</option>'
+  METODI_PAGAMENTO.forEach(function (m) {
+    out += '<option value="' + esc(m) + '"' + (m === selected ? ' selected' : '') + '>' + esc(m) + '</option>'
+  })
+  return out
+}
+
+// Le tendine dei metodi, ovunque siano. Si chiama all'avvio; il valore
+// eventualmente gia' scelto si conserva.
+var TENDINE_METODI = ['pag-metodo', 'a-pag-metodo']
+function riempiTendineMetodi() {
+  TENDINE_METODI.forEach(function (id) {
+    var sel = el(id)
+    if (sel) sel.innerHTML = buildMetodoOptions(sel.value || '')
+  })
+}
+
 // ── La sessione ─────────────────────────────────────────────────────────────
 // Con la sessione assente Supabase risponde ZERO righe senza errore, per via
 // della RLS: un elenco vuoto che sembra vero. Prima di ogni lettura che conta
@@ -16526,7 +16559,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '53'
+var VERSIONE = '54'
 
 function controllaVersionePagina() {
   try {
@@ -16980,6 +17013,7 @@ document.addEventListener('DOMContentLoaded', function () {
   installaCronologia()
   // FASE 9C — se l'HTML e' una versione vecchia rimasta in cache, lo si dice.
   controllaVersionePagina()
+  riempiTendineMetodi()          // 54·G — una lista sola per tutti i metodi
 
   // Mostra istruzioni SQL (visibili prima dell'auth)
   renderSqlInstructions()
