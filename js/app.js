@@ -16559,7 +16559,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '54'
+var VERSIONE = '55'
 
 function controllaVersionePagina() {
   try {
