@@ -2932,3 +2932,6 @@ tr.riga-fuori-cantiere td {
    seconda riga piccola sotto la scritta. Mai solo nel tooltip. */
 .icon-btn.elimina-pag { display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
 .elimina-pag-dettaglio { display: block; font-size: 10.5px; font-weight: 500; opacity: .85; white-space: nowrap; }
+
+/* 55·F1 — il rimando sotto lo stato di pagamento: leggibile, non grigio piccolo */
+.rimando-stato { font-size: 13.5px; color: var(--text); margin-top: 8px; }
