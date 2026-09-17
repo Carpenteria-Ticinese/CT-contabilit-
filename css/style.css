@@ -2928,5 +2928,7 @@ tr.riga-fuori-cantiere td {
   font-weight: 500;
   opacity: 1;               /* niente trasparenza: il testo deve restare leggibile */
 }
-/* 52·E — «Annulla ultimo» */
-.icon-btn.annulla-pag { border-color: var(--warn); color: var(--warn); }
+/* 53·E1 — «Elimina pagamento»: importo e data sempre visibili, su una
+   seconda riga piccola sotto la scritta. Mai solo nel tooltip. */
+.icon-btn.elimina-pag { display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+.elimina-pag-dettaglio { display: block; font-size: 10.5px; font-weight: 500; opacity: .85; white-space: nowrap; }
