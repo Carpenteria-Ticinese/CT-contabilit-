@@ -197,6 +197,13 @@ function esc(str) {
     .replace(/"/g, '&quot;')
 }
 
+// Come esc(), ma gli a capo del testo diventano <br>. Serve ai messaggi con
+// piu' righe (le cifre di un pagamento): un a capo lasciato al CSS puo'
+// sparire per una regola qualunque, un <br> no.
+function escRighe(str) {
+  return esc(str).replace(/\n/g, '<br>')
+}
+
 function badge(cls, label) {
   return '<span class="badge badge-' + cls + '">' + esc(label) + '</span>'
 }
@@ -3455,7 +3462,7 @@ function fattureBackToList() { showFattureView('list') }
 function showFattureBanner(elId, tipo, msg) {
   var cls  = tipo === 'ok' ? 'ok' : tipo === 'warn' ? 'warn' : 'err'
   var icon = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
-  html(elId, '<div class="fase-banner ' + cls + '"><span class="icon" aria-hidden="true">' + icon + '</span><div class="msg">' + esc(msg) + '</div></div>')
+  html(elId, '<div class="fase-banner ' + cls + '"><span class="icon" aria-hidden="true">' + icon + '</span><div class="msg">' + escRighe(msg) + '</div></div>')
 }
 
 // Traduce i rifiuti del DB (immutabilità post-emissione) in un messaggio chiaro.
@@ -6484,7 +6491,7 @@ function showInserimentoBanner(tipo, titolo, dettaglio) {
     '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
       '<span class="icon" aria-hidden="true">' + (tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌') + '</span>' +
       '<div class="msg">' + esc(titolo) +
-        (dettaglio ? '<small>' + esc(dettaglio) + '</small>' : '') +
+        (dettaglio ? '<small>' + escRighe(dettaglio) + '</small>' : '') +
       '</div>' +
     '</div>'
   )
@@ -11343,7 +11350,7 @@ function showScadenzeBanner(tipo, msg) {
   html('scadenze-banner',
     '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
       '<span class="icon" aria-hidden="true">' + icona + '</span>' +
-      '<div class="msg">' + esc(msg) + '</div>' +
+      '<div class="msg">' + escRighe(msg) + '</div>' +
     '</div>')
 }
 
@@ -11749,7 +11756,7 @@ function showPonteBanner(tipo, msg) {
   html('ponte-ai-banner',
     '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
       '<span class="icon" aria-hidden="true">' + icona + '</span>' +
-      '<div class="msg">' + esc(msg) + '</div>' +
+      '<div class="msg">' + escRighe(msg) + '</div>' +
     '</div>')
 }
 
@@ -13973,9 +13980,13 @@ function bottoneAnnullaUltimo(tabella, id) {
   var u = ultimoPagamentoDi(tabella, id)
   if (!u) return ''
   var imp = fmtNumIt(u.importo), dt = fmtDate(u.data)
-  return '<button class="icon-btn annulla-pag" title="Elimina l\'ultimo pagamento: ' + esc(imp) + ' CHF del ' + esc(dt) + '" ' +
+  // E1 — «Annulla» sembrava «annulla l'ultima modifica». Quello che fa e'
+  // cancellare un pagamento, e dice QUALE: importo e data stanno sul bottone,
+  // sempre visibili — sul telefono il tooltip non esiste. Il cestino e'
+  // l'icona di una cancellazione, ed e' una cancellazione.
+  return '<button class="icon-btn danger elimina-pag" title="Cancella il pagamento di ' + esc(imp) + ' CHF del ' + esc(dt) + '" ' +
     'onclick="event.stopPropagation(); eliminaPagamento(\'' + esc(u.id) + '\', \'' + esc(imp) + '\', \'' + esc(dt) + '\')">' +
-    '↩️ Annulla ultimo</button>'
+    '🗑️ Elimina pagamento<span class="elimina-pag-dettaglio">' + esc(imp) + ' CHF · ' + esc(dt) + '</span></button>'
 }
 
 function totalePagatoDi(tabella, id) {
@@ -14379,7 +14390,7 @@ async function salvaPagamento() {
           'Non va aggirato: segnalalo. Messaggio: ' + m
     }
     html('pag-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
-      '<div class="msg" style="white-space:pre-line">' + esc(m) + '</div></div>')
+      '<div class="msg">' + escRighe(m) + '</div></div>')
   } finally {
     if (btn) {
       btn.disabled = false
@@ -14501,11 +14512,17 @@ async function apriStoriaPagamenti(tabella, idDoc, nome) {
 // La conferma NOMINA importo e data: «Eliminare?» da solo non dice quale dei
 // tre versamenti si sta per cancellare.
 async function eliminaPagamento(idPagamento, importoTesto, dataTesto) {
-  if (!window.confirm('Eliminare il pagamento di ' + importoTesto + ' CHF del ' + dataTesto + '?\n\n' +
+  var pg = (pagamentiCache || []).filter(function (p) { return p.id === idPagamento })[0]
+  // E1 — se sul documento ci sono altri pagamenti, la conferma lo dice:
+  // altrimenti non si sa che sotto ce n'e' un altro.
+  var quanti = pg ? pagamentiDi(pg.tabella_origine, pg.id_origine).length : 0
+  var contesto = quanti > 1
+    ? '\n\nQuesto è l\'ultimo di ' + quanti + ' pagamenti registrati su questo documento: gli altri restano.'
+    : ''
+  if (!window.confirm('Eliminare il pagamento di ' + importoTesto + ' CHF del ' + dataTesto + '?' + contesto + '\n\n' +
       'Lo stato del documento viene ricalcolato: se era «pagato» torna a «pagato in parte» o «non pagato». ' +
       'Una rata collegata torna da pagare.')) return
   try {
-    var pg = (pagamentiCache || []).filter(function (p) { return p.id === idPagamento })[0]
     const { error } = await sb.from('tm_conta_pagamenti')
       .delete().eq('id', idPagamento).eq('azienda_id', currentAziendaId)
     if (error) throw error
@@ -16509,7 +16526,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '52'
+var VERSIONE = '53'
 
 function controllaVersionePagina() {
   try {
