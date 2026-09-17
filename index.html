@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=54" />
+  <link rel="stylesheet" href="css/style.css?v=55" />
 </head>
-<body data-versione="54">
+<body data-versione="55">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -2037,7 +2037,15 @@
                 <option value="parziale">🟠 Pagato in parte</option>
                 <option value="pagato">✅ Pagato</option>
               </select>
-              <div class="form-hint">Lo stato si calcola dai pagamenti registrati.</div>
+              <!-- 55·F1 — questo campo sembra rotto a chi non sa che lo scrive il
+                   trigger. La spiegazione deve dire DOVE si va, non solo perche'
+                   non si apre; e deve essere leggibile, non una riga grigia. -->
+              <div class="rimando-box rimando-stato">
+                Lo stato <strong>si calcola da solo</strong> dai pagamenti registrati: qui non si sceglie.
+                Per registrare una rata o un acconto: <strong>salva</strong>, poi apri la scheda
+                (<strong>👁 Apri</strong> nell&rsquo;elenco) &rarr; riquadro <strong>💳 Pagamenti</strong>.
+                Dall&rsquo;elenco vale anche <strong>💳 Paga</strong>, sulla riga.
+              </div>
             </div>
           </div>
 
@@ -2899,7 +2907,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=54"></script>
+<script src="js/app.js?v=55"></script>
 
 </body>
 </html>
