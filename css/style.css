@@ -3010,3 +3010,14 @@ tr.off-vecchia td { color: var(--text2); }
 .elenco-contatore { margin: 0 0 8px; }
 .elenco-contatore-riga { font-size: 13px; color: var(--text2); padding: 4px 2px; }
 .elenco-contatore-riga strong { color: var(--text); font-size: 14px; }
+
+/* 60 — Costi e ricavi per conto (Situazione) */
+.pc-iva { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.pc-iva-box { flex: 1 1 220px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
+.pc-iva-et  { font-size: 12px; color: var(--text2); }
+.pc-iva-val { font-size: 20px; font-weight: 700; color: var(--text); margin-top: 2px; }
+.pc-tabella td.num, .pc-tabella th.num { text-align: right; font-family: monospace; white-space: nowrap; }
+.pc-tabella td { padding: 6px 10px; }
+.pc-tabella tr.pc-zero td { color: var(--text3); }
+.pc-tabella tr.pc-nc td { background: var(--bg); }
+.pc-tabella tr.pc-totale td { font-weight: 700; border-top: 2px solid var(--border); background: var(--primary-lt); }
