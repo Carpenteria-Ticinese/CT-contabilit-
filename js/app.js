@@ -11173,6 +11173,10 @@ async function initCruscottoPage() {
     await loadIvaPeriodi(true)
     await loadFlussi(true)
     await loadPagamenti(true)        // FASE 8: SPESO e INCASSATO vengono da qui
+    // 60 — i dati dell'export, per i conti. Se non si leggono la Situazione
+    // resta com'e' e il riquadro dei conti dice perche'.
+    try { perContoDataset = await loadExportDataset(true); perContoErrore = null }
+    catch (eD) { perContoDataset = null; perContoErrore = eD.message || String(eD) }
     popolaAnniCruscotto()
     setCruscottoModo('anno')     // default all'apertura: anno in corso
   } catch (e) {
@@ -11222,6 +11226,7 @@ function renderCruscotto() {
   renderIvaRiga(p)
   renderDifferenzaIva(p)        // FASE 24 - l'indicatore, sotto la riga IVA
   renderGruppi(t.speso)
+  renderPerConto(p)             // 60 — costi e ricavi per conto, stesso periodo
   chiudiElencoCruscotto()
 }
 
@@ -16177,6 +16182,251 @@ function etichettaTipoAllegato(tipo) {
 let allegatiCache = []
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 60 — COSTI E RICAVI PER CONTO (nella Situazione)
+//
+// Fin qui la Situazione mostrava le spese per i 9 gruppi. Qui si vede ogni
+// CONTO del piano dei conti, con netto · IVA · totale, ricavi e costi
+// separati, nel periodo scelto in cima alla pagina.
+//
+// DA DOVE VENGONO I NUMERI: dagli stessi dati dell'export, letti allo stesso
+// modo. Si chiama docsPeriodo() e totaliSezioni() dell'export (sola lettura:
+// nessuna di quelle funzioni e' stata toccata) e si ripartiscono i documenti
+// sui conti con ripartisci(), come fanno i fogli Vendite e Acquisti. Per
+// costruzione, quindi:
+//
+//   somma dei conti + riga «non classificato»  =  totali delle SEZIONI dell'export
+//
+// al centesimo, e la pagina lo verifica ogni volta e lo scrive.
+//
+// LATO ricavi/costi: lo decide la SEZIONE del documento (fatture e note ->
+// ricavi; acquisti, spese, movimenti -> costi), non il tipo del conto. E' il
+// solo modo perche' i totali coincidano con l'export. Se un conto di tipo
+// «ricavo» finisce fra i costi (o viceversa) la riga lo dice.
+//
+// IVA: in testa, IVA ricevuta (lato ricavi) e IVA pagata (lato costi). La
+// «Differenza IVA» qui sopra legge i DOCUMENTI dalla vista; questa sezione
+// legge le RIGHE CLASSIFICATE. Se le due cifre non coincidono, la differenza
+// si mostra con il perche', non si nasconde.
+//
+// SOLO LETTURA: nessuna scrittura, nessun SQL.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var perContoDataset = null      // il dataset dell'export letto per la Situazione
+var perContoErrore  = null      // perche' non si e' letto
+var perContoMostraTutti = false // anche i conti a zero nel periodo
+
+// Il calcolo. Torna righe per conto sui due lati, i totali e la verifica.
+function calcolaPerConto(ds, da, a) {
+  var d = docsPeriodo(ds, da, a)
+  var t = totaliSezioni(d)
+  var conti = { ricavi: {}, costi: {} }
+
+  function acc(lato, contoId, netto, iva, tot, docKey, senzaImporto) {
+    var k = contoId || '__nc__'
+    var m = conti[lato]
+    if (!m[k]) m[k] = { conto_id: contoId || null, netto: 0, iva: 0, tot: 0, righe: 0, senzaImporto: 0, docs: {} }
+    var r = m[k]
+    r.netto += netto; r.iva += iva; r.tot += tot; r.righe++
+    if (senzaImporto) r.senzaImporto++
+    r.docs[docKey] = true
+  }
+
+  // Ricavi: fatture (+) e note di credito (−), ripartite sulle righe di
+  // classificazione come nel foglio Vendite.
+  function docFattura(f, segno) {
+    var righe = righeExportDi(ds, 'fattura', f.id)
+    var qImp = ripartisci(safeNum(f.totale_imponibile) || 0, righe)
+    var qIva = ripartisci(safeNum(f.totale_iva) || 0, righe)
+    var qTot = ripartisci(safeNum(f.totale) || 0, righe)
+    for (var i = 0; i < righe.length; i++) {
+      var c = righe[i]
+      acc('ricavi', c ? c.conto_id : null, segno * qImp[i], segno * qIva[i], segno * qTot[i],
+          'fattura:' + f.id, !!(c && c.imponibile == null))
+    }
+  }
+  d.vendite.forEach(function (f) { docFattura(f, 1) })
+  d.note.forEach(function (f) { docFattura(f, -1) })
+
+  // Costi 1: fatture d'acquisto, come nel foglio Acquisti. Se la testata non
+  // ha la scomposizione, il netto e' totale − IVA (o tutto, se manca anche
+  // l'IVA): il totale e' il dato che deve tornare.
+  d.acquisti.forEach(function (x) {
+    var righe = righeExportDi(ds, 'acquisto', x.id)
+    var tot = safeNum(x.importo) || 0
+    var iva = safeNum(x.iva_importo); if (iva == null) iva = 0
+    var imp = safeNum(x.imponibile); if (imp == null) imp = round2(tot - iva)
+    var qImp = ripartisci(imp, righe), qIva = ripartisci(iva, righe), qTot = ripartisci(tot, righe)
+    for (var i = 0; i < righe.length; i++) {
+      var c = righe[i]
+      acc('costi', c ? c.conto_id : null, qImp[i], qIva[i], qTot[i], 'acquisto:' + x.id, !!(c && c.imponibile == null))
+    }
+  })
+
+  // Costi 2: spese, regia e movimenti propri: gia' una voce per riga, con gli
+  // importi della riga (la sezione Spese dell'export somma esattamente questi).
+  d.spese.forEach(function (pr) {
+    var c = pr.cls
+    var netto = safeNum(c.imponibile) || 0, iva = safeNum(c.iva_importo) || 0
+    acc('costi', c.conto_id, netto, iva, netto + iva,
+        pr.mov.origine_tipo + ':' + pr.mov.origine_id, c.imponibile == null)
+  })
+
+  // Quello che l'export NON prende: movimenti non classificati nel periodo.
+  // Non entrano nelle somme (come nell'export), ma vanno detti.
+  var fuori = { n: 0, importo: 0 }
+  ;(ds.movimentiAll || []).forEach(function (mov) {
+    if (mov.origine_tipo === 'fattura' || mov.origine_tipo === 'acquisto') return
+    if (mov.stato_conferma === 'da_confermare') return
+    if (!inPeriodo(mov.data, da, a)) return
+    if (ds.classMap[mov.origine_tipo + ':' + mov.origine_id]) return
+    fuori.n++; fuori.importo += safeNum(mov.importo) || 0
+  })
+
+  function chiudi(lato) {
+    var m = conti[lato], righe = [], nc = null
+    var tot = { netto: 0, iva: 0, tot: 0 }
+    Object.keys(m).forEach(function (k) {
+      var r = m[k]
+      r.netto = round2(r.netto); r.iva = round2(r.iva); r.tot = round2(r.tot)
+      r.nDocs = Object.keys(r.docs).length
+      tot.netto += r.netto; tot.iva += r.iva; tot.tot += r.tot
+      if (k === '__nc__') nc = r; else righe.push(r)
+    })
+    righe.sort(function (x, y) { return contoLabel(x.conto_id).localeCompare(contoLabel(y.conto_id)) })
+    return { righe: righe, nonClassificato: nc, tot: { netto: round2(tot.netto), iva: round2(tot.iva), tot: round2(tot.tot) } }
+  }
+  var ricavi = chiudi('ricavi'), costi = chiudi('costi')
+  var attesoRicavi = round2(t.vendite + t.note)       // le note sono gia' negative
+  var attesoCosti  = round2(t.acquisti + t.spese)
+  return {
+    d: d, sezioni: t, ricavi: ricavi, costi: costi, fuori: fuori,
+    ivaRicevuta: ricavi.tot.iva, ivaPagata: costi.tot.iva,
+    verifica: {
+      ricavi: { calcolato: ricavi.tot.tot, atteso: attesoRicavi, ok: Math.abs(ricavi.tot.tot - attesoRicavi) < 0.005 },
+      costi:  { calcolato: costi.tot.tot,  atteso: attesoCosti,  ok: Math.abs(costi.tot.tot  - attesoCosti)  < 0.005 }
+    }
+  }
+}
+
+function togglePerContoTutti() {
+  perContoMostraTutti = !perContoMostraTutti
+  renderPerConto(periodoCruscotto())
+}
+
+function renderPerConto(p) {
+  var cont = el('cru-per-conto')
+  if (!cont) return
+  if (!perContoDataset) {
+    cont.innerHTML = '<div class="cru-vuoto">❌ Conti non leggibili: ' + esc(perContoErrore || 'dati dell\'export non letti') +
+      '. La Situazione qui sopra viene dalla vista e resta valida.</div>'
+    return
+  }
+  if (!p.da || !p.a || p.da > p.a) { cont.innerHTML = '<div class="cru-vuoto">Scegli un periodo valido (da / a).</div>'; return }
+  var r = calcolaPerConto(perContoDataset, p.da, p.a)
+
+  // ── IVA in testa, confrontata con la Differenza IVA sullo stesso periodo
+  var dIva = calcolaDifferenzaIva(flussiCache || [], p.da, p.a)
+  var scRic = round2(r.ivaRicevuta - dIva.ivaVendite)
+  var scPag = round2(r.ivaPagata - dIva.ivaAcquisti)
+  var testaIva = '<div class="pc-iva">' +
+    '<div class="pc-iva-box"><div class="pc-iva-et">IVA ricevuta <span class="dim">(sulle vendite, netto delle note)</span></div>' +
+      '<div class="pc-iva-val">' + esc(fmtNumIt(r.ivaRicevuta)) + ' CHF</div></div>' +
+    '<div class="pc-iva-box"><div class="pc-iva-et">IVA pagata <span class="dim">(acquisti, spese, movimenti)</span></div>' +
+      '<div class="pc-iva-val">' + esc(fmtNumIt(r.ivaPagata)) + ' CHF</div></div>' +
+    '</div>'
+  if (Math.abs(scRic) >= 0.005 || Math.abs(scPag) >= 0.005) {
+    testaIva += '<div class="nota-cruscotto avviso" style="margin:10px 0 0"><span aria-hidden="true">⚠️</span><span>' +
+      '<strong>Non coincide con la «Differenza IVA» qui sopra</strong> (IVA vendite ' + esc(fmtNumIt(dIva.ivaVendite)) +
+      ', IVA acquisti ' + esc(fmtNumIt(dIva.ivaAcquisti)) + ' CHF): ricevuta ' + (scRic >= 0 ? '+' : '−') + esc(fmtNumIt(Math.abs(scRic))) +
+      ', pagata ' + (scPag >= 0 ? '+' : '−') + esc(fmtNumIt(Math.abs(scPag))) + ' CHF. ' +
+      'La Differenza IVA legge i <strong>documenti</strong> (una riga per documento, dalla vista, anche non classificati); ' +
+      'qui si leggono le <strong>righe classificate</strong>, come nell\'export. Fanno differenza i movimenti non classificati' +
+      (r.fuori.n ? ' (' + r.fuori.n + ' nel periodo, ' + esc(fmtNumIt(r.fuori.importo)) + ' CHF)' : '') +
+      ' e i documenti senza IVA registrata sulla riga.</span></div>'
+  } else {
+    testaIva += '<div class="cant-sub" style="margin-top:6px">Coincide con la «Differenza IVA» sullo stesso periodo.</div>'
+  }
+
+  // ── Le due tabelle
+  function tabella(titolo, lato, blocco, attesoTesto, ver) {
+    var tipoAtteso = lato === 'ricavi' ? 'ricavo' : 'costo'
+    var righe = blocco.righe.slice()
+    var zeriNascosti = 0
+    if (perContoMostraTutti) {
+      // Anche i conti del piano che nel periodo non hanno niente.
+      var presenti = {}
+      righe.forEach(function (x) { presenti[x.conto_id] = true })
+      ;(contiCache || []).forEach(function (c) {
+        if (c.tipo !== tipoAtteso || c.attivo === false || presenti[c.id]) return
+        righe.push({ conto_id: c.id, netto: 0, iva: 0, tot: 0, righe: 0, senzaImporto: 0, nDocs: 0, vuoto: true })
+      })
+      righe.sort(function (x, y) { return contoLabel(x.conto_id).localeCompare(contoLabel(y.conto_id)) })
+    } else {
+      righe = righe.filter(function (x) {
+        var zero = Math.abs(x.netto) < 0.005 && Math.abs(x.iva) < 0.005 && Math.abs(x.tot) < 0.005
+        if (zero) zeriNascosti++
+        return !zero
+      })
+    }
+    var tr = righe.map(function (x) {
+      var conto = (contiCache || []).filter(function (c) { return c.id === x.conto_id })[0]
+      var fuoriTipo = conto && conto.tipo && conto.tipo !== tipoAtteso
+      return '<tr' + (x.vuoto ? ' class="pc-zero"' : '') + '>' +
+        '<td>' + esc(contoLabel(x.conto_id)) +
+          (fuoriTipo ? ' <span class="badge badge-warn" title="Il lato lo decide la sezione del documento, come nell\'export">conto di tipo ' + esc(conto.tipo) + '</span>' : '') +
+          (x.senzaImporto ? ' <span class="dim">· ' + x.senzaImporto + (x.senzaImporto === 1 ? ' riga senza importo' : ' righe senza importo') + '</span>' : '') +
+        '</td>' +
+        '<td class="num">' + esc(fmtNumIt(x.netto)) + '</td>' +
+        '<td class="num">' + esc(fmtNumIt(x.iva)) + '</td>' +
+        '<td class="num"><strong>' + esc(fmtNumIt(x.tot)) + '</strong></td>' +
+        '<td class="dim num">' + (x.nDocs || '') + '</td>' +
+      '</tr>'
+    }).join('')
+    var nc = blocco.nonClassificato
+    var trNc = nc
+      ? '<tr class="pc-nc"><td><em>Non classificato / senza importo</em> <span class="dim">— ' + nc.nDocs + (nc.nDocs === 1 ? ' documento' : ' documenti') + '</span></td>' +
+        '<td class="num">' + esc(fmtNumIt(nc.netto)) + '</td><td class="num">' + esc(fmtNumIt(nc.iva)) + '</td>' +
+        '<td class="num"><strong>' + esc(fmtNumIt(nc.tot)) + '</strong></td><td class="dim num">' + nc.nDocs + '</td></tr>'
+      : '<tr class="pc-nc"><td><em>Non classificato / senza importo</em></td><td class="num">0,00</td><td class="num">0,00</td><td class="num"><strong>0,00</strong></td><td></td></tr>'
+    return '<div class="card-title" style="margin-top:14px">' + titolo + '</div>' +
+      '<div class="table-wrap"><table class="pc-tabella">' +
+      '<thead><tr><th>Conto</th><th class="num">Netto</th><th class="num">IVA</th><th class="num">Totale</th><th class="num">Doc.</th></tr></thead>' +
+      '<tbody>' + (tr || '<tr><td colspan="5" class="dim">Nessun conto con importi nel periodo.</td></tr>') + trNc +
+      '<tr class="pc-totale"><td>Totale ' + titolo.toLowerCase() + '</td>' +
+        '<td class="num">' + esc(fmtNumIt(blocco.tot.netto)) + '</td><td class="num">' + esc(fmtNumIt(blocco.tot.iva)) + '</td>' +
+        '<td class="num">' + esc(fmtNumIt(blocco.tot.tot)) + '</td><td></td></tr>' +
+      '</tbody></table></div>' +
+      '<div class="cant-sub">' + (ver.ok ? '✅ ' : '❌ ') + 'Verifica con l\'export: ' + esc(fmtNumIt(ver.calcolato)) + ' CHF ' +
+        (ver.ok ? '=' : '≠') + ' ' + attesoTesto + ' = ' + esc(fmtNumIt(ver.atteso)) + ' CHF' +
+        (ver.ok ? '' : ' — <strong>differenza ' + esc(fmtNumIt(round2(ver.calcolato - ver.atteso))) + ' CHF: da capire prima di fidarsi di questi numeri</strong>') +
+        (zeriNascosti ? ' · ' + zeriNascosti + (zeriNascosti === 1 ? ' conto a zero nascosto' : ' conti a zero nascosti') : '') +
+      '</div>'
+  }
+
+  var s = r.sezioni
+  var htmlRicavi = tabella('Ricavi', 'ricavi', r.ricavi,
+    'vendite ' + fmtNumIt(s.vendite) + ' + note ' + fmtNumIt(s.note), r.verifica.ricavi)
+  var htmlCosti = tabella('Costi', 'costi', r.costi,
+    'acquisti ' + fmtNumIt(s.acquisti) + ' + spese ' + fmtNumIt(s.spese), r.verifica.costi)
+
+  cont.innerHTML =
+    '<div class="form-hint" style="margin-top:0">Periodo ' + esc(fmtDate(p.da)) + ' → ' + esc(fmtDate(p.a)) +
+      '. Stessi dati e stesso metodo dell\'export per il commercialista: fatture emesse, acquisti e movimenti confermati, ' +
+      'documenti divisi ripartiti riga per riga. Il lato (ricavi / costi) lo decide la sezione del documento. Sola lettura.</div>' +
+    testaIva + htmlRicavi + htmlCosti +
+    (r.fuori.n
+      ? '<div class="nota-cruscotto" style="margin:12px 0 0"><span aria-hidden="true">ℹ️</span><span>' + r.fuori.n +
+        (r.fuori.n === 1 ? ' movimento non classificato' : ' movimenti non classificati') + ' nel periodo (' +
+        esc(fmtNumIt(r.fuori.importo)) + ' CHF) non entrano qui né nell\'export: si classificano in «Da classificare».</span></div>'
+      : '') +
+    '<div class="form-actions" style="margin-top:12px">' +
+      '<button type="button" class="btn-secondary" onclick="togglePerContoTutti()">' +
+        (perContoMostraTutti ? '👁 Nascondi i conti a zero' : '👁 Mostra tutti i conti (anche a zero)') + '</button>' +
+    '</div>'
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 59·B — I CONTATORI IN TESTA AGLI ELENCHI
 //
 // Il numero deve sempre dire COSA conta. Senza filtri:
@@ -17516,7 +17766,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '59'
+var VERSIONE = '60'
 
 function controllaVersionePagina() {
   try {
