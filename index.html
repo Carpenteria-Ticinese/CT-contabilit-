@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=57" />
+  <link rel="stylesheet" href="css/style.css?v=58" />
 </head>
-<body data-versione="57">
+<body data-versione="58">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -1403,6 +1403,9 @@
 
         <div id="fatture-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
 
+        <!-- FASE 58 — da quale rata d'acconto viene questa bozza (scritto dal JS) -->
+        <div id="fatture-acconto-ref"></div>
+
         <div id="fatture-nc-ref" class="nc-ref" style="display:none"></div>
 
         <div class="card">
@@ -1618,6 +1621,9 @@
 
         <div class="card no-print" id="fatture-detail-actions"></div>
         <div class="no-print" id="fatture-allegato-banner" role="status" aria-live="polite"></div>
+        <!-- FASE 58 — contratto e acconti del cantiere: SOLO a schermo, fuori da
+             fatture-print e no-print. Non va mai in stampa né nel PDF. -->
+        <div class="no-print" id="fatture-acconto"></div>
         <!-- FASE 8: pagamenti e rate della fattura -->
         <div class="no-print" id="fatture-pagamenti"></div>
         <div class="no-print" id="fatture-classificazione"></div>
@@ -2987,7 +2993,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=57"></script>
+<script src="js/app.js?v=58"></script>
 
 </body>
 </html>
