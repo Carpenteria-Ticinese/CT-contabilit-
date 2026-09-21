@@ -2206,7 +2206,7 @@ function fillFormFromValues(vals) {
   if (el('f-ricorrente'))  el('f-ricorrente').checked = !!vals.ricorrente
   togglePeriodicita(!!vals.ricorrente)
   if (el('f-periodicita')) el('f-periodicita').value = vals.periodicita || 'mensile'
-  if (el('f-allegato'))    el('f-allegato').value = ''
+  svuotaCodaFile('f-allegato')   // 59·A — coda e input
   // ── FASE 2: contatto collegato, gruppo, scadenza, stato pagamento
   if (el('f-scadenza'))    el('f-scadenza').value = vals.data_scadenza || ''
   if (el('f-contatto-id')) el('f-contatto-id').value = vals.contatto_id || ''
@@ -3603,6 +3603,13 @@ function renderFattureTable() {
       return termini.every(function (t) { return hay.indexOf(t) !== -1 })
     })
   }
+
+  // 59·B — quante, e in che stato. Sempre, anche a elenco vuoto.
+  html('fatture-contatore', contatoreElencoHtml(fattureList, list,
+    { sing: 'fattura', plur: 'fatture' },
+    function (f) { return f.stato },
+    { emessa: { sing: 'emessa', plur: 'emesse' }, bozza: { sing: 'bozza', plur: 'bozze' },
+      annullata: { sing: 'annullata', plur: 'annullate' } }))
 
   if (!list.length) {
     var filtroAttivo = q || stato || incasso || anno
@@ -5699,6 +5706,13 @@ function renderAcquistiTable() {
       return termini.every(function (t) { return hay.indexOf(t) !== -1 })
     })
   }
+  // 59·B — quante, e come stanno a pagamento.
+  html('acquisti-contatore', contatoreElencoHtml(acquistiList, list,
+    { sing: 'fattura d\'acquisto', plur: 'fatture d\'acquisto' },
+    function (a) { return a.stato_pagamento || 'aperto' },
+    { aperto: { sing: 'da pagare', plur: 'da pagare' }, parziale: { sing: 'pagata in parte', plur: 'pagate in parte' },
+      pagato: { sing: 'pagata', plur: 'pagate' } }))
+
   if (!list.length) {
     var attivo = qv || stato || anno
     html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
@@ -6234,8 +6248,7 @@ function fillAcquistoForm(v) {
 }
 
 function clearAcquistoFileInput() {
-  var f = el('a-allegato')
-  if (f) f.value = ''
+  svuotaCodaFile('a-allegato')   // 59·A — anche la coda, non solo l'input
 }
 
 // Mostra l'allegato già presente: nome + apri + rimuovi. L'input file funge da
@@ -6382,8 +6395,8 @@ async function saveAcquisto() {
   html('acquisti-edit-banner', '')
   // Il file va letto SUBITO, prima di qualunque await: un re-render successivo
   // non deve poter far sparire la scelta dell'utente.
-  var fileInput = el('a-allegato')
-  var fileDaCaricare = (fileInput && fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : null
+  // 59·A — i file stanno nella coda del campo, non nell'input.
+  var fileDaCaricare = fileScelti('a-allegato')
 
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
@@ -6420,7 +6433,7 @@ async function saveAcquisto() {
     // FASE 9 — doc_path non si scrive piu'. Il file diventa una riga in
     // tm_conta_allegati, creata DOPO il salvataggio: prima il documento non ha
     // un id a cui attaccarla.
-    var allegatoFallito = false
+    var esitiAllegati = []
 
     if (editingAcquistoId) {
       const { error } = await sb.from('tm_conta_fatture_acquisto').update(payload).eq('id', editingAcquistoId).eq('azienda_id', currentAziendaId).select()
@@ -6445,12 +6458,12 @@ async function saveAcquisto() {
       }
     }
     var differenzaRighe = testoDifferenzaRighe()
-    if (fileDaCaricare) {
-      allegatoFallito = await creaAllegatoDaForm(
-        fileDaCaricare, 'tm_conta_fatture_acquisto', editingAcquistoId)
+    if (fileDaCaricare.length) {
+      esitiAllegati = await creaAllegatiDaForm('a-allegato', 'tm_conta_fatture_acquisto', editingAcquistoId, btn)
     }
+    var allegati = riassuntoEsitiAllegati(esitiAllegati)
     acquistoOriginal = null
-    clearAcquistoFileInput()   // caricato (o fallito): l'input riparte pulito
+    clearAcquistoFileInput()   // caricati (o falliti): l'input riparte pulito
 
     // «Già pagata per intero»: il pagamento si crea DOPO che la fattura esiste,
     // perche' senza il suo id non avrebbe a cosa attaccarsi. Se fallisce, la
@@ -6502,13 +6515,15 @@ async function saveAcquisto() {
       tipoBanner = 'warn'
       msgBanner = 'Fattura salvata MA righe NON salvate: ' + righeFallite +
         '. Riaprila con «Modifica», controlla le righe e salva di nuovo.'
-    } else if (allegatoFallito) {
+    } else if (allegati.ko) {
+      // 59·A — mai un «salvata» pulito se anche un allegato e' fallito.
       tipoBanner = 'warn'
-      msgBanner = 'Fattura salvata MA allegato NON caricato: ' + allegatoFallito
+      msgBanner = 'Fattura salvata MA ' + allegati.testo +
+        '. Per riprovare: apri la scheda e usa «Aggiungi allegato».'
     } else if (spuntaPag && spuntaPag.checked) {
-      msgBanner = 'Fattura d\'acquisto salvata e segnata come pagata.'
-    } else if (fileDaCaricare) {
-      msgBanner = 'Fattura d\'acquisto salvata con allegato «' + fileDaCaricare.name + '».'
+      msgBanner = 'Fattura d\'acquisto salvata e segnata come pagata.' + (allegati.ok ? ' ' + allegati.testo + '.' : '')
+    } else if (allegati.ok) {
+      msgBanner = 'Fattura d\'acquisto salvata: ' + allegati.testo + '.'
     } else {
       msgBanner = 'Fattura d\'acquisto salvata.'
     }
@@ -6916,7 +6931,6 @@ async function handleInserimentoSubmit(event) {
     var valuta     = el('f-valuta')     ? el('f-valuta').value            : 'CHF'
     var ricorrente = el('f-ricorrente') ? el('f-ricorrente').checked      : false
     var periodicita = ricorrente && el('f-periodicita') ? el('f-periodicita').value : null
-    var fileInput  = el('f-allegato')
 
     if (!dataVal)          throw new Error('La data è obbligatoria.')
     if (!desc)             throw new Error('La descrizione è obbligatoria.')
@@ -6925,9 +6939,8 @@ async function handleInserimentoSubmit(event) {
 
     // FASE 9 — come nel form acquisto: il file si legge adesso, ma l'allegato
     // si crea dopo il salvataggio, quando il movimento ha un id.
-    var fileMovimento = (fileInput && fileInput.files && fileInput.files.length > 0)
-      ? fileInput.files[0] : null
-    var allegatoFallito = false
+    // 59·A — i file stanno nella coda del campo: piu' d'uno, esito per ciascuno.
+    var esitiAllegati = []
 
     // FASE 8 — lo stato non si sceglie piu': se il movimento e' gia' stato
     // pagato lo si dice con la spunta, e si crea un pagamento vero. La regola
@@ -6969,13 +6982,13 @@ async function handleInserimentoSubmit(event) {
         .eq('azienda_id', currentAziendaId)
         .select()
       if (error) throw error
-      allegatoFallito = await creaAllegatoDaForm(
-        fileMovimento, 'tm_conta_movimenti_propri', editingMovimentoId)
+      esitiAllegati = await creaAllegatiDaForm('f-allegato', 'tm_conta_movimenti_propri', editingMovimentoId, btn)
+      var allegatiMod = riassuntoEsitiAllegati(esitiAllegati)
       exitEditMode()
-      if (allegatoFallito) {
-        showInserimentoBanner('warn', 'Modifiche salvate (senza nuovo allegato)', 'L\'allegato non è stato caricato: ' + allegatoFallito)
+      if (allegatiMod.ko) {
+        showInserimentoBanner('warn', 'Modifiche salvate, ma non tutti gli allegati', allegatiMod.testo + '. Riapri il movimento con «Modifica» e riprova con quelli.')
       } else {
-        showInserimentoBanner('ok', 'Modifiche salvate', 'Il movimento è stato aggiornato.')
+        showInserimentoBanner('ok', 'Modifiche salvate', 'Il movimento è stato aggiornato.' + (allegatiMod.ok ? ' ' + allegatiMod.testo + '.' : ''))
       }
     } else {
       payload.created_by = currentUser.id
@@ -6984,8 +6997,9 @@ async function handleInserimentoSubmit(event) {
         .insert(payload)
         .select()
       if (error) throw error
-      allegatoFallito = await creaAllegatoDaForm(
-        fileMovimento, 'tm_conta_movimenti_propri', creatoMov && creatoMov[0] ? creatoMov[0].id : null)
+      esitiAllegati = await creaAllegatiDaForm('f-allegato', 'tm_conta_movimenti_propri',
+        creatoMov && creatoMov[0] ? creatoMov[0].id : null, btn)
+      var allegatiNuovo = riassuntoEsitiAllegati(esitiAllegati)
 
       // FASE 8 — «gia' pagata»: si registra il versamento, e il trigger porta
       // il movimento a 'pagato' da solo.
@@ -7006,10 +7020,10 @@ async function handleInserimentoSubmit(event) {
         }
       }
       resetInserimentoForm()
-      if (allegatoFallito) {
-        showInserimentoBanner('warn', 'Movimento salvato (senza allegato)', 'L\'allegato non è stato caricato: ' + allegatoFallito + ' — Il movimento è comunque in «Da classificare».')
+      if (allegatiNuovo.ko) {
+        showInserimentoBanner('warn', 'Movimento salvato, ma non tutti gli allegati', allegatiNuovo.testo + ' — Il movimento è comunque in «Da classificare»: riaprilo con «Modifica» e riprova con quelli.')
       } else {
-        showInserimentoBanner('ok', 'Movimento salvato', 'Ora compare nella lista «Da classificare».')
+        showInserimentoBanner('ok', 'Movimento salvato', 'Ora compare nella lista «Da classificare».' + (allegatiNuovo.ok ? ' ' + allegatiNuovo.testo + '.' : ''))
       }
     }
 
@@ -7123,6 +7137,25 @@ async function loadRecentiInseriti() {
       .order('created_at', { ascending: false })
       .limit(8)
     if (error) throw error
+
+    // 59·B — l'elenco mostra gli ultimi 8: il contatore dice quanti sono in
+    // tutto, cosi' «8» non viene preso per il totale. Il conteggio e' una
+    // query a parte (solo il numero, nessuna riga); se fallisce si dice.
+    try {
+      const { count, error: eC } = await sb.from('tm_conta_movimenti_propri')
+        .select('id', { count: 'exact', head: true })
+        .eq('azienda_id', currentAziendaId)
+      if (eC) throw eC
+      var nTot = count == null ? null : count, nMos = (data || []).length
+      html('inserimento-contatore', '<div class="elenco-contatore-riga">' +
+        (nTot == null ? '<strong>' + nMos + '</strong> mostrati'
+          : (nTot > nMos
+              ? '<strong>ultimi ' + nMos + ' di ' + nTot + '</strong> movimenti propri <span class="dim">(gli altri si cercano da «Da classificare» e dai Cantieri)</span>'
+              : '<strong>' + nTot + '</strong> ' + (nTot === 1 ? 'movimento proprio' : 'movimenti propri') + ' <span class="dim">— tutti in elenco</span>')) +
+        '</div>')
+    } catch (eCnt) {
+      html('inserimento-contatore', '<div class="elenco-contatore-riga dim">Totale non contato: ' + esc(eCnt.message || eCnt) + '</div>')
+    }
 
     if (!data || data.length === 0) {
       recentiList = []
@@ -8990,6 +9023,16 @@ function renderOfferteTable() {
     ? '⏳ <strong>' + inGiro + '</strong> ' + (inGiro === 1 ? 'conferma ordinata, non ancora fatturata' : 'conferme ordinate, non ancora fatturate')
     : '✅ Nessuna conferma in attesa di fattura')
 
+  // 59·B — quante, e in che stato. Gli stati delle conferme e delle vecchie
+  // offerte sono due elenchi diversi: si mostrano con le loro parole.
+  html('offerte-contatore', contatoreElencoHtml(offerteList || [], list,
+    { sing: 'documento', plur: 'documenti' },
+    function (o) { return o.stato || 'altro' },
+    { ordinato: { sing: 'ordinata', plur: 'ordinate' }, consegnato_parte: { sing: 'consegnata in parte', plur: 'consegnate in parte' },
+      consegnato: { sing: 'consegnata', plur: 'consegnate' }, fatturato: { sing: 'fatturata', plur: 'fatturate' },
+      da_valutare: { sing: 'offerta da valutare', plur: 'offerte da valutare' }, confermata: { sing: 'offerta confermata', plur: 'offerte confermate' },
+      scaduta: { sing: 'offerta scaduta', plur: 'offerte scadute' }, rifiutata: { sing: 'offerta rifiutata', plur: 'offerte rifiutate' } }))
+
   if (!list.length) {
     var vuoto = (q || stato || tipo === 'offerta')
       ? 'Nessun documento trovato con questi filtri.'
@@ -9192,7 +9235,7 @@ async function newOfferta() {
   riempiSelectStatoOff('conferma_ordine', 'ordinato')
   setVal('off-tot-stampato', ''); setVal('off-tot-stampato-iva', 'netto'); setVal('off-tot-stampato-aliquota', '')
   onTotaleStampatoChange()
-  if (el('off-allegato')) el('off-allegato').value = ''
+  svuotaCodaFile('off-allegato')   // 59·A
   impostaModuloPerTipo('conferma_ordine')
   showOfferteView('edit')
   try { await loadCantieri() } catch (e) { /* non bloccante */ }
@@ -9222,7 +9265,7 @@ async function editOfferta(id) {
     setVal('off-tot-stampato-iva', o.totale_stampato_iva_inclusa === true ? 'iva_inclusa' : 'netto')
     setVal('off-tot-stampato-aliquota', o.totale_stampato_aliquota == null ? '' : o.totale_stampato_aliquota)
     onTotaleStampatoChange()
-    if (el('off-allegato')) el('off-allegato').value = ''
+    svuotaCodaFile('off-allegato')   // 59·A
     impostaModuloPerTipo(editingOffertaTipo)
     showOfferteView('edit')
     try { await loadCantieri() } catch (e) { /* non bloccante */ }
@@ -9236,8 +9279,6 @@ async function editOfferta(id) {
 async function saveOfferta() {
   html('offerte-edit-banner', '')
   var btn = el('btn-salva-offerta'); if (btn) btn.disabled = true
-  var fileInput = el('off-allegato')
-  var file = (fileInput && fileInput.files && fileInput.files.length) ? fileInput.files[0] : null
   try {
     var tipo = editingOffertaTipo || 'conferma_ordine'
     var td = TIPI_DOCUMENTO_OFF[tipo]
@@ -9298,13 +9339,16 @@ async function saveOfferta() {
       if (ins.error) throw ins.error
     }
 
-    var allegatoFallito = await creaAllegatoDaForm(file, 'tm_conta_offerte', id)
+    // 59·A — piu' allegati, esito per ciascuno.
+    var allegati = riassuntoEsitiAllegati(await creaAllegatiDaForm('off-allegato', 'tm_conta_offerte', id, btn))
     await loadOfferte(true)
     offerteList = offerteCache || []
-    var nome = td.et + ' salvata: ' + fornitore + ', righe ' + fmtNum2(testa.totale) + ' CHF.'
+    var nome = td.et + ' salvata: ' + fornitore + ', righe ' + fmtNum2(testa.totale) + ' CHF.' +
+               (allegati.ok && !allegati.ko ? ' ' + allegati.testo + '.' : '')
     var scarto = testoConfrontoTotaleOff(testa)
-    if (allegatoFallito) {
-      showFattureBanner('offerte-list-banner', 'warn', nome + ' L’allegato però non è stato caricato: ' + allegatoFallito)
+    if (allegati.ko) {
+      showFattureBanner('offerte-list-banner', 'warn', nome + ' ' + allegati.testo +
+        '. Per riprovare: apri la scheda e usa «Aggiungi allegato».' + (scarto ? ' Attenzione: ' + scarto : ''))
     } else if (scarto) {
       showFattureBanner('offerte-list-banner', 'warn', nome + ' Attenzione: ' + scarto)
     } else {
@@ -16132,38 +16176,253 @@ function etichettaTipoAllegato(tipo) {
 // cosi' gli elenchi possono scrivere «📎 3» senza una query per riga.
 let allegatiCache = []
 
-// Il file scelto nel form diventa un allegato del documento appena salvato.
-// Restituisce null se e' andato tutto bene, o il motivo del fallimento: il
-// documento resta salvato comunque, e il chiamante lo dice.
-async function creaAllegatoDaForm(file, tabella, idDoc) {
-  if (!file || !idDoc) return null
-  try {
-    var mb = file.size / (1024 * 1024)
-    if (mb > LIMITE_ALLEGATO_MB) {
-      return 'il file pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' + LIMITE_ALLEGATO_MB + ' MB'
-    }
-    var path = await uploadAllegato(file)
-    const { error } = await sb.from('tm_conta_allegati').insert({
-      azienda_id: currentAziendaId,
-      tabella_origine: tabella,
-      id_origine: idDoc,
-      tipo: 'fattura',
-      path: path,
-      nome_file: file.name,
-      dimensione: file.size,
-      created_by: currentUser ? currentUser.id : null
-    }).select()
-    if (error) {
-      // Il file e' salito ma la riga no: si toglie, altrimenti resta nello
-      // Storage senza che niente lo nomini.
-      try { await deleteAllegatoStorage(path) } catch (_) {}
-      throw error
-    }
-    invalidaCacheAllegati()
-    return null
-  } catch (e) {
-    return e.message || String(e)
+// ══════════════════════════════════════════════════════════════════════════════
+// 59·B — I CONTATORI IN TESTA AGLI ELENCHI
+//
+// Il numero deve sempre dire COSA conta. Senza filtri:
+//   «6 fatture — 6 emesse · 0 bozze · 0 annullate»
+// Con un filtro o una ricerca attivi:
+//   «4 di 6 fatture (filtro attivo) — nel filtro: 3 emesse · 1 bozza»
+// Gli stati si contano sulle righe MOSTRATE, cosi' il dettaglio corrisponde a
+// quello che si ha davanti; il «di N» dice quante ce ne sono in tutto.
+//
+//   tutte       l'elenco intero, mostrate  l'elenco dopo filtri e ricerca
+//   nome        { sing: 'fattura', plur: 'fatture' }
+//   statoDi     (riga) -> chiave di stato, o null se non c'e' uno stato
+//   etichette   { chiave: { sing: 'emessa', plur: 'emesse' } }, nell'ordine
+//               in cui vanno mostrate; le chiavi non previste vanno in coda
+// ══════════════════════════════════════════════════════════════════════════════
+function contatoreElencoHtml(tutte, mostrate, nome, statoDi, etichette) {
+  var n = (tutte || []).length, m = (mostrate || []).length
+  var filtrato = m !== n
+  var parola = function (k, plurale) { return plurale === 1 ? k.sing : k.plur }
+  var testa = filtrato
+    ? '<strong>' + m + ' di ' + n + '</strong> ' + parola(nome, n) + ' <span class="dim">(filtro attivo)</span>'
+    : '<strong>' + n + '</strong> ' + parola(nome, n)
+  if (!statoDi || !n) return '<div class="elenco-contatore-riga">' + testa + '</div>'
+
+  var conte = {}
+  ;(mostrate || []).forEach(function (r) {
+    var k = statoDi(r) || 'altro'
+    conte[k] = (conte[k] || 0) + 1
+  })
+  var chiavi = Object.keys(etichette || {}).concat(
+    Object.keys(conte).filter(function (k) { return !(etichette && etichette[k]) }))
+  var pezzi = chiavi.map(function (k) {
+    var c = conte[k] || 0
+    var e = (etichette && etichette[k]) || { sing: k, plur: k }
+    return c + ' ' + parola(e, c)
+  })
+  return '<div class="elenco-contatore-riga">' + testa +
+    ' <span class="dim">—' + (filtrato ? ' nel filtro:' : '') + '</span> ' + pezzi.join(' · ') + '</div>'
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 59·A — ALLEGATI MULTIPLI
+//
+// Prima: un file per volta. Per allegarne tre: uno, salva, riapri, allega,
+// salva. Adesso ogni campo file accetta piu' file (scelta multipla o
+// trascinamento), tenuti in una CODA per campo con nome e dimensione, ognuno
+// togliibile prima del salvataggio.
+//
+// Il caricamento e' UNO PER UNO, con un esito per ciascuno: «✅ caricato»
+// oppure «❌ non caricato: motivo». MAI un «salvato» unico se anche uno e'
+// fallito. Un file fallito non ferma gli altri e non tocca il documento, che
+// resta salvato: si riprova solo quello.
+//
+// Il percorso nello Storage resta {azienda_id}/{timestamp}_{nome}: il primo
+// segmento e' l'azienda, ed e' quello che la policy dello Storage controlla.
+// Stesso limite (LIMITE_ALLEGATO_MB) e stessi tipi di prima, per file.
+//
+// UNA SOLA FUNZIONE fa upload + riga in tm_conta_allegati + pulizia se la riga
+// non si scrive: caricaAllegati(). Prima erano due copie (form e finestra).
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── La coda dei file scelti, per campo ──────────────────────────────────────
+// Un <input type="file"> non si puo' modificare da programma: per togliere un
+// file dalla scelta si tiene un array a parte, e l'input si svuota a ogni
+// scelta cosi' lo stesso file si puo' riscegliere.
+var codeFile = {}          // id dell'input -> [File]
+
+function fileScelti(inputId) { return (codeFile[inputId] || []).slice() }
+
+function svuotaCodaFile(inputId) {
+  codeFile[inputId] = []
+  var inp = el(inputId); if (inp) inp.value = ''
+  renderCodaFile(inputId)
+}
+
+function aggiungiAllaCoda(inputId, lista) {
+  if (!codeFile[inputId]) codeFile[inputId] = []
+  var coda = codeFile[inputId]
+  for (var i = 0; i < (lista ? lista.length : 0); i++) {
+    var f = lista[i]
+    if (!f || !f.name) continue
+    // Lo stesso file scelto due volte non va caricato due volte.
+    var doppio = coda.some(function (x) {
+      return x.name === f.name && x.size === f.size && x.lastModified === f.lastModified
+    })
+    if (!doppio) coda.push(f)
   }
+  renderCodaFile(inputId)
+}
+
+function togliDallaCoda(inputId, indice) {
+  if (!codeFile[inputId]) return
+  codeFile[inputId].splice(indice, 1)
+  renderCodaFile(inputId)
+}
+
+function fmtDimensioneFile(bytes) {
+  var n = safeNum(bytes) || 0
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return fmtNumIt(n / 1024) + ' KB'
+  return fmtNumIt(n / (1024 * 1024)) + ' MB'
+}
+
+// L'elenco sotto il campo: nome, dimensione, ✕. Con `esiti` (dopo un
+// caricamento) ogni riga porta anche il suo ✅ / ❌ motivo.
+function renderCodaFile(inputId, esiti) {
+  var box = el(inputId + '-coda')
+  if (!box) return
+  var coda = codeFile[inputId] || []
+  if (!coda.length && !(esiti && esiti.length)) { box.innerHTML = ''; return }
+  var righe = coda.map(function (f, i) {
+    var mb = f.size / (1024 * 1024)
+    var troppo = mb > LIMITE_ALLEGATO_MB
+    return '<div class="coda-file-riga' + (troppo ? ' err' : '') + '">' +
+      '<span class="coda-file-nome" title="' + esc(f.name) + '">📎 ' + esc(f.name) + '</span>' +
+      '<span class="coda-file-dim">' + esc(fmtDimensioneFile(f.size)) +
+        (troppo ? ' — oltre il limite di ' + LIMITE_ALLEGATO_MB + ' MB' : '') + '</span>' +
+      '<button type="button" class="icon-btn danger" title="Togli dalla scelta"' +
+        ' onclick="togliDallaCoda(\'' + esc(inputId) + '\', ' + i + ')">✕</button>' +
+    '</div>'
+  }).join('')
+  var esitiHtml = (esiti && esiti.length) ? esitiAllegatiHtml(esiti) : ''
+  box.innerHTML = esitiHtml +
+    (coda.length
+      ? '<div class="coda-file-testa">' + coda.length + (coda.length === 1 ? ' file da caricare' : ' file da caricare') +
+        ' <span class="dim">— si caricano al salvataggio, uno per uno</span></div>' + righe
+      : '')
+}
+
+// Rende un campo file «multiplo»: scelta di piu' file, coda sotto,
+// trascinamento sul campo e sulla coda. Si chiama una volta per campo.
+function collegaInputMultiplo(inputId) {
+  var inp = el(inputId)
+  if (!inp || inp.getAttribute('data-multiplo') === '1') return
+  inp.multiple = true
+  inp.setAttribute('data-multiplo', '1')
+  inp.addEventListener('change', function () {
+    aggiungiAllaCoda(inputId, inp.files)
+    inp.value = ''          // la scelta vive nella coda; l'input riparte pulito
+  })
+  var zona = el(inputId + '-coda')
+  ;[inp, zona].forEach(function (z) {
+    if (!z) return
+    z.addEventListener('dragover', function (ev) { ev.preventDefault(); z.classList.add('trascina') })
+    z.addEventListener('dragleave', function () { z.classList.remove('trascina') })
+    z.addEventListener('drop', function (ev) {
+      ev.preventDefault(); z.classList.remove('trascina')
+      if (ev.dataTransfer && ev.dataTransfer.files) aggiungiAllaCoda(inputId, ev.dataTransfer.files)
+    })
+  })
+}
+
+var INPUT_ALLEGATI_MULTIPLI = ['f-allegato', 'a-allegato', 'off-allegato', 'alleg-file']
+document.addEventListener('DOMContentLoaded', function () {
+  INPUT_ALLEGATI_MULTIPLI.forEach(collegaInputMultiplo)
+})
+
+// ── Il caricamento, uno per uno ──────────────────────────────────────────────
+// Torna gli esiti: [{ file, ok, motivo }]. La riga in tm_conta_allegati nasce
+// solo se il file e' salito; se la riga non si scrive, il file si toglie
+// dallo Storage (altrimenti resterebbe senza che niente lo nomini).
+// onProgresso(fatti, totale) serve al bottone: «⏳ Allegato 2 di 3…».
+async function caricaAllegati(files, tabella, idDoc, tipo, onProgresso) {
+  var esiti = []
+  var lista = files || []
+  for (var i = 0; i < lista.length; i++) {
+    var f = lista[i]
+    var esito = { file: f, ok: false, motivo: null }
+    if (onProgresso) { try { onProgresso(i, lista.length) } catch (_) {} }
+    try {
+      if (!idDoc) throw new Error('il documento non ha un id')
+      if (!currentAziendaId) throw new Error('sessione non attiva')
+      var mb = f.size / (1024 * 1024)
+      if (mb > LIMITE_ALLEGATO_MB) {
+        throw new Error('pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' + LIMITE_ALLEGATO_MB + ' MB')
+      }
+      var path = await uploadAllegato(f)
+      const { error } = await sb.from('tm_conta_allegati').insert({
+        azienda_id: currentAziendaId,
+        tabella_origine: tabella,
+        id_origine: idDoc,
+        tipo: tipo || 'fattura',
+        path: path,
+        nome_file: f.name,
+        dimensione: f.size,
+        created_by: currentUser ? currentUser.id : null
+      }).select()
+      if (error) {
+        try { await deleteAllegatoStorage(path) } catch (_) {}
+        throw error
+      }
+      esito.ok = true
+    } catch (e) {
+      esito.motivo = e.message || String(e)
+      console.error('Allegato non caricato:', f && f.name, e)
+    }
+    esiti.push(esito)
+  }
+  if (esiti.some(function (x) { return x.ok })) {
+    invalidaCacheAllegati()
+    exportDataset = null                       // il pacchetto deve rileggere
+  }
+  return esiti
+}
+
+// Gli esiti in una riga di testo per i banner: «2 allegati caricati ·
+// 1 NON caricato: nome (motivo)». Vuoto se non c'era niente da caricare.
+function riassuntoEsitiAllegati(esiti) {
+  var ok = esiti.filter(function (x) { return x.ok })
+  var ko = esiti.filter(function (x) { return !x.ok })
+  var r = { ok: ok.length, ko: ko.length, falliti: ko, testo: '' }
+  if (!esiti.length) return r
+  var parti = []
+  if (ok.length) parti.push(ok.length === 1 ? '1 allegato caricato' : ok.length + ' allegati caricati')
+  if (ko.length) parti.push((ko.length === 1 ? '1 allegato NON caricato: ' : ko.length + ' allegati NON caricati: ') +
+    ko.map(function (x) { return '«' + x.file.name + '» (' + x.motivo + ')' }).join(', '))
+  r.testo = parti.join(' · ')
+  return r
+}
+
+// Gli esiti riga per riga, per la finestra e per la coda.
+function esitiAllegatiHtml(esiti) {
+  return '<div class="coda-file-esiti">' + esiti.map(function (x) {
+    return '<div class="coda-file-riga ' + (x.ok ? 'ok' : 'err') + '">' +
+      '<span class="coda-file-nome">' + (x.ok ? '✅ ' : '❌ ') + esc(x.file.name) + '</span>' +
+      '<span class="coda-file-dim">' + (x.ok ? 'caricato' : 'non caricato: ' + esc(x.motivo || '')) + '</span>' +
+    '</div>'
+  }).join('') + '</div>'
+}
+
+// I file scelti in un form diventano allegati del documento appena salvato.
+// Torna gli esiti (vuoto se non c'era nessun file); il documento resta salvato
+// comunque, e il chiamante dice cosa e' andato e cosa no. Dopo, nella coda
+// restano SOLO i falliti: cosi' se il form resta aperto si riprova solo quelli.
+async function creaAllegatiDaForm(inputId, tabella, idDoc, btn) {
+  var files = fileScelti(inputId)
+  if (!files.length) return []
+  var testoBtn = btn ? btn.textContent : null
+  var esiti = await caricaAllegati(files, tabella, idDoc, 'fattura', function (fatti, tot) {
+    if (btn) btn.textContent = '⏳ Allegato ' + (fatti + 1) + ' di ' + tot + '…'
+  })
+  if (btn && testoBtn != null) btn.textContent = testoBtn
+  codeFile[inputId] = esiti.filter(function (x) { return !x.ok }).map(function (x) { return x.file })
+  renderCodaFile(inputId)
+  return esiti
 }
 
 async function loadAllegati(force) {
@@ -16340,12 +16599,12 @@ var docAllegatoCorrente = null
 
 function apriAggiungiAllegato(tabella, id, nome, tipoProposto) {
   docAllegatoCorrente = { tabella: tabella, id: id, nome: nome || '' }
-  var inp = el('alleg-file'); if (inp) inp.value = ''
+  svuotaCodaFile('alleg-file')             // 59·A — la coda riparte vuota
   setVal('alleg-tipo', tipoProposto || 'fattura')
   html('alleg-banner', '')
   html('alleg-riepilogo',
     '<div class="cls-sum-title">' + esc(nome || 'Documento') + '</div>' +
-    '<div class="cls-sum-meta"><span>Massimo ' + LIMITE_ALLEGATO_MB + ' MB per file</span></div>')
+    '<div class="cls-sum-meta"><span>Massimo ' + LIMITE_ALLEGATO_MB + ' MB per file · più file in un colpo</span></div>')
   var ov = el('allegato-overlay')
   if (ov) ov.style.display = 'flex'
   registraAperturaModale('allegato-overlay')
@@ -16357,47 +16616,41 @@ function chiudiAggiungiAllegato() {
   docAllegatoCorrente = null
 }
 
+// 59·A — piu' file in un colpo, esito per ciascuno. Se tutti passano la
+// finestra si chiude; se anche uno fallisce resta aperta con SOLO i falliti in
+// coda e l'esito riga per riga: «Allega» di nuovo riprova quelli.
 async function salvaAllegato() {
   if (!docAllegatoCorrente) return
   var d = docAllegatoCorrente
   var btn = el('alleg-salva-btn')
-  var inp = el('alleg-file')
-  var file = (inp && inp.files && inp.files.length) ? inp.files[0] : null
+  var files = fileScelti('alleg-file')
   try {
-    if (!file) throw new Error('Scegli un file da allegare.')
-    // Il limite si controlla PRIMA di caricare: mandare 40 MB per sentirsi dire
-    // di no dopo due minuti di attesa e' il modo peggiore di dirlo.
-    var mb = file.size / (1024 * 1024)
-    if (mb > LIMITE_ALLEGATO_MB) {
-      throw new Error('Il file pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' +
-        LIMITE_ALLEGATO_MB + ' MB. Riducilo o caricalo diviso.')
-    }
+    if (!files.length) throw new Error('Scegli almeno un file da allegare.')
     var tipo = getVal('alleg-tipo') || 'altro'
+    if (btn) btn.disabled = true
+    html('alleg-banner', '')
 
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Caricamento…' }
+    var esiti = await caricaAllegati(files, d.tabella, d.id, tipo, function (fatti, tot) {
+      if (btn) btn.textContent = '⏳ Allegato ' + (fatti + 1) + ' di ' + tot + '…'
+    })
+    var r = riassuntoEsitiAllegati(esiti)
+    // In coda restano solo i falliti.
+    codeFile['alleg-file'] = r.falliti.map(function (x) { return x.file })
 
-    var path = await uploadAllegato(file)     // stesso bucket e stesso formato di sempre
-    const { error } = await sb.from('tm_conta_allegati').insert({
-      azienda_id: currentAziendaId,
-      tabella_origine: d.tabella,
-      id_origine: d.id,
-      tipo: tipo,
-      path: path,
-      nome_file: file.name,
-      dimensione: file.size,
-      created_by: currentUser ? currentUser.id : null
-    }).select()
-    if (error) {
-      // Il file e' gia' nello Storage ma la riga no: senza questo rimarrebbe
-      // un file che nessuno puo' piu' raggiungere.
-      try { await deleteAllegatoStorage(path) } catch (_) {}
-      throw error
+    if (!r.ko) {
+      chiudiAggiungiAllegato()
+      await ricaricaDopoAllegato(d)
+      var bannerId = bannerAllegatiDi(d.tabella)
+      if (el(bannerId)) showFattureBanner(bannerId, 'ok', r.testo + ' alle ' + oraAdesso() + '.')
+      return
     }
-
-    invalidaCacheAllegati()
-    exportDataset = null                       // il pacchetto deve rileggere
-    chiudiAggiungiAllegato()
-    await ricaricaDopoAllegato(d)
+    renderCodaFile('alleg-file', esiti)
+    html('alleg-banner', '<div class="fase-banner ' + (r.ok ? 'warn' : 'err') + '">' +
+      '<span class="icon" aria-hidden="true">' + (r.ok ? '⚠️' : '❌') + '</span>' +
+      '<div class="msg">' + esc(r.testo) + '.<small>' +
+      (r.ok ? 'Quelli caricati sono già sul documento. ' : '') +
+      'In coda restano solo i file non caricati: premi «Allega» per riprovarli, o toglili con ✕.</small></div></div>')
+    if (r.ok) await ricaricaDopoAllegato(d)
   } catch (e) {
     html('alleg-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
       '<div class="msg">' + esc(e.message || e) + '</div></div>')
@@ -16472,6 +16725,10 @@ async function ricaricaDopoAllegato(d) {
     } else if (d.tabella === 'tm_conta_fatture_acquisto') {
       if (el('acquisti-allegati')) html('acquisti-allegati', boxAllegatiHtml(d.tabella, d.id, d.nome))
       await loadAcquistiList()
+    } else if (d.tabella === 'tm_conta_offerte') {
+      // 59·A — prima la scheda della conferma non si aggiornava: l'allegato
+      // c'era ma si vedeva solo riaprendola.
+      if (el('offerte-detail-allegati')) html('offerte-detail-allegati', boxAllegatiHtml(d.tabella, d.id, d.nome))
     } else {
       if (currentPage === 'inserimento') await loadRecentiInseriti()
     }
@@ -17259,7 +17516,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '58'
+var VERSIONE = '59'
 
 function controllaVersionePagina() {
   try {
