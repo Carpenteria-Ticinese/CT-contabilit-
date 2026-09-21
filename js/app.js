@@ -3886,6 +3886,10 @@ async function newFattura(tipo) {
   // FASE 27 — cantiere: documento nuovo, campo pulito.
   try { await loadCantieri() } catch (e) { /* non bloccante */ }
   impostaCantierePicker('v', null)
+  // FASE 58 — una fattura nuova non viene da nessuna rata d'acconto.
+  editorAccontoId = null
+  _avvisoAccontoBozza = null
+  html('fatture-acconto-ref', '')
   // FASE 29 — nessuno sconto di documento su una fattura nuova.
   if (el('f-sconto-tipo'))   el('f-sconto-tipo').value   = 'pct'
   if (el('f-sconto-valore')) el('f-sconto-valore').value = ''
@@ -3975,6 +3979,8 @@ async function editFattura(id) {
     impostaCantierePicker('v', f.cantiere_id || null)
     try { await loadMappaCantieri(true) } catch (e) { /* non bloccante */ }
     mostraDivisioneSeCe('v', 'fattura', f.id)
+    // FASE 58 — se la bozza e' nata da una rata d'acconto, lo si rivede.
+    await caricaAccontoDellaBozza(f.id)
     // FASE 29 — lo sconto di documento salvato torna nel modulo.
     if (el('f-sconto-tipo'))   el('f-sconto-tipo').value   = f.sconto_doc_tipo || 'pct'
     if (el('f-sconto-valore')) el('f-sconto-valore').value = f.sconto_doc_valore == null ? '' : f.sconto_doc_valore
@@ -4439,6 +4445,9 @@ async function persistBozza() {
   }
   if (!fatturaId) throw new Error('ID fattura non disponibile dopo il salvataggio.')
   await replaceRighe(fatturaId)
+  // FASE 58 — la rata d'acconto punta alla bozza. Non lancia: un legame
+  // mancato finisce in _avvisoAccontoBozza, letto da saveBozza e doEmitCorrente.
+  await collegaBozzaAllaRata(fatturaId)
   return fatturaId
 }
 
@@ -4451,6 +4460,10 @@ async function saveBozza() {
     if (ncChk.applicable && ncChk.exceeds) {
       showFattureBanner('fatture-edit-banner', 'warn',
         'Bozza salvata alle ' + oraAdesso() + ', ma lo storno (' + fmtNum2(ncChk.tot) + ') supera la fattura originale (' + fmtNum2(ncChk.max) + '): riducilo prima di emettere.')
+    } else if (_avvisoAccontoBozza) {
+      // FASE 58 — la bozza c'e', il legame con la rata no: va detto.
+      showFattureBanner('fatture-edit-banner', 'warn',
+        'Bozza salvata alle ' + oraAdesso() + ', ma ' + _avvisoAccontoBozza + '. Risalva per riprovare.')
     } else {
       showFattureBanner('fatture-edit-banner', 'ok', 'Bozza salvata alle ' + oraAdesso() + '.')
     }
@@ -4520,6 +4533,9 @@ async function doEmitCorrente() {
   var btn = el('btn-emetti'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Emissione…' }
   try {
     await persistBozza()
+    // FASE 58 — se la rata non e' collegata, emettere adesso darebbe una
+    // fattura d'acconto che il cantiere non vede. Si ferma prima del numero.
+    if (_avvisoAccontoBozza) throw new Error('la bozza è salvata ma ' + _avvisoAccontoBozza + '. Emissione fermata: riprova.')
     const { data, error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: editorFatturaId })
     if (error) throw error
     var emessa = Array.isArray(data) ? data[0] : data
@@ -4979,6 +4995,9 @@ async function viewFattura(id) {
     // pagina in coda al foglio di stampa.
     await disegnaBoxPolizza(f.id)
     await preparaPolizzaPerStampa(f.id)
+    // FASE 58 — contratto e acconti, solo a schermo (div no-print, fuori
+    // da fatture-print). Se la fattura non copre una rata, niente riquadro.
+    try { await disegnaBoxAcconto(f) } catch (eA) { console.warn('Riquadro acconto:', eA.message || eA) }
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
@@ -13389,7 +13408,11 @@ var NOMI_TABELLE_CANTIERE = {
   preventivi_cantiere: 'preventivi', cantiere_figure: 'figure assegnate',
   pagamenti_ricevuti: 'pagamenti ricevuti', sal_pagamenti: 'pagamenti SAL',
   tiri_gru: 'tiri di gru', assenze: 'assenze', lavorazioni: 'lavorazioni',
-  tm_conta_classificazioni: 'documenti contabili'
+  tm_conta_classificazioni: 'documenti contabili',
+  // FASE 27 e 58 — le colonne cantiere_id del modulo, trovate dal catalogo.
+  tm_conta_fatture: 'fatture di vendita', tm_conta_fatture_acquisto: 'fatture d\'acquisto',
+  tm_conta_movimenti_propri: 'movimenti propri', tm_conta_offerte: 'conferme d\'ordine',
+  tm_conta_cantiere_contratto: 'contratto e acconti'
 }
 function nomeTabellaLeggibile(t) { return NOMI_TABELLE_CANTIERE[t] || t }
 
@@ -13574,6 +13597,11 @@ async function initCantieriPage() {
     await loadSpeseCantiere(true)
     await loadRegiaCantiere(true)
     await loadGiornate(true)
+    // FASE 58 — contratti e rate. Se fallisce (SQL non lanciato) la scheda lo
+    // dice nel suo blocco; il resto della pagina non si ferma.
+    try { await loadContrattiCantiere(true) } catch (eC) { console.warn('Contratti non letti:', eC.message || eC) }
+    contrattoInModifica = false
+    accontoDaCollegare = null
     riempiTendinaCantieri()
     if (cantiereApertoId) apriCantiere(cantiereApertoId)
     else tornaElencoCantieri()
@@ -13741,8 +13769,12 @@ function renderSchedaCantiere() {
   var cant = (cantieriCache || []).filter(function (x) { return x.id === id })[0]
   var k = contiCantiere(id)
 
+  // FASE 58 — il contratto sta in cima, e c'e' anche su un cantiere senza
+  // movimenti: il contratto si scrive PRIMA della prima fattura.
+  var contratto = bloccoContrattoHtml(id)
+
   if (k.vuoto) {
-    html('cant-dettaglio',
+    html('cant-dettaglio', contratto +
       '<div class="card"><div class="cru-vuoto">' +
       '<strong>Nessun movimento registrato per questo cantiere.</strong><br>' +
       'Non ci sono fatture, spese né ore collegate a ' + esc(nomeCantiere(cant, false)) + '. ' +
@@ -13862,7 +13894,7 @@ function renderSchedaCantiere() {
           : '')) +
     '</div>'
 
-  html('cant-dettaglio', entrate + uscite + perGruppo + manodopera + risultato)
+  html('cant-dettaglio', contratto + entrate + uscite + perGruppo + manodopera + risultato)
 }
 
 // ── Elenco dei documenti dietro a un riquadro ────────────────────────────────
@@ -17227,7 +17259,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '57'
+var VERSIONE = '58'
 
 function controllaVersionePagina() {
   try {
@@ -17811,3 +17843,669 @@ document.addEventListener('DOMContentLoaded', function () {
     if (window.innerWidth > 900) closeSidebar()
   })
 })
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE 58 — CONTRATTO E ACCONTI PER CANTIERE
+//
+// IL PROBLEMA. Due fatture d'acconto emesse; poi una variante alza il
+// contratto; la scaletta ricalcolata sul nuovo totale mostrava per il primo
+// acconto una cifra diversa da quella fatturata. La cliente se n'e' accorta.
+// Causa: scaletta e totale in due posti diversi, e la scaletta si rifaceva.
+//
+// LA REGOLA. Sul cantiere si scrivono: il contratto (importo, data, rif.
+// offerta), le varianti (± una per riga) e le RATE, A MANO. Una rata fatturata
+// e' congelata (trigger nel DB). NESSUN ricalcolo automatico: se il totale
+// cambia, le rate future le corregge Umberto. Il programma fa UN avviso
+// (somma rate ≠ totale aggiornato, con le cifre) e non blocca mai.
+//
+// IVA ESCLUSA, SEMPRE. Contratto, varianti e rate sono netti. Verso la
+// fattura si legge e si scrive totale_imponibile, mai totale: oggi CT non e'
+// soggetta IVA e coincidono, il giorno che lo diventa continuerebbero a
+// tornare. Sta scritto accanto a ogni campo importo.
+//
+// COSA NON E'. Non e' il «Piano rateale» (tm_conta_rate, FASE 8): quello sono
+// le scadenze di pagamento di UNA fattura. Qui sono gli acconti di UN
+// CONTRATTO, ognuno con la sua fattura. Per questo si chiama «Contratto e
+// acconti» e le tabelle tm_conta_cantiere_*.
+//
+// COSA NON FA. Niente in stampa e nel PDF: il riquadro sulla fattura e' solo a
+// schermo. Nessuna colonna nuova su tm_conta_fatture: il legame rata→fattura
+// vive in tm_conta_cantiere_acconti.fattura_id, e il passaggio a «fatturata»
+// lo fa un trigger AFTER sull'emissione (SQL_FASE58), non questo codice.
+//
+// FATTURA ANNULLATA. La rata resta congelata e visibile («fattura annullata»)
+// ma non conta in nessuna somma: ne' nel «gia' fatturato», ne' nella somma
+// delle rate che si confronta col totale.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var contrattiCache = null        // { perCantiere: { cantiere_id -> contratto (+varianti, +acconti) } }
+var contrattiErrore = null       // perche' l'ultima lettura e' fallita (SQL non lanciato, permessi)
+var editorAccontoId = null       // la rata da cui e' nata la bozza aperta nell'editor
+var _avvisoAccontoBozza = null   // bozza salvata ma non collegata alla rata: lo dice saveBozza
+var contrattoInModifica = false  // il modulo del contratto e' aperto nella scheda cantiere
+var accontoDaCollegare = null    // la rata sotto cui e' aperta la tendina «collega a fattura emessa»
+var fattureCollegabili = null    // le fatture emesse non ancora collegate a una rata
+
+// ── Lettura ──────────────────────────────────────────────────────────────────
+// Una query sola: contratti dell'azienda con dentro varianti e rate, e per
+// ogni rata la sua fattura (numero, stato, imponibile). Lo stato della fattura
+// serve a sapere se e' annullata.
+async function loadContrattiCantiere(force) {
+  if (contrattiCache && !force) return contrattiCache
+  await richiediAccesso('loadContrattiCantiere')   // 52·B1: mai un elenco vuoto per silenzio
+  try {
+    const { data, error } = await sb.from('tm_conta_cantiere_contratto')
+      .select('*, varianti:tm_conta_cantiere_varianti(*),' +
+              ' acconti:tm_conta_cantiere_acconti(*,' +
+              ' fattura:tm_conta_fatture(id, numero, stato, data_emissione, totale_imponibile, cantiere_id))')
+      .eq('azienda_id', currentAziendaId)
+    if (error) throw error
+    var mappa = {}
+    ;(data || []).forEach(function (c) {
+      c.varianti = (c.varianti || []).sort(function (a, b) {
+        return String(a.data).localeCompare(String(b.data)) || String(a.created_at).localeCompare(String(b.created_at))
+      })
+      c.acconti = (c.acconti || []).sort(function (a, b) { return a.ordine - b.ordine })
+      mappa[c.cantiere_id] = c
+    })
+    contrattiCache = { perCantiere: mappa }
+    contrattiErrore = null
+    return contrattiCache
+  } catch (e) {
+    // Tabelle non ancora create (SQL_FASE58 non lanciato) o permessi: si dice
+    // nella scheda, non si finge «nessun contratto».
+    contrattiCache = null
+    contrattiErrore = e.message || String(e)
+    throw e
+  }
+}
+
+function contrattoDi(cantiereId) {
+  return (contrattiCache && contrattiCache.perCantiere[cantiereId]) || null
+}
+
+function trovaAcconto(accontoId) {
+  if (!contrattiCache) return null
+  var ids = Object.keys(contrattiCache.perCantiere)
+  for (var i = 0; i < ids.length; i++) {
+    var c = contrattiCache.perCantiere[ids[i]]
+    var a = (c.acconti || []).filter(function (x) { return x.id === accontoId })[0]
+    if (a) return { c: c, a: a }
+  }
+  return null
+}
+
+function trovaAccontoPerFattura(fatturaId) {
+  if (!contrattiCache || !fatturaId) return null
+  var ids = Object.keys(contrattiCache.perCantiere)
+  for (var i = 0; i < ids.length; i++) {
+    var c = contrattiCache.perCantiere[ids[i]]
+    var a = (c.acconti || []).filter(function (x) { return x.fattura_id === fatturaId })[0]
+    if (a) return { c: c, a: a }
+  }
+  return null
+}
+
+// Una rata la cui fattura e' stata annullata: resta, ma non conta.
+function accontoAnnullato(a) {
+  return !!(a && a.fattura && a.fattura.stato === 'annullata')
+}
+
+// Le somme. Tutte IVA esclusa. Le rate annullate stanno fuori da tutto.
+function totaliContratto(c) {
+  var base = safeNum(c.importo_contratto) || 0
+  var varianti = 0
+  ;(c.varianti || []).forEach(function (v) { varianti += safeNum(v.importo) || 0 })
+  var rate = 0, fatturato = 0, daFatturare = 0
+  ;(c.acconti || []).forEach(function (a) {
+    if (accontoAnnullato(a)) return
+    var imp = safeNum(a.importo) || 0
+    rate += imp
+    if (a.stato === 'fatturata') fatturato += imp
+    else daFatturare += imp
+  })
+  var aggiornato = base + varianti
+  return { base: base, varianti: varianti, aggiornato: aggiornato,
+           rate: rate, fatturato: fatturato, daFatturare: daFatturare,
+           resta: aggiornato - fatturato, differenzaRate: rate - aggiornato }
+}
+
+function nomeCantiereContratto(c) {
+  var x = (cantieriCache || []).filter(function (k) { return k.id === c.cantiere_id })[0]
+  return x ? nomeCantiere(x, false) : ('cantiere non più presente (' + String(c.cantiere_id).slice(0, 8) + '…)')
+}
+
+// ── Il blocco nella scheda del cantiere ──────────────────────────────────────
+var IVA_ESCL = '<span class="acc-iva">IVA esclusa</span>'
+
+function bloccoContrattoHtml(cantiereId) {
+  var titolo = '<div class="card-title">📝 Contratto e acconti</div>'
+  if (!contrattiCache) {
+    return '<div class="card cant-blocco">' + titolo +
+      '<div class="cru-vuoto">❌ Contratto non leggibile: ' + esc(contrattiErrore || 'lettura non riuscita') + '.<br>' +
+      'Se l\'SQL della FASE 58 non è ancora stato lanciato su Supabase, è questo il motivo.</div></div>'
+  }
+  var c = contrattoDi(cantiereId)
+  if (!c || contrattoInModifica) return '<div class="card cant-blocco">' + titolo + formContrattoHtml(c, cantiereId) + '</div>'
+
+  var t = totaliContratto(c)
+  var testata =
+    '<div class="pag-sommario">' +
+      '<div class="pag-riga"><span>Contratto firmato' +
+        (c.data_contratto ? ' il ' + esc(fmtDate(c.data_contratto)) : '') +
+        (c.rif_offerta ? ' <span class="dim">· rif. ' + esc(c.rif_offerta) + '</span>' : '') +
+        ' ' + IVA_ESCL + '</span><span>' + esc(fmtNumIt(t.base)) + ' CHF</span></div>' +
+      (c.varianti.length
+        ? '<div class="pag-riga"><span>Varianti (' + c.varianti.length + ')</span><span>' +
+          (t.varianti >= 0 ? '+ ' : '− ') + esc(fmtNumIt(Math.abs(t.varianti))) + ' CHF</span></div>'
+        : '') +
+      '<div class="pag-riga forte"><span>Contratto aggiornato ' + IVA_ESCL + '</span><span>' + esc(fmtNumIt(t.aggiornato)) + ' CHF</span></div>' +
+    '</div>' +
+    '<div class="form-actions" style="margin:0 0 14px">' +
+      '<button type="button" class="btn-secondary" onclick="apriModificaContratto()">✏️ Modifica contratto</button>' +
+    '</div>'
+
+  return '<div class="card cant-blocco">' + titolo + testata +
+    variantiHtml(c) + accontiHtml(c, t) +
+  '</div>'
+}
+
+// Il modulo del contratto: nuovo (c = null) o in modifica.
+function formContrattoHtml(c, cantiereId) {
+  var nuovo = !c
+  return (nuovo
+      ? '<div class="form-hint" style="margin-top:0">Nessun contratto registrato per questo cantiere. ' +
+        'Scrivi l\'importo firmato: le varianti e le rate si aggiungono dopo, una per una.</div>'
+      : '') +
+    '<div class="form-row" style="align-items:flex-end">' +
+      '<div class="form-group" style="flex:1; margin-bottom:0">' +
+        '<label for="acc-c-importo" class="form-label">Importo contratto ' + IVA_ESCL + '</label>' +
+        '<input type="number" id="acc-c-importo" class="form-input num" step="0.01" min="0"' +
+          ' value="' + (c && c.importo_contratto != null ? esc(String(c.importo_contratto)) : '') + '" onfocus="this.select()"></div>' +
+      '<div class="form-group" style="flex:0 0 160px; margin-bottom:0">' +
+        '<label for="acc-c-data" class="form-label">Data contratto</label>' +
+        '<input type="date" id="acc-c-data" class="form-input" value="' + esc((c && c.data_contratto) || '') + '"></div>' +
+      '<div class="form-group" style="flex:1; margin-bottom:0">' +
+        '<label for="acc-c-rif" class="form-label">Rif. offerta <span class="dim">(facoltativo)</span></label>' +
+        '<input type="text" id="acc-c-rif" class="form-input" maxlength="80" value="' + esc((c && c.rif_offerta) || '') + '"></div>' +
+    '</div>' +
+    '<div class="form-actions" style="margin-top:12px">' +
+      '<button type="button" class="btn-primary" onclick="salvaContrattoCantiere(\'' + esc(cantiereId) + '\')">💾 Salva contratto</button>' +
+      (nuovo ? '' : '<button type="button" class="btn-secondary" onclick="chiudiModificaContratto()">Annulla</button>') +
+    '</div>' +
+    (nuovo ? '' : '<div class="cant-sub" style="margin-top:8px">Cambiare l\'importo firmato NON tocca le rate: se serve, le correggi tu sotto. ' +
+      'Per un aumento o una riduzione dopo la firma usa una variante, non questo campo.</div>')
+}
+
+function variantiHtml(c) {
+  var righe = c.varianti.map(function (v) {
+    var imp = safeNum(v.importo) || 0
+    return '<tr>' +
+      '<td class="dim" style="white-space:nowrap">' + esc(fmtDate(v.data)) + '</td>' +
+      '<td>' + esc(v.descrizione) + '</td>' +
+      '<td class="num">' + (imp >= 0 ? '+ ' : '− ') + esc(fmtNumIt(Math.abs(imp))) + '</td>' +
+      '<td class="cell-azioni"><button type="button" class="icon-btn danger" title="Togli la variante"' +
+        ' onclick="eliminaVariante(\'' + esc(v.id) + '\')">✕</button></td>' +
+    '</tr>'
+  }).join('')
+  return '<div class="card-title" style="margin-top:6px">➕➖ Varianti <span class="dim">(' + IVA_ESCL + ')</span></div>' +
+    '<div class="table-wrap"><table class="acc-tabella">' +
+      '<thead><tr><th>Data</th><th>Descrizione</th><th class="num">Importo ±</th><th></th></tr></thead>' +
+      '<tbody>' + (righe || '<tr><td colspan="4" class="dim">Nessuna variante.</td></tr>') +
+      '<tr class="acc-nuova">' +
+        '<td><input type="date" id="acc-v-data" class="cell-input" value="' + esc(oggiISO()) + '"></td>' +
+        '<td><input type="text" id="acc-v-desc" class="cell-input" maxlength="200" placeholder="Descrizione della variante"></td>' +
+        '<td><input type="number" id="acc-v-imp" class="cell-input num" step="0.01" placeholder="+ / −" onfocus="this.select()"></td>' +
+        '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiVariante(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
+      '</tr></tbody></table></div>' +
+    '<div class="cant-sub">Importo negativo = riduzione. Una variante cambia il totale aggiornato, non le rate.</div>'
+}
+
+function accontiHtml(c, t) {
+  var righe = c.acconti.map(function (a) { return rigaAccontoHtml(c, a) }).join('')
+  var prossimo = c.acconti.reduce(function (m, a) { return Math.max(m, a.ordine || 0) }, 0) + 1
+  var avviso = ''
+  if (Math.abs(t.differenzaRate) > 0.005) {
+    avviso = '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
+      '<span aria-hidden="true">⚠️</span>' +
+      '<span>Le rate sommano <strong>' + esc(fmtNumIt(t.rate)) + ' CHF</strong>, il contratto aggiornato è <strong>' +
+      esc(fmtNumIt(t.aggiornato)) + ' CHF</strong>: differenza <strong>' +
+      (t.differenzaRate > 0 ? '+ ' : '− ') + esc(fmtNumIt(Math.abs(t.differenzaRate))) + ' CHF</strong>. ' +
+      'Le rate già fatturate non cambiano: sistema quelle ancora da fatturare.</span></div>'
+  }
+  return '<div class="card-title" style="margin-top:16px">🧾 Rate d\'acconto <span class="dim">(' + IVA_ESCL + ')</span></div>' +
+    '<div class="table-wrap"><table class="acc-tabella">' +
+      '<thead><tr><th>N.</th><th>Descrizione</th><th class="num">Importo</th><th>Stato</th><th></th></tr></thead>' +
+      '<tbody>' + (righe || '<tr><td colspan="5" class="dim">Nessuna rata scritta.</td></tr>') +
+      '<tr class="acc-nuova">' +
+        '<td class="dim">' + prossimo + '</td>' +
+        '<td><input type="text" id="acc-r-desc" class="cell-input" maxlength="200" placeholder="Es. Acconto alla firma, Acconto a montaggio…"></td>' +
+        '<td><input type="number" id="acc-r-imp" class="cell-input num" step="0.01" min="0" placeholder="0.00" onfocus="this.select()"></td>' +
+        '<td></td>' +
+        '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiAcconto(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
+      '</tr></tbody></table></div>' +
+    '<div class="pag-sommario" style="margin-top:10px">' +
+      rigaPag('Rate scritte', t.rate) +
+      rigaPag('Già fatturato', t.fatturato) +
+      rigaPag('Ancora da fatturare (rate scritte)', t.daFatturare) +
+      rigaPag('Resta del contratto aggiornato', t.resta, true) +
+    '</div>' +
+    avviso
+}
+
+function rigaAccontoHtml(c, a) {
+  var libera = a.stato === 'da_fatturare'
+  var annullata = accontoAnnullato(a)
+  var f = a.fattura
+  var stato, azioni
+  if (annullata) {
+    stato = '<span class="badge badge-err">🚫 fattura annullata</span> ' +
+      '<span class="dim">n. ' + esc(f.numero || '') + ' — non conta</span>'
+    azioni = '<button type="button" class="icon-btn" onclick="apriFatturaDaAcconto(\'' + esc(f.id) + '\')">Apri fattura</button>'
+  } else if (!libera) {
+    stato = '<span class="badge badge-ok">✅ fatturata</span> ' +
+      (f ? '<span class="dim">n. ' + esc(f.numero || '') + (f.data_emissione ? ' del ' + esc(fmtDate(f.data_emissione)) : '') + '</span>' : '')
+    azioni = f ? '<button type="button" class="icon-btn" onclick="apriFatturaDaAcconto(\'' + esc(f.id) + '\')">Apri fattura</button>' : ''
+  } else if (f) {
+    stato = '<span class="badge badge-warn">📄 bozza collegata</span> ' +
+      '<span class="dim">diventa fatturata all\'emissione</span>'
+    azioni = '<button type="button" class="icon-btn" onclick="apriFatturaDaAcconto(\'' + esc(f.id) + '\')">Apri bozza</button>' +
+      '<button type="button" class="icon-btn danger" title="Togli la rata (la bozza resta)" onclick="eliminaAcconto(\'' + esc(a.id) + '\')">✕</button>'
+  } else {
+    stato = '<span class="badge badge-warn">⏳ da fatturare</span>'
+    azioni = '<button type="button" class="icon-btn classify" onclick="fatturaDaAcconto(\'' + esc(a.id) + '\')">🧾 Fattura questa rata</button>' +
+      '<button type="button" class="icon-btn" onclick="apriCollegaFattura(\'' + esc(a.id) + '\')">🔗 Collega a fattura già emessa</button>' +
+      '<button type="button" class="icon-btn danger" title="Togli la rata" onclick="eliminaAcconto(\'' + esc(a.id) + '\')">✕</button>'
+  }
+  // Descrizione sempre correggibile (e' un'etichetta); importo solo finche'
+  // la rata e' da fatturare. Su una fatturata si legge quello che sta sulla
+  // fattura, e il trigger lo difende comunque.
+  var riga = '<tr' + (annullata ? ' class="acc-annullata"' : '') + '>' +
+    '<td class="dim">' + esc(String(a.ordine)) + '</td>' +
+    '<td><input type="text" class="cell-input" maxlength="200" value="' + esc(a.descrizione || '') + '"' +
+      ' onchange="modificaAcconto(\'' + esc(a.id) + '\', \'descrizione\', this.value)"></td>' +
+    '<td class="num">' + (libera
+      ? '<input type="number" class="cell-input num" step="0.01" min="0" value="' + esc(String(a.importo)) + '"' +
+        ' onfocus="this.select()" onchange="modificaAcconto(\'' + esc(a.id) + '\', \'importo\', this.value)">'
+      : '<strong>' + esc(fmtNumIt(a.importo)) + '</strong>') + '</td>' +
+    '<td>' + stato + '</td>' +
+    '<td class="cell-azioni">' + azioni + '</td>' +
+  '</tr>'
+  if (accontoDaCollegare === a.id) riga += rigaCollegaHtml(c, a)
+  return riga
+}
+
+// La tendina per collegare una rata a una fattura gia' emessa.
+function rigaCollegaHtml(c, a) {
+  var lista = fattureCollegabili || []
+  var opzioni = lista.map(function (f) {
+    return '<option value="' + esc(f.id) + '">n. ' + esc(f.numero || '') + ' · ' + esc(fmtDate(f.data_emissione)) +
+      ' · ' + esc(f.cliente_nome || '') + ' · ' + esc(fmtNumIt(f.totale_imponibile)) + ' CHF (imponibile)</option>'
+  }).join('')
+  return '<tr class="acc-collega"><td></td><td colspan="4">' +
+    (lista.length
+      ? '<div class="form-row" style="align-items:center; gap:8px">' +
+          '<select id="acc-collega-sel" class="form-input" style="flex:1">' + opzioni + '</select>' +
+          '<button type="button" class="btn-primary" onclick="collegaFatturaEmessa(\'' + esc(a.id) + '\')">🔗 Collega</button>' +
+          '<button type="button" class="btn-secondary" onclick="chiudiCollegaFattura()">Annulla</button>' +
+        '</div>' +
+        '<div class="cant-sub" style="padding-top:6px">Solo fatture emesse non ancora collegate a una rata. ' +
+        'La rata prende l\'<strong>imponibile</strong> della fattura (IVA esclusa) e diventa fatturata. ' +
+        'Sulla fattura viene scritto solo il cantiere, se manca: nient\'altro.</div>'
+      : '<div class="cru-vuoto">Nessuna fattura emessa ancora libera da collegare. ' +
+        '<button type="button" class="link-btn" onclick="chiudiCollegaFattura()">Chiudi</button></div>') +
+  '</td></tr>'
+}
+
+// ── Azioni nella scheda cantiere ─────────────────────────────────────────────
+async function ricaricaContrattoERidisegna() {
+  try { await loadContrattiCantiere(true) } catch (e) { /* la scheda dice che non legge */ }
+  renderSchedaCantiere()
+}
+
+function apriModificaContratto()   { contrattoInModifica = true;  renderSchedaCantiere() }
+function chiudiModificaContratto() { contrattoInModifica = false; renderSchedaCantiere() }
+
+async function salvaContrattoCantiere(cantiereId) {
+  var importo = safeNum(getVal('acc-c-importo'))
+  if (importo == null || importo < 0) { showCantieriBanner('err', 'Scrivi l\'importo del contratto (IVA esclusa).'); return }
+  if (!currentAziendaId) { showCantieriBanner('err', 'Sessione non attiva: rientra e riprova.'); return }
+  var c = contrattoDi(cantiereId)
+  var campi = { importo_contratto: importo, data_contratto: getVal('acc-c-data') || null, rif_offerta: getVal('acc-c-rif') || null }
+  try {
+    if (c) {
+      const { error } = await sb.from('tm_conta_cantiere_contratto').update(campi).eq('id', c.id).select('id')
+      if (error) throw error
+    } else {
+      campi.azienda_id = currentAziendaId
+      campi.cantiere_id = cantiereId
+      const { error } = await sb.from('tm_conta_cantiere_contratto').insert(campi).select('id')
+      if (error) throw error
+    }
+    contrattoInModifica = false
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', 'Contratto salvato alle ' + oraAdesso() + '.')
+  } catch (e) {
+    showCantieriBanner('err', 'Contratto NON salvato: ' + (e.message || e))
+  }
+}
+
+async function aggiungiVariante(contrattoId) {
+  var data = getVal('acc-v-data'), desc = getVal('acc-v-desc'), imp = safeNum(getVal('acc-v-imp'))
+  if (!data) { showCantieriBanner('err', 'La variante ha bisogno di una data.'); return }
+  if (!desc) { showCantieriBanner('err', 'Scrivi cos\'è la variante.'); return }
+  if (imp == null || Math.abs(imp) < 0.005) { showCantieriBanner('err', 'Scrivi l\'importo della variante: positivo se aggiunge, negativo se riduce.'); return }
+  try {
+    const { error } = await sb.from('tm_conta_cantiere_varianti')
+      .insert({ contratto_id: contrattoId, data: data, descrizione: desc, importo: imp }).select('id')
+    if (error) throw error
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', 'Variante aggiunta. Il totale aggiornato è cambiato: controlla le rate ancora da fatturare.')
+  } catch (e) {
+    showCantieriBanner('err', 'Variante NON salvata: ' + (e.message || e))
+  }
+}
+
+async function eliminaVariante(id) {
+  if (!window.confirm('Togliere questa variante? Il totale aggiornato torna com\'era; le rate non cambiano.')) return
+  try {
+    const { error } = await sb.from('tm_conta_cantiere_varianti').delete().eq('id', id).select('id')
+    if (error) throw error
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', 'Variante tolta.')
+  } catch (e) {
+    showCantieriBanner('err', 'Variante NON tolta: ' + (e.message || e))
+  }
+}
+
+async function aggiungiAcconto(contrattoId) {
+  var desc = getVal('acc-r-desc'), imp = safeNum(getVal('acc-r-imp'))
+  if (!desc) { showCantieriBanner('err', 'Scrivi cos\'è la rata (es. «Acconto alla firma»).'); return }
+  if (imp == null || imp <= 0) { showCantieriBanner('err', 'Scrivi l\'importo della rata, IVA esclusa, maggiore di zero.'); return }
+  var t = trovaContrattoPerId(contrattoId)
+  var ordine = (t ? t.acconti : []).reduce(function (m, a) { return Math.max(m, a.ordine || 0) }, 0) + 1
+  try {
+    const { error } = await sb.from('tm_conta_cantiere_acconti')
+      .insert({ contratto_id: contrattoId, ordine: ordine, descrizione: desc, importo: imp }).select('id')
+    if (error) throw error
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', 'Rata n. ' + ordine + ' scritta.')
+  } catch (e) {
+    showCantieriBanner('err', 'Rata NON salvata: ' + (e.message || e))
+  }
+}
+
+function trovaContrattoPerId(contrattoId) {
+  if (!contrattiCache) return null
+  var ids = Object.keys(contrattiCache.perCantiere)
+  for (var i = 0; i < ids.length; i++) {
+    if (contrattiCache.perCantiere[ids[i]].id === contrattoId) return contrattiCache.perCantiere[ids[i]]
+  }
+  return null
+}
+
+async function modificaAcconto(id, campo, valore) {
+  var campi = {}
+  if (campo === 'importo') {
+    var imp = safeNum(valore)
+    if (imp == null || imp <= 0) { showCantieriBanner('err', 'L\'importo della rata deve essere maggiore di zero.'); renderSchedaCantiere(); return }
+    campi.importo = imp
+  } else {
+    var d = String(valore || '').trim()
+    if (!d) { showCantieriBanner('err', 'La descrizione della rata non può essere vuota.'); renderSchedaCantiere(); return }
+    campi.descrizione = d
+  }
+  try {
+    const { error } = await sb.from('tm_conta_cantiere_acconti').update(campi).eq('id', id).select('id')
+    if (error) throw error
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', 'Rata aggiornata alle ' + oraAdesso() + '.')
+  } catch (e) {
+    // Il trigger del DB parla chiaro (rata fatturata): si riporta com'e'.
+    showCantieriBanner('err', 'Rata NON aggiornata: ' + (e.message || e))
+    renderSchedaCantiere()
+  }
+}
+
+async function eliminaAcconto(id) {
+  var t = trovaAcconto(id)
+  var conBozza = t && t.a.fattura_id
+  if (!window.confirm('Togliere questa rata?' + (conBozza ? ' La bozza collegata resta com\'è, scollegata.' : ''))) return
+  try {
+    const { error } = await sb.from('tm_conta_cantiere_acconti').delete().eq('id', id).select('id')
+    if (error) throw error
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', 'Rata tolta.')
+  } catch (e) {
+    showCantieriBanner('err', 'Rata NON tolta: ' + (e.message || e))
+  }
+}
+
+// ── Collegare una fattura gia' emessa ────────────────────────────────────────
+// Per le fatture uscite prima di questa fase. Sulla fattura NON si scrive
+// niente di congelato: solo cantiere_id, se manca (FASE 27: modificabile anche
+// a fattura emessa). Il legame vero sta nella rata.
+async function fattureEmesseCollegabili() {
+  const { data, error } = await sb.from('tm_conta_fatture')
+    .select('id, numero, data_emissione, cliente_nome, totale_imponibile, cantiere_id')
+    .eq('azienda_id', currentAziendaId)
+    .eq('stato', 'emessa')
+    .eq('tipo', 'fattura')
+    .order('data_emissione', { ascending: false })
+  if (error) throw error
+  // Fuori quelle gia' collegate a una rata, di qualunque cantiere.
+  var usate = {}
+  if (contrattiCache) Object.keys(contrattiCache.perCantiere).forEach(function (k) {
+    ;(contrattiCache.perCantiere[k].acconti || []).forEach(function (a) { if (a.fattura_id) usate[a.fattura_id] = true })
+  })
+  return (data || []).filter(function (f) { return !usate[f.id] })
+}
+
+async function apriCollegaFattura(accontoId) {
+  try {
+    fattureCollegabili = await fattureEmesseCollegabili()
+    accontoDaCollegare = accontoId
+    renderSchedaCantiere()
+  } catch (e) {
+    showCantieriBanner('err', 'Fatture emesse non lette: ' + (e.message || e))
+  }
+}
+
+function chiudiCollegaFattura() {
+  accontoDaCollegare = null
+  fattureCollegabili = null
+  renderSchedaCantiere()
+}
+
+async function collegaFatturaEmessa(accontoId) {
+  var t = trovaAcconto(accontoId)
+  var fid = getVal('acc-collega-sel')
+  var f = (fattureCollegabili || []).filter(function (x) { return x.id === fid })[0]
+  if (!t || !f) { showCantieriBanner('err', 'Scegli una fattura dall\'elenco.'); return }
+  var imponibile = safeNum(f.totale_imponibile) || 0
+  var rataImp = safeNum(t.a.importo) || 0
+
+  if (f.cantiere_id && f.cantiere_id !== t.c.cantiere_id) {
+    if (!window.confirm('La fattura n. ' + (f.numero || '') + ' è già collegata a un altro cantiere (' +
+      nomeCantiereDaId(f.cantiere_id) + '). Collegarla comunque a questa rata? Il cantiere sulla fattura NON viene cambiato.')) return
+  }
+  if (Math.abs(imponibile - rataImp) > 0.005) {
+    if (!window.confirm('La rata dice ' + fmtNumIt(rataImp) + ' CHF, la fattura n. ' + (f.numero || '') +
+      ' ha imponibile ' + fmtNumIt(imponibile) + ' CHF (IVA esclusa).\n\nCollegando, la rata prende ' +
+      fmtNumIt(imponibile) + ' CHF e viene congelata. Continuare?')) return
+  }
+  try {
+    // Un solo UPDATE: il trigger vede la rata ancora da_fatturare e lascia
+    // passare importo e stato insieme. Da qui in poi e' congelata.
+    const { data, error } = await sb.from('tm_conta_cantiere_acconti')
+      .update({ fattura_id: f.id, stato: 'fatturata', importo: imponibile })
+      .eq('id', accontoId).eq('stato', 'da_fatturare').select('id')
+    if (error) throw error
+    if (!data || !data.length) throw new Error('la rata non è più da fatturare')
+  } catch (e) {
+    showCantieriBanner('err', 'Fattura NON collegata: ' + (e.message || e))
+    return
+  }
+  var nota = ''
+  if (!f.cantiere_id) {
+    try {
+      // SOLO cantiere_id: non e' fra i campi congelati (FASE 27).
+      const { error: eC } = await sb.from('tm_conta_fatture')
+        .update({ cantiere_id: t.c.cantiere_id }).eq('id', f.id).eq('azienda_id', currentAziendaId).select('id')
+      if (eC) throw eC
+      nota = ' Sulla fattura è stato scritto il cantiere.'
+      docCantiereMap = null
+      try { await loadMappaCantieri(true) } catch (_) { /* la scheda si aggiorna al prossimo giro */ }
+    } catch (e2) {
+      nota = ' Rata collegata, ma il cantiere sulla fattura NON è stato scritto: ' + (e2.message || e2)
+    }
+  }
+  accontoDaCollegare = null
+  fattureCollegabili = null
+  await ricaricaContrattoERidisegna()
+  showCantieriBanner(nota.indexOf('NON') !== -1 ? 'warn' : 'ok',
+    'Rata n. ' + t.a.ordine + ' collegata alla fattura n. ' + (f.numero || '') + ' (' + fmtNumIt(imponibile) + ' CHF IVA esclusa).' + nota)
+}
+
+// ── Dal cantiere alla fattura ────────────────────────────────────────────────
+async function apriFatturaDaAcconto(fatturaId) {
+  showPage('fatture')
+  await initFatturePage()
+  await viewFattura(fatturaId)
+}
+
+// «Fattura questa rata»: si apre l'editor con cantiere, cliente e una riga
+// gia' scritti. L'importo e' quello della rata, IVA esclusa: e' un prezzo di
+// riga, l'IVA (se un giorno c'e') si aggiunge sopra come su ogni fattura.
+async function fatturaDaAcconto(accontoId) {
+  var t = trovaAcconto(accontoId)
+  if (!t) { showCantieriBanner('err', 'Rata non trovata: ricarica la pagina.'); return }
+  showPage('fatture')
+  await initFatturePage()
+  await newFatturaDaAcconto(t.c, t.a)
+}
+
+async function newFatturaDaAcconto(c, a) {
+  await newFattura('fattura')
+  editorAccontoId = a.id
+  var cant = (cantieriCache || []).filter(function (k) { return k.id === c.cantiere_id })[0]
+  if (cant) scegliCantiere('v', c.cantiere_id)
+  else impostaCantierePicker('v', c.cantiere_id)
+
+  // Il cliente: il committente del cantiere, se e' in rubrica con quel nome
+  // esatto si collega (indirizzo compilato da solo); altrimenti solo il nome.
+  var committente = cant && cant.committente ? String(cant.committente).trim() : ''
+  if (committente) {
+    var collegato = false
+    try {
+      var list = await loadContatti()
+      var trovati = (list || []).filter(function (k) {
+        return contattoNome(k).trim().toLowerCase() === committente.toLowerCase()
+      })
+      if (trovati.length === 1) { await scegliContatto('v', trovati[0].id); collegato = true }
+    } catch (_) { /* si scrive solo il nome */ }
+    if (!collegato && el('f-cli-nome')) el('f-cli-nome').value = committente
+  }
+
+  fatturaRighe = [{
+    descrizione: 'Acconto n. ' + a.ordine + ' — ' + (a.descrizione || '') +
+                 (cant ? '\nCantiere ' + nomeCantiere(cant, false) : ''),
+    quantita: 1, prezzo_unitario: safeNum(a.importo), codice_iva_id: '',
+    unita: '', tipo_riga: 'voce', sconto_pct: ''
+  }]
+  if (el('fatture-edit-title')) el('fatture-edit-title').textContent = 'Nuova fattura d\'acconto'
+  renderRigheEditor()
+  mostraRifAcconto(c, a)
+}
+
+// Il riquadro sopra l'editor: da quale rata viene questa bozza.
+function mostraRifAcconto(c, a) {
+  var t = totaliContratto(c)
+  var altre = 0
+  ;(c.acconti || []).forEach(function (x) {
+    if (x.id !== a.id && x.stato === 'fatturata' && !accontoAnnullato(x)) altre += safeNum(x.importo) || 0
+  })
+  var questa = safeNum(a.importo) || 0
+  html('fatture-acconto-ref',
+    '<div class="nota-cruscotto">' +
+      '<span aria-hidden="true">📝</span>' +
+      '<span><strong>Fattura d\'acconto</strong> — rata n. ' + esc(String(a.ordine)) + ' «' + esc(a.descrizione || '') + '» del cantiere <strong>' +
+      esc(nomeCantiereContratto(c)) + '</strong>. Importi IVA esclusa: contratto aggiornato <strong>' + esc(fmtNumIt(t.aggiornato)) +
+      '</strong> · già fatturato (altre rate) <strong>' + esc(fmtNumIt(altre)) + '</strong> · questa rata <strong>' + esc(fmtNumIt(questa)) +
+      '</strong> · resta <strong>' + esc(fmtNumIt(t.aggiornato - altre - questa)) + '</strong> CHF. ' +
+      'La rata diventa «fatturata» all\'emissione, con l\'imponibile della fattura.</span>' +
+    '</div>')
+}
+
+// Riaprendo una bozza: se e' nata da una rata, lo si rivede.
+async function caricaAccontoDellaBozza(fatturaId) {
+  editorAccontoId = null
+  _avvisoAccontoBozza = null
+  html('fatture-acconto-ref', '')
+  try {
+    await loadContrattiCantiere()
+    var t = trovaAccontoPerFattura(fatturaId)
+    if (!t) return
+    editorAccontoId = t.a.id
+    if (el('fatture-edit-title')) el('fatture-edit-title').textContent = 'Fattura d\'acconto (bozza)'
+    mostraRifAcconto(t.c, t.a)
+  } catch (e) {
+    console.warn('Rata della bozza non letta:', e.message || e)
+  }
+}
+
+// Dopo il salvataggio della bozza: la rata punta alla bozza. Idempotente
+// (stesso id ogni volta). Non lancia: la bozza E' salvata; un legame mancato
+// si dice a parte, e l'emissione si ferma finche' non e' a posto.
+async function collegaBozzaAllaRata(fatturaId) {
+  _avvisoAccontoBozza = null
+  if (!editorAccontoId || !fatturaId) return
+  try {
+    const { data, error } = await sb.from('tm_conta_cantiere_acconti')
+      .update({ fattura_id: fatturaId })
+      .eq('id', editorAccontoId).eq('stato', 'da_fatturare').select('id')
+    if (error) throw error
+    if (!data || !data.length) throw new Error('la rata non è più «da fatturare»')
+    contrattiCache = null   // la scheda cantiere rilegge
+  } catch (e) {
+    _avvisoAccontoBozza = 'non è collegata alla rata d\'acconto: ' + (e.message || e)
+  }
+}
+
+// ── Il riquadro sulla scheda della fattura (solo a schermo) ──────────────────
+async function disegnaBoxAcconto(f) {
+  html('fatture-acconto', '')
+  if (!f || f.tipo !== 'fattura') return
+  // Sempre riletto: lo stato della rata cambia proprio con l'emissione.
+  try { await loadContrattiCantiere(true) } catch (e) { return }
+  var t = trovaAccontoPerFattura(f.id)
+  if (!t) return
+  var tot = totaliContratto(t.c)
+  var altre = 0
+  ;(t.c.acconti || []).forEach(function (x) {
+    if (x.id !== t.a.id && x.stato === 'fatturata' && !accontoAnnullato(x)) altre += safeNum(x.importo) || 0
+  })
+  var questa = safeNum(f.totale_imponibile) || 0
+  var annullata = f.stato === 'annullata'
+  html('fatture-acconto',
+    '<div class="card">' +
+      '<div class="card-title">📝 Contratto e acconti — ' + esc(nomeCantiereContratto(t.c)) + '</div>' +
+      '<div class="pag-sommario">' +
+        rigaPag('Contratto aggiornato', tot.aggiornato) +
+        rigaPag('Già fatturato (altre rate)', altre) +
+        rigaPag('Questa rata (n. ' + t.a.ordine + ' — ' + (t.a.descrizione || '') + ')', questa) +
+        rigaPag('Resta da fatturare', tot.aggiornato - altre - (annullata ? 0 : questa), true) +
+      '</div>' +
+      '<div class="cant-sub">Importi <strong>IVA esclusa</strong>: contratto e rate sono netti, e di questa fattura si legge l\'imponibile. ' +
+      'Solo a schermo: non va in stampa né nel PDF.</div>' +
+      (f.stato === 'bozza'
+        ? '<div class="nota-cruscotto" style="margin:10px 0 0"><span aria-hidden="true">📄</span>' +
+          '<span>Bozza collegata alla rata: diventa «fatturata» all\'emissione.</span></div>'
+        : '') +
+      (annullata
+        ? '<div class="nota-cruscotto avviso" style="margin:10px 0 0"><span aria-hidden="true">🚫</span>' +
+          '<span>Fattura annullata: la rata resta registrata ma non conta nel «già fatturato».</span></div>'
+        : '') +
+    '</div>')
+}
