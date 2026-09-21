@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=58" />
+  <link rel="stylesheet" href="css/style.css?v=59" />
 </head>
-<body data-versione="58">
+<body data-versione="59">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -634,9 +634,11 @@
               </label>
               <div id="f-allegato-corrente" class="allegato-box" style="display:none"></div>
               <input
-                type="file" id="f-allegato" class="form-input-file"
+                type="file" id="f-allegato" class="form-input-file" multiple
                 accept=".pdf,.jpg,.jpeg,.png,.heic,.webp"
               />
+              <!-- 59·A — la coda dei file scelti: nome, dimensione, ✕. Accetta anche il trascinamento. -->
+              <div id="f-allegato-coda" class="coda-file"></div>
               <div class="form-hint" id="allegato-hint">
                 ⚠️ Gli allegati richiedono il bucket <code>conta-allegati</code> su Supabase Storage.
                 <a href="#" onclick="showBucketInfo(event)">Istruzioni per crearlo</a>
@@ -659,6 +661,7 @@
         <div>
           <div class="card">
             <div class="card-title">🕐 Ultimi inseriti (Canale B)</div>
+            <div id="inserimento-contatore" class="elenco-contatore"></div>
             <div id="inserimento-recenti">
               <div class="dim" style="padding:8px 0">Nessun movimento ancora inserito.</div>
             </div>
@@ -1387,6 +1390,8 @@
               <input type="number" id="fatture-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderFattureTable()" />
             </div>
           </div>
+          <!-- 59·B — quanti documenti, per stato; con filtro: «4 di 6 (filtro attivo)» -->
+          <div id="fatture-contatore" class="elenco-contatore"></div>
           <div id="fatture-table"></div>
         </div>
       </div>
@@ -1694,6 +1699,7 @@
               </select>
             </div>
           </div>
+          <div id="offerte-contatore" class="elenco-contatore"></div>
           <div id="offerte-table"></div>
         </div>
       </div>
@@ -1858,8 +1864,9 @@
           </div>
           <div class="form-group">
             <label for="off-allegato" class="form-label">📎 PDF o foto del documento <span class="dim">(facoltativo)</span></label>
-            <input type="file" id="off-allegato" class="form-input" accept=".pdf,image/*" />
-            <div class="form-hint">Si allega al salvataggio. Gli allegati gi&agrave; caricati si vedono nella scheda.</div>
+            <input type="file" id="off-allegato" class="form-input" accept=".pdf,image/*" multiple />
+            <div id="off-allegato-coda" class="coda-file"></div>
+            <div class="form-hint">Pi&ugrave; file in un colpo, o trascinati qui. Si allegano al salvataggio, uno per uno. Gli allegati gi&agrave; caricati si vedono nella scheda.</div>
           </div>
           <div class="form-actions">
             <button type="button" class="btn-primary" id="btn-salva-offerta" onclick="saveOfferta()">💾 Salva conferma d'ordine</button>
@@ -1912,6 +1919,7 @@
               <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
             </div>
           </div>
+          <div id="acquisti-contatore" class="elenco-contatore"></div>
           <div id="acquisti-table"></div>
         </div>
       </div>
@@ -2215,8 +2223,9 @@
           <div class="form-group">
             <label for="a-allegato" class="form-label" id="a-allegato-label">Allegato documento <span class="dim">(opzionale)</span></label>
             <div id="a-allegato-corrente" class="allegato-box" style="display:none"></div>
-            <input type="file" id="a-allegato" class="form-input-file" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
-            <div class="form-hint" id="a-allegato-hint">Caricato nel bucket <code>conta-allegati</code>. Se l'upload non riesce te lo dico esplicitamente: la fattura viene salvata comunque, l'allegato lo puoi riallegare modificandola.</div>
+            <input type="file" id="a-allegato" class="form-input-file" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" multiple />
+            <div id="a-allegato-coda" class="coda-file"></div>
+            <div class="form-hint" id="a-allegato-hint">Pi&ugrave; file in un colpo, o trascinati qui: si caricano al salvataggio, uno per uno, con l'esito di ciascuno. Se uno non riesce te lo dico: la fattura viene salvata comunque e riprovi solo quello dalla scheda.</div>
           </div>
           <div class="form-actions">
             <button type="button" class="btn-primary" id="acq-save-btn" onclick="saveAcquisto()">💾 Salva</button>
@@ -2682,9 +2691,10 @@
 
         <div class="form-group">
           <label for="alleg-file" class="form-label">File</label>
-          <input type="file" id="alleg-file" class="form-input-file"
+          <input type="file" id="alleg-file" class="form-input-file" multiple
                  accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
-          <div class="form-hint">Massimo 10 MB. Caricato nel bucket <code>conta-allegati</code>.</div>
+          <div id="alleg-file-coda" class="coda-file"></div>
+          <div class="form-hint">Massimo 10 MB per file. Pi&ugrave; file in un colpo, o trascinati qui: si caricano uno per uno, con l'esito di ciascuno.</div>
         </div>
 
         <div class="form-actions">
@@ -2993,7 +3003,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=58"></script>
+<script src="js/app.js?v=59"></script>
 
 </body>
 </html>
