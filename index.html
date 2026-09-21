@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=59" />
+  <link rel="stylesheet" href="css/style.css?v=60" />
 </head>
-<body data-versione="59">
+<body data-versione="60">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -296,6 +296,12 @@
         <div class="card-title">📦 Spese per gruppo</div>
         <div class="form-hint" style="margin-bottom:12px" id="cru-gruppi-sottotitolo"></div>
         <div id="cru-gruppi"></div>
+      </div>
+
+      <!-- ── 60: ogni conto del piano, netto · IVA · totale, stesso periodo ── -->
+      <div class="card" id="cru-per-conto-card">
+        <div class="card-title">🧾 Costi e ricavi per conto</div>
+        <div id="cru-per-conto"></div>
       </div>
 
       <!-- ── Elenco filtrato (si apre cliccando un riquadro o un gruppo) ── -->
@@ -3003,7 +3009,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=59"></script>
+<script src="js/app.js?v=60"></script>
 
 </body>
 </html>
