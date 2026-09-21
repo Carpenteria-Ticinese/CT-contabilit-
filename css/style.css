@@ -2964,3 +2964,26 @@ tr.off-vecchia td { color: var(--text2); }
 @media (max-width: 640px) {
   .off-tot-stampato-riga .form-group { flex: 1 1 100% !important; }
 }
+
+/* FASE 58 — Contratto e acconti per cantiere */
+/* «IVA esclusa» accanto a ogni importo: piccolo, ma sempre presente */
+.acc-iva { font-size: 11px; font-weight: 400; color: var(--text2); white-space: nowrap; }
+.acc-tabella td { padding: 6px 8px; vertical-align: middle; }
+.acc-tabella th { padding: 6px 8px; }
+.acc-tabella td.num { white-space: nowrap; }
+.acc-tabella .cell-input.num { max-width: 130px; }
+.acc-tabella .cell-azioni { white-space: nowrap; text-align: right; }
+.acc-tabella .cell-azioni .icon-btn { margin-left: 4px; }
+/* La riga dove si scrive la prossima variante / rata: appena distinta dalle altre */
+.acc-tabella tr.acc-nuova td { background: var(--bg); border-top: 2px solid var(--border); }
+.acc-tabella tr.acc-nuova:hover td { background: var(--bg); }
+/* Rata con fattura annullata: resta, in secondo piano */
+.acc-tabella tr.acc-annullata td { color: var(--text2); }
+.acc-tabella tr.acc-annullata .cell-input { color: var(--text2); }
+/* La riga con la tendina «collega a fattura emessa», sotto la sua rata */
+.acc-tabella tr.acc-collega td { background: var(--primary-lt); }
+.acc-tabella tr.acc-collega:hover td { background: var(--primary-lt); }
+@media (max-width: 640px) {
+  .acc-tabella .cell-azioni { white-space: normal; }
+  .acc-tabella .cell-azioni .icon-btn { margin: 2px 0 2px 4px; }
+}
