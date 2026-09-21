@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=56" />
+  <link rel="stylesheet" href="css/style.css?v=57" />
 </head>
-<body data-versione="56">
+<body data-versione="57">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -82,8 +82,8 @@
     </button>
 
     <button class="nav-item auth-only" data-page="offerte">
-      <span aria-hidden="true">📋</span>
-      <span>Offerte fornitori</span>
+      <span aria-hidden="true">📦</span>
+      <span>Conferme d'ordine</span>
     </button>
 
     <button class="nav-item auth-only" data-page="export">
@@ -1638,29 +1638,33 @@
     </div>
 
     <!-- ══ PAGINA: Fatture d'acquisto (Fase 10) ════════════════════════════ -->
-    <!-- FASE 29 — OFFERTE FORNITORI
-         Un'offerta NON e' un movimento contabile: non entra in nessuna somma,
-         non sta in v_conta_flussi. E' un riferimento da confrontare con la
-         fattura d'acquisto che arriva dopo. -->
+    <!-- FASE 29 → 57 / PUNTO 3 — CONFERME D'ORDINE (ex Offerte fornitori)
+         Una conferma d'ordine NON e' un movimento contabile: non entra in
+         nessuna somma, non sta in v_conta_flussi. E' un riferimento da
+         confrontare con la fattura d'acquisto che arriva dopo. I record
+         «offerta» della FASE 29 restano visibili e filtrabili, fuori strada. -->
     <div id="page-offerte" class="page">
 
       <!-- Elenco -->
       <div id="offerte-list-view">
         <div class="page-header">
           <div>
-            <div class="page-title">📋 Offerte fornitori</div>
+            <div class="page-title">📦 Conferme d'ordine</div>
             <div class="page-subtitle">
-              Le offerte ricevute, da confrontare con la fattura quando arriva.
-              Non sono spese: non entrano in nessuna somma.
+              Quello che i fornitori hanno confermato, da confrontare con la fattura quando arriva.
+              Non sono spese: il costo entra con la fattura, non prima.
             </div>
           </div>
-          <button class="btn-primary" onclick="newOfferta()">➕ Nuova offerta</button>
+          <div class="form-actions" style="margin:0">
+            <button class="btn-secondary" onclick="mostraConfermeDaFatturare()" title="Ordinate, non ancora fatturate">⏳ Da fatturare</button>
+            <button class="btn-primary" onclick="newOfferta()">➕ Nuova conferma</button>
+          </div>
         </div>
 
         <div id="offerte-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
 
         <div class="card">
-          <div class="card-title">📄 Elenco</div>
+          <div class="card-title">📄 Elenco <span class="dim" id="offerte-da-fatturare-conta" style="font-weight:400;margin-left:10px"></span></div>
           <div class="form-row" style="margin-bottom:12px">
             <div class="form-group" style="flex:2; margin-bottom:0">
               <label for="offerte-search" class="form-label">Cerca</label>
@@ -1669,13 +1673,18 @@
                      oninput="renderOfferteTable()" autocomplete="off" />
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="offerte-filtro-tipo" class="form-label">Tipo</label>
+              <select id="offerte-filtro-tipo" class="form-input" onchange="onFiltroTipoOfferteChange()">
+                <option value="conferma_ordine">📦 Conferme d'ordine</option>
+                <option value="offerta">📋 Offerte (FASE 29)</option>
+                <option value="">Tutti</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="offerte-filtro-stato" class="form-label">Stato</label>
+              <!-- Le voci le mette il programma secondo il tipo scelto (aggiornaFiltroStatoOfferte). -->
               <select id="offerte-filtro-stato" class="form-input" onchange="renderOfferteTable()">
-                <option value="">Tutte</option>
-                <option value="da_valutare">🕐 Da valutare</option>
-                <option value="confermata">✅ Confermata</option>
-                <option value="scaduta">⌛ Scaduta</option>
-                <option value="rifiutata">✖️ Rifiutata</option>
+                <option value="">Tutti gli stati</option>
               </select>
             </div>
           </div>
@@ -1687,7 +1696,7 @@
       <div id="offerte-detail-view" style="display:none">
         <div class="page-header">
           <div>
-            <div class="page-title" id="offerte-detail-title">Offerta</div>
+            <div class="page-title" id="offerte-detail-title">Conferma d'ordine</div>
             <div class="page-subtitle">Sola lettura. Per cambiare qualcosa premi «Modifica».</div>
           </div>
           <button class="btn-secondary" onclick="offerteBackToList()">← Indietro</button>
@@ -1702,8 +1711,8 @@
       <div id="offerte-edit-view" style="display:none">
         <div class="page-header">
           <div>
-            <div class="page-title" id="offerte-edit-title">Nuova offerta</div>
-            <div class="page-subtitle">Quello che il fornitore ha proposto, riga per riga.</div>
+            <div class="page-title" id="offerte-edit-title">Nuova conferma d'ordine</div>
+            <div class="page-subtitle" id="offerte-edit-sub">Quello che il fornitore ha confermato, riga per riga.</div>
           </div>
           <button class="btn-secondary" onclick="offerteBackToList()">← Indietro</button>
         </div>
@@ -1735,27 +1744,29 @@
 
           <div class="form-row">
             <div class="form-group" style="flex:1">
-              <label for="off-data" class="form-label">Data dell&rsquo;offerta <span class="req" aria-hidden="true">*</span></label>
+              <label for="off-data" class="form-label"><span id="off-data-label">Data della conferma</span> <span class="req" aria-hidden="true">*</span></label>
               <input type="date" id="off-data" class="form-input" />
             </div>
             <div class="form-group" style="flex:1">
-              <label for="off-riferimento" class="form-label">Riferimento <span class="dim">(numero dell&rsquo;offerta)</span></label>
-              <input type="text" id="off-riferimento" class="form-input" maxlength="80" placeholder="es. OFF-2026-118" />
+              <label for="off-riferimento" class="form-label">Riferimento <span class="dim">(numero del documento)</span></label>
+              <input type="text" id="off-riferimento" class="form-input" maxlength="80" placeholder="es. 141 417 125" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="off-stato" class="form-label">Stato</label>
+              <!-- Le voci le mette il programma secondo il tipo (riempiSelectStatoOff):
+                   conferma → ordinato / consegnato in parte / consegnato / fatturato. -->
               <select id="off-stato" class="form-input">
-                <option value="da_valutare">🕐 Da valutare</option>
-                <option value="confermata">✅ Confermata</option>
-                <option value="scaduta">⌛ Scaduta</option>
-                <option value="rifiutata">✖️ Rifiutata</option>
+                <option value="ordinato">📦 Ordinato</option>
+                <option value="consegnato_parte">🚚 Consegnato in parte</option>
+                <option value="consegnato">✅ Consegnato</option>
+                <option value="fatturato">🧾 Fatturato</option>
               </select>
             </div>
           </div>
 
           <div class="form-group rubrica-pick cantiere-pick">
             <label for="cant-o-nome" class="form-label">
-              🏗️ Cantiere di riferimento <span class="dim">(facoltativo)</span>
+              🏗️ Cantiere di riferimento <span class="dim">(facoltativo — solo per ritrovarla; nessun costo va sul cantiere)</span>
             </label>
             <div class="campo-con-bottone">
               <input type="text" id="cant-o-nome" class="form-input" maxlength="120"
@@ -1776,41 +1787,76 @@
           </div>
         </div>
 
+        <!-- 57·3c — le righe: STESSE colonne delle righe della fattura d'acquisto,
+             stesso motore (renderRigheDescrittive). Il confronto del punto 5
+             abbina per codice_articolo. -->
         <div class="card">
-          <div class="card-title">📦 Righe dell&rsquo;offerta
-            <button type="button" class="link-btn" onclick="addRigaOfferta()">+ Aggiungi riga</button>
+          <div class="card-title">📦 Righe del documento</div>
+          <div class="form-hint" style="margin-bottom:8px">
+            Cosa è stato ordinato, articolo per articolo: codice, listino, sconto e netto del fornitore,
+            come sulla fattura d'acquisto. Una riga senza quantità è di sola descrizione e resta fuori dalla somma.
           </div>
           <div class="table-wrap">
-            <table>
+            <table id="offerte-righe-tabella">
               <thead><tr>
+                <th style="width:90px">Codice</th>
                 <th>Descrizione</th>
-                <th style="width:80px">U.M.</th>
-                <th style="width:90px;text-align:right">Quantità</th>
-                <th style="width:120px;text-align:right">Prezzo unit.</th>
+                <th style="width:85px;text-align:right">Quantità</th>
+                <th style="width:70px">U.M.</th>
+                <th style="width:100px;text-align:right" title="Prezzo unitario di listino del fornitore">Listino</th>
+                <th style="width:75px;text-align:right" title="Sconto del fornitore, in percentuale">Sconto %</th>
+                <th style="width:100px;text-align:right" title="Listino meno sconto; si può scrivere a mano">Netto unit.</th>
                 <th style="width:110px;text-align:right">Importo</th>
-                <th style="width:40px"></th>
+                <th style="width:90px"></th>
               </tr></thead>
               <tbody id="offerte-righe"></tbody>
             </table>
           </div>
-          <div class="fattura-totali">
-            <div class="ft-grand"><span class="ft-label">Totale offerta</span> <span class="ft-val" id="offerte-tot">0,00</span></div>
+          <div class="form-actions" style="margin-top:8px;justify-content:flex-start">
+            <button type="button" class="btn-secondary" onclick="addRigaOfferta()">➕ Aggiungi riga</button>
           </div>
+          <div class="fattura-totali">
+            <div class="ft-grand"><span class="ft-label">Somma delle righe <span class="dim">(escl. IVA)</span></span> <span class="ft-val" id="offerte-tot">0,00</span></div>
+          </div>
+
+          <!-- 57·3d — il totale com'e' stampato sul documento. Se non torna con
+               la somma delle righe si avvisa, mai si blocca. Serve dire se e'
+               netto o IVA inclusa, altrimenti l'IVA sembrerebbe un errore. -->
+          <div class="form-row off-tot-stampato-riga" style="margin-top:12px;align-items:flex-end">
+            <div class="form-group" style="flex:1.2;margin-bottom:0">
+              <label for="off-tot-stampato" class="form-label">Totale stampato sul documento <span class="dim">(facoltativo)</span></label>
+              <input type="number" id="off-tot-stampato" class="form-input num" step="0.01" min="0" placeholder="es. 1352.25"
+                     oninput="avvisoTotaleStampato()" />
+            </div>
+            <div class="form-group" style="flex:1;margin-bottom:0">
+              <label for="off-tot-stampato-iva" class="form-label">Quel totale è</label>
+              <select id="off-tot-stampato-iva" class="form-input" onchange="onTotaleStampatoChange()">
+                <option value="netto">escl. IVA (netto)</option>
+                <option value="iva_inclusa">IVA inclusa</option>
+              </select>
+            </div>
+            <div class="form-group" id="off-tot-stampato-aliquota-box" style="flex:0.7;margin-bottom:0;display:none">
+              <label for="off-tot-stampato-aliquota" class="form-label">Aliquota IVA %</label>
+              <input type="number" id="off-tot-stampato-aliquota" class="form-input num" step="0.1" min="0" max="100" placeholder="8.1"
+                     oninput="avvisoTotaleStampato()" />
+            </div>
+          </div>
+          <div id="offerte-righe-avviso" role="status" aria-live="polite"></div>
         </div>
 
         <div class="card">
           <div class="form-group">
             <label for="off-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
             <textarea id="off-note" class="form-input" rows="2" maxlength="500"
-                      placeholder="Condizioni, validità, consegna…"></textarea>
+                      placeholder="Condizioni, consegna prevista, trasporto…"></textarea>
           </div>
           <div class="form-group">
-            <label for="off-allegato" class="form-label">📎 PDF o foto dell&rsquo;offerta <span class="dim">(facoltativo)</span></label>
+            <label for="off-allegato" class="form-label">📎 PDF o foto del documento <span class="dim">(facoltativo)</span></label>
             <input type="file" id="off-allegato" class="form-input" accept=".pdf,image/*" />
             <div class="form-hint">Si allega al salvataggio. Gli allegati gi&agrave; caricati si vedono nella scheda.</div>
           </div>
           <div class="form-actions">
-            <button type="button" class="btn-primary" id="btn-salva-offerta" onclick="saveOfferta()">💾 Salva offerta</button>
+            <button type="button" class="btn-primary" id="btn-salva-offerta" onclick="saveOfferta()">💾 Salva conferma d'ordine</button>
             <button type="button" class="btn-secondary" onclick="offerteBackToList()">Annulla</button>
           </div>
         </div>
@@ -2079,10 +2125,12 @@
           <!-- FASE 29 — l'offerta a cui questa fattura risponde. Facoltativa,
                mai un obbligo: serve solo al confronto affiancato. -->
           <div class="form-group" id="a-offerta-group">
-            <label for="a-offerta" class="form-label">📋 Offerta collegata <span class="dim">(facoltativa)</span></label>
+            <!-- FASE 29 — collegamento 1-a-1 (offerta_id). Resta com'e' (57·3f):
+                 il legame vero fra conferme e fatture, molti-a-molti, si fa al punto 5. -->
+            <label for="a-offerta" class="form-label">📦 Conferma d'ordine / offerta collegata <span class="dim">(facoltativa)</span></label>
             <select id="a-offerta" class="form-input" onchange="onOffertaCollegataChange()"></select>
             <div class="form-hint">
-              Prima le offerte di questo fornitore, poi le altre. Collegandola vedi il confronto qui sotto.
+              Prima i documenti di questo fornitore, poi gli altri. Collegandone uno vedi il confronto dei totali qui sotto.
             </div>
             <div id="a-offerta-confronto"></div>
           </div>
@@ -2939,7 +2987,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=56"></script>
+<script src="js/app.js?v=57"></script>
 
 </body>
 </html>
