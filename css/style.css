@@ -2987,3 +2987,26 @@ tr.off-vecchia td { color: var(--text2); }
   .acc-tabella .cell-azioni { white-space: normal; }
   .acc-tabella .cell-azioni .icon-btn { margin: 2px 0 2px 4px; }
 }
+
+/* 59·A — Allegati multipli: la coda dei file scelti, sotto il campo */
+.coda-file { margin-top: 6px; }
+.coda-file.trascina, .form-input-file.trascina, .form-input.trascina { outline: 2px dashed var(--primary); outline-offset: 2px; background: var(--primary-lt); }
+.coda-file-testa { font-size: 12px; color: var(--text); font-weight: 600; padding: 4px 2px; }
+.coda-file-riga {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 5px 6px; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.coda-file-riga:last-child { border-bottom: none; }
+.coda-file-nome { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.coda-file-dim  { font-size: 12px; color: var(--text2); white-space: nowrap; }
+/* L'esito di ogni file: il colore aiuta, la parola c'e' sempre */
+.coda-file-riga.ok  { background: var(--ok-bg);  color: var(--ok); }
+.coda-file-riga.ok  .coda-file-dim { color: var(--ok); }
+.coda-file-riga.err { background: var(--err-bg); color: var(--err); }
+.coda-file-riga.err .coda-file-dim { color: var(--err); white-space: normal; }
+.coda-file-esiti { margin-bottom: 8px; border-radius: var(--radius); overflow: hidden; }
+
+/* 59·B — Il contatore in testa agli elenchi */
+.elenco-contatore { margin: 0 0 8px; }
+.elenco-contatore-riga { font-size: 13px; color: var(--text2); padding: 4px 2px; }
+.elenco-contatore-riga strong { color: var(--text); font-size: 14px; }
