@@ -2938,9 +2938,10 @@ tr.riga-fuori-cantiere td {
 
 /* 56·4a — righe descrittive delle fatture d'acquisto: editor e scheda */
 .cell-input.cell-codice { font-family: monospace; }
-#acquisto-righe td { padding: 4px 6px; vertical-align: top; }
-#acquisto-righe td.num { font-family: monospace; text-align: right; padding-top: 10px; white-space: nowrap; }
-#acquisto-righe .cell-azioni { white-space: nowrap; }
+/* 57·3c — le stesse regole valgono per le righe della conferma d'ordine (#offerte-righe): stesso motore, stesso aspetto */
+#acquisto-righe td, #offerte-righe td { padding: 4px 6px; vertical-align: top; }
+#acquisto-righe td.num, #offerte-righe td.num { font-family: monospace; text-align: right; padding-top: 10px; white-space: nowrap; }
+#acquisto-righe .cell-azioni, #offerte-righe .cell-azioni { white-space: nowrap; }
 /* L'avviso sotto le righe: tre colori, sempre con icona E parola, mai solo colore */
 .righe-avviso { margin-top: 8px; padding: 8px 12px; border-radius: 6px; font-size: 13.5px; line-height: 1.4; border: 1px solid transparent; }
 .righe-avviso.ok   { background: var(--ok-bg);   border-color: var(--ok);   color: var(--text); }
@@ -2952,3 +2953,14 @@ tr.riga-fuori-cantiere td {
 .righe-acq-ro th.num, .righe-acq-ro td.num { text-align: right; font-family: monospace; white-space: nowrap; }
 .righe-acq-ro td { padding: 6px 10px; vertical-align: top; border-bottom: 1px solid var(--border); }
 .righe-acq-ro tr.righe-acq-somma td { font-weight: 700; border-bottom: none; border-top: 2px solid var(--border); }
+
+/* 57·3 — Conferme d'ordine */
+/* Le vecchie offerte (FASE 29) nell'elenco: si vedono, ma in secondo piano */
+tr.off-vecchia td { color: var(--text2); }
+.off-tipo { white-space: nowrap; font-size: 12.5px; }
+/* Il totale stampato: i tre campi in fila, a capo sugli schermi stretti */
+.off-tot-stampato-riga { flex-wrap: wrap; gap: 12px; }
+.off-tot-stampato-riga .form-input.num { text-align: right; font-family: monospace; }
+@media (max-width: 640px) {
+  .off-tot-stampato-riga .form-group { flex: 1 1 100% !important; }
+}
