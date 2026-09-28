@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=61" />
+  <link rel="stylesheet" href="css/style.css?v=62" />
 </head>
-<body data-versione="61">
+<body data-versione="62">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -1631,6 +1631,8 @@
         </div>
 
         <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+        <!-- 62c - il riquadro del documento annullato: quando, e perche'. -->
+        <div id="fatture-annullata"></div>
         <!-- 61g - ritardo e solleciti, sopra il documento. -->
         <div id="fatture-stato-solleciti"></div>
 
@@ -3073,7 +3075,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=61"></script>
+<script src="js/app.js?v=62"></script>
 
 </body>
 </html>
