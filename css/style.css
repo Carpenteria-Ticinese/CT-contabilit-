@@ -3244,3 +3244,17 @@ tr.off-vecchia td { color: var(--text2); }
   /* Una rata non si spezza fra due pagine. */
   body.stampa-piano #piano-print .inv-table tr { break-inside: avoid; page-break-inside: avoid; }
 }
+
+/* ── 62g · la tendina «collega a fattura già emessa» ──────────────────────
+   Le fatture di altri cantieri stanno in un gruppo suo e si vedono solo
+   chiedendole: è da lì che è arrivata la fattura di un altro cliente. */
+#acc-collega-sel optgroup {
+  font-style: normal; font-weight: 700;
+  color: var(--text2); background: var(--bg);
+}
+#acc-collega-sel option { font-weight: 400; color: var(--text); }
+.avviso-altre {
+  border-left: 3px solid var(--warn);
+  padding-left: 8px;
+  color: var(--text);
+}
