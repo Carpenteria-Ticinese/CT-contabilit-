@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=60" />
+  <link rel="stylesheet" href="css/style.css?v=61" />
 </head>
-<body data-versione="60">
+<body data-versione="61">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -1397,6 +1397,8 @@
             </div>
           </div>
           <!-- 59·B — quanti documenti, per stato; con filtro: «4 di 6 (filtro attivo)» -->
+          <!-- 61g - la barra della vista «Scadute»: compare solo se ce ne sono. -->
+          <div id="fatture-scadute-barra"></div>
           <div id="fatture-contatore" class="elenco-contatore"></div>
           <div id="fatture-table"></div>
         </div>
@@ -1629,6 +1631,8 @@
         </div>
 
         <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+        <!-- 61g - ritardo e solleciti, sopra il documento. -->
+        <div id="fatture-stato-solleciti"></div>
 
         <div class="card no-print" id="fatture-detail-actions"></div>
         <div class="no-print" id="fatture-allegato-banner" role="status" aria-live="polite"></div>
@@ -1645,6 +1649,12 @@
         <div class="card">
           <div id="fatture-print"></div>
         </div>
+        <!-- 61e — il foglio della ricevuta di pagamento. Sta fuori dalla vista
+             (display:none) e si vede solo in stampa, quando il body ha la
+             classe «stampa-ricevuta»: la stessa meccanica della busta. -->
+        <div id="ricevuta-print" class="foglio-nascosto"></div>
+        <!-- 61g - il foglio del sollecito: stessa meccanica della ricevuta. -->
+        <div id="sollecito-print" class="foglio-nascosto"></div>
         <!-- FASE 28 — il formato pagina della fattura, scritto dal JS: con la
              polizza in fondo il margine inferiore diventa 110mm, che e' la
              fascia riservata a lei. Arriva dopo il <link> del CSS, quindi il
@@ -2435,6 +2445,60 @@
           </div>
         </div>
 
+          <!-- 61h — SOLLECITI: spese, mora e i tre testi. I testi stanno qui e
+               non nel codice: si cambiano senza toccare il programma. -->
+          <div class="imp-sezione" id="imp-solleciti">
+            <div class="card-title" style="margin-top:8px">📨 Solleciti</div>
+            <div class="form-hint" style="margin-bottom:10px">
+              Le lettere dei tre livelli, le spese e il tasso di mora. La scadenza della
+              fattura non cambia mai: ogni sollecito ha un termine suo
+              (+15 giorni se la fattura era a 30, +10 se era a 10).
+            </div>
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="imp-sol-spese" class="form-label">Spese per sollecito (CHF)</label>
+                <input type="number" id="imp-sol-spese" class="form-input" min="0" step="1" placeholder="0" />
+                <div class="form-hint">
+                  <strong>0 = non si addebitano</strong>, ed è il valore di partenza.
+                  Le spese si possono addebitare solo se erano pattuite: il programma
+                  te lo ricorda ogni volta che prepari un sollecito con le spese accese.
+                </div>
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="imp-sol-tasso" class="form-label">Tasso di mora (% all'anno)</label>
+                <input type="number" id="imp-sol-tasso" class="form-input" min="0" max="20" step="0.1" placeholder="5" />
+                <div class="form-hint">
+                  Il 5 % è il tasso di legge in Svizzera (CO art. 104) quando non
+                  è stato pattuito altro.
+                </div>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="imp-sol-testo-1" class="form-label">Testo del 1º sollecito</label>
+              <textarea id="imp-sol-testo-1" class="form-input" rows="7"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="imp-sol-testo-2" class="form-label">Testo del 2º sollecito</label>
+              <textarea id="imp-sol-testo-2" class="form-input" rows="7"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="imp-sol-testo-3" class="form-label">Testo del 3º sollecito</label>
+              <textarea id="imp-sol-testo-3" class="form-input" rows="8"></textarea>
+            </div>
+            <div class="form-hint">
+              Segnaposto disponibili, sostituiti quando la lettera esce:
+              <code>[nome]</code> · <code>[numero]</code> · <code>[data]</code> ·
+              <code>[importo]</code> · <code>[nuovo termine]</code> ·
+              <code>[data 1º sollecito]</code> · <code>[data 2º]</code>.
+              L'importo è quello che resta da incassare, note di credito già detratte.
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn-primary" onclick="salvaImpostazioniSolleciti()">💾 Salva i solleciti</button>
+              <button type="button" class="btn-secondary" onclick="ripristinaTestiSolleciti()">↺ Ripristina i testi predefiniti</button>
+            </div>
+            <div id="imp-sol-banner" role="status" aria-live="polite"></div>
+          </div>
+
         <div class="fase-banner warn" role="status" style="margin-top:4px">
           <span class="icon" aria-hidden="true">📌</span>
           <div class="msg">Con il metodo dell&rsquo;aliquota saldo <strong>al cliente si fattura
@@ -3009,7 +3073,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=60"></script>
+<script src="js/app.js?v=61"></script>
 
 </body>
 </html>
