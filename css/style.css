@@ -3126,3 +3126,53 @@ tr.off-vecchia td { color: var(--text2); }
   body.stampa-sollecito #sollecito-print .inv { max-width: 100%; }
   body.stampa-sollecito #sollecito-print .inv-logo { height: 68px; }
 }
+
+/* ── 62c · DOCUMENTO ANNULLATO ────────────────────────────────────────────
+   Il riquadro sulla scheda: il perché si legge per intero, non solo nel
+   tooltip dell'elenco. */
+.annullata-box {
+  border-left: 4px solid var(--err);
+  background: var(--err-bg);
+}
+.annullata-box .card-title { color: var(--err); }
+.annullata-quando { font-size: 12.5px; color: var(--text2); margin-bottom: 6px; }
+.annullata-motivo {
+  font-size: 14.5px; line-height: 1.6; color: var(--text);
+  white-space: pre-line; font-weight: 600;
+}
+
+/* Sul foglio stampato: una fascia in cima, non una filigrana dietro il testo.
+   Una filigrana obliqua sbiadita si può scambiare per un difetto di stampa;
+   una fascia con la parola scritta no, e si legge anche in fotocopia. */
+.inv-annullata-fascia {
+  border: 2px solid #b3261e;
+  color: #b3261e;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.inv-annullata-motivo {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+/* Il resto del documento resta leggibile ma si vede che è fuori uso. */
+.inv-annullata .inv-table,
+.inv-annullata .inv-tot,
+.inv-annullata .inv-pay { opacity: .72; }
+
+@media print {
+  /* La fascia deve uscire col suo colore anche quando il browser
+     «risparmia inchiostro»: senza questa riga resta un rettangolo grigio. */
+  .inv-annullata-fascia {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
