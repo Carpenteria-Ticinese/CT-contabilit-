@@ -3258,3 +3258,16 @@ tr.off-vecchia td { color: var(--text2); }
   padding-left: 8px;
   color: var(--text);
 }
+
+/* ── 62h · lo storno delle note di credito sul contratto ──────────────────── */
+.pag-riga.storno span:last-child { color: var(--err); font-weight: 600; }
+.pag-riga.storno-ignoto span:last-child { color: var(--warn); font-weight: 600; }
+.storno-dettaglio {
+  font-size: 12px; line-height: 1.5; color: var(--text2);
+  padding: 2px 0 6px; margin-top: -4px;
+}
+.acc-storno {
+  display: inline-block; margin-left: 6px;
+  font-size: 12.5px; font-weight: 600; color: var(--err); white-space: nowrap;
+}
+.piano-storno { white-space: pre-line; }
