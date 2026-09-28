@@ -3021,3 +3021,108 @@ tr.off-vecchia td { color: var(--text2); }
 .pc-tabella tr.pc-zero td { color: var(--text3); }
 .pc-tabella tr.pc-nc td { background: var(--bg); }
 .pc-tabella tr.pc-totale td { font-weight: 700; border-top: 2px solid var(--border); background: var(--primary-lt); }
+
+/* ── 61e · RICEVUTA DI PAGAMENTO ──────────────────────────────────────────
+   Il foglio riusa .inv (carta intestata della fattura): stesso corpo, stessa
+   posizione dell'indirizzo, quindi entra nella stessa busta a finestra.
+   Qui c'e' solo quello che la fattura non ha. */
+.foglio-nascosto { display: none; }
+
+.ric-frase {
+  margin: 26px 0 18px;
+  font-size: 15px; line-height: 1.7; color: #333;
+}
+.ric-conto { margin: 0 0 16px; max-width: 420px; }
+.ric-conto-riga {
+  display: flex; justify-content: space-between; gap: 18px;
+  padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--line);
+}
+.ric-conto-riga span:last-child { font-family: monospace; white-space: nowrap; }
+.ric-conto-riga.forte {
+  font-weight: 700; font-size: 14.5px; color: var(--ink);
+  border-bottom: none; border-top: 2px solid var(--accent); margin-top: 2px;
+}
+/* L'esito ha sempre icona E parola: il colore da solo non dice niente. */
+.ric-esito { margin: 4px 0 20px; font-size: 14px; font-weight: 600; color: var(--ink); }
+.ric-esito.ok { color: #1d6b3f; }
+
+.ric-firma { margin-top: 42px; width: 260px; }
+.ric-firma-luogo { font-size: 13px; color: #444; margin-bottom: 30px; }
+.ric-firma-riga { border-bottom: 1px solid #555; height: 1px; }
+.ric-firma-et { font-size: 11px; color: #777; margin-top: 4px; }
+
+/* Stampa: la ricevuta esce SOLO quando il body ha la classe, e allora la
+   fattura, la busta e l'elenco codici restano fuori. Senza questa regola,
+   stampando una fattura uscirebbe anche la ricevuta appena preparata. */
+@media print {
+  body.stampa-ricevuta #ricevuta-print { display: block; }
+  body.stampa-ricevuta #ricevuta-print,
+  body.stampa-ricevuta #ricevuta-print * { visibility: visible; }
+  body.stampa-ricevuta #ricevuta-print {
+    position: absolute; left: 0; top: 0; width: 100%; padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  body.stampa-ricevuta #fatture-print,
+  body.stampa-ricevuta #codici-foglio,
+  body.stampa-ricevuta #busta-foglio { display: none; }
+  body.stampa-ricevuta #ricevuta-print .inv { max-width: 100%; }
+  body.stampa-ricevuta #ricevuta-print .inv-logo { height: 68px; }
+}
+
+/* ── 61g · SOLLECITI ──────────────────────────────────────────────────────
+   La lettera riusa .inv e .inv-cliente della fattura: stesso foglio, stessa
+   posizione dell'indirizzo, stessa busta a finestra. */
+.sol-corpo {
+  margin: 30px 0 22px;
+  font-size: 14.5px; line-height: 1.75; color: #333;
+  max-width: 640px;
+}
+.sol-calce { margin: 0 0 18px; max-width: 420px; }
+.sol-calce-tit {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--accent); font-weight: 700; margin-bottom: 6px;
+}
+
+/* La barra sopra l'elenco fatture */
+.scadute-barra {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+.scadute-barra.aperta {
+  background: var(--warn-bg); border: 1px solid var(--warn);
+  border-radius: 6px; padding: 10px 12px; font-size: 13.5px; color: var(--text);
+}
+.scadute-barra .dim { font-size: 13px; }
+
+/* La tabella delle scadute */
+.sol-ritardo { font-family: monospace; font-weight: 700; color: var(--err); }
+.sol-riga-stato { font-size: 12px; line-height: 1.5; }
+.sol-inviato { color: var(--ok); font-weight: 600; }
+
+/* La riga di stato sopra la fattura aperta */
+.sol-stato-riga {
+  background: var(--warn-bg); border: 1px solid var(--warn); border-radius: 6px;
+  padding: 8px 12px; margin-bottom: 14px; font-size: 13.5px; color: var(--text);
+}
+
+/* La sezione nelle Impostazioni */
+#imp-solleciti { border-top: 1px solid var(--border); margin-top: 22px; padding-top: 6px; }
+#imp-solleciti textarea { font-family: inherit; line-height: 1.6; }
+
+@media print {
+  body.stampa-sollecito #sollecito-print { display: block; }
+  body.stampa-sollecito #sollecito-print,
+  body.stampa-sollecito #sollecito-print * { visibility: visible; }
+  body.stampa-sollecito #sollecito-print {
+    position: absolute; left: 0; top: 0; width: 100%; padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  body.stampa-sollecito #fatture-print,
+  body.stampa-sollecito #ricevuta-print,
+  body.stampa-sollecito #codici-foglio,
+  body.stampa-sollecito #busta-foglio { display: none; }
+  body.stampa-sollecito #sollecito-print .inv { max-width: 100%; }
+  body.stampa-sollecito #sollecito-print .inv-logo { height: 68px; }
+}
