@@ -18942,7 +18942,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '63'
+var VERSIONE = '64'
 
 function controllaVersionePagina() {
   try {
@@ -19850,26 +19850,116 @@ function rigaAccontoHtml(c, a) {
   return riga
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 62g — LA TENDINA «COLLEGA A FATTURA GIÀ EMESSA»
+//
+// Proponeva TUTTE le fatture emesse libere, in un elenco solo: sul cantiere
+// Marotta compariva «n. 2026-007 · Tamagni Luca». Un clic di troppo e la
+// fattura di un altro cliente finisce attaccata a questo contratto — e la rata
+// si congela, quindi non si stacca più.
+//
+// Adesso la tendina parte con le fatture CHE HANNO GIÀ QUESTO CANTIERE. Le
+// altre esistono ancora (una fattura vecchia, emessa prima che si scrivesse il
+// cantiere, va collegata proprio da qui) ma si vedono solo chiedendolo, in una
+// sezione sua che dice di controllare il cliente.
+//
+// E al momento di collegare, se il cliente della fattura non è il committente
+// del cantiere, si chiede conferma CON I DUE NOMI SCRITTI: «Tamagni Luca» e
+// «Anna Marotta» uno sotto l'altro non si confondono.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Le «altre» si mostrano solo se richiesto. Si riazzera ogni volta che la
+// tendina si apre o si chiude: la richiesta vale per quella volta.
+var mostraAltreFatture = false
+
+function chiediAltreFatture() { mostraAltreFatture = true; renderSchedaCantiere() }
+
+// Due nomi che indicano la stessa persona? Confronto tollerante: maiuscole,
+// punteggiatura e ordine delle parole non contano («Marotta Anna» = «Anna
+// Marotta»). Sbagliare dicendo «diversi» costa una conferma in più; sbagliare
+// al contrario salterebbe l'avviso, quindi nel dubbio si avvisa.
+function normalizzaNomeCliente(s) {
+  return String(s == null ? '' : s)
+    .toLowerCase()
+    .replace(/[^0-9a-zà-öø-ÿ ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function stessoCliente(a, b) {
+  var x = normalizzaNomeCliente(a), y = normalizzaNomeCliente(b)
+  // Uno dei due non si sa: non si può affermare che siano diversi, e un avviso
+  // che grida a ogni collegamento smette di essere letto.
+  if (!x || !y) return true
+  if (x === y) return true
+  if (x.indexOf(y) !== -1 || y.indexOf(x) !== -1) return true
+  return x.split(' ').sort().join(' ') === y.split(' ').sort().join(' ')
+}
+
+// Il committente del cantiere, se il programma l'ha letto. Stringa vuota se
+// non si sa: la lettura di ripiego dei cantieri prende solo id e nome.
+function committenteCantiere(cantiereId) {
+  var x = (cantieriCache || []).filter(function (k) { return k.id === cantiereId })[0]
+  return String((x && x.committente) || '').trim()
+}
+
+function opzioneFatturaCollegabile(f) {
+  return '<option value="' + esc(f.id) + '">n. ' + esc(f.numero || '') +
+    ' · ' + esc(fmtDate(f.data_emissione)) +
+    ' · ' + esc(f.cliente_nome || '') +
+    ' · ' + esc(fmtNumIt(f.totale_imponibile)) + ' CHF (imponibile)</option>'
+}
+
 // La tendina per collegare una rata a una fattura gia' emessa.
 function rigaCollegaHtml(c, a) {
   var lista = fattureCollegabili || []
-  var opzioni = lista.map(function (f) {
-    return '<option value="' + esc(f.id) + '">n. ' + esc(f.numero || '') + ' · ' + esc(fmtDate(f.data_emissione)) +
-      ' · ' + esc(f.cliente_nome || '') + ' · ' + esc(fmtNumIt(f.totale_imponibile)) + ' CHF (imponibile)</option>'
-  }).join('')
-  return '<tr class="acc-collega"><td></td><td colspan="4">' +
-    (lista.length
-      ? '<div class="form-row" style="align-items:center; gap:8px">' +
-          '<select id="acc-collega-sel" class="form-input" style="flex:1">' + opzioni + '</select>' +
-          '<button type="button" class="btn-primary" onclick="collegaFatturaEmessa(\'' + esc(a.id) + '\')">🔗 Collega</button>' +
-          '<button type="button" class="btn-secondary" onclick="chiudiCollegaFattura()">Annulla</button>' +
-        '</div>' +
-        '<div class="cant-sub" style="padding-top:6px">Solo fatture emesse non ancora collegate a una rata. ' +
-        'La rata prende l\'<strong>imponibile</strong> della fattura (IVA esclusa) e diventa fatturata. ' +
-        'Sulla fattura viene scritto solo il cantiere, se manca: nient\'altro.</div>'
-      : '<div class="cru-vuoto">Nessuna fattura emessa ancora libera da collegare. ' +
-        '<button type="button" class="link-btn" onclick="chiudiCollegaFattura()">Chiudi</button></div>') +
-  '</td></tr>'
+  // 62g — due gruppi: quelle che hanno GIA' questo cantiere, e tutte le altre.
+  // Le altre non si vedono finche' non si chiedono: e' da li' che e' arrivata
+  // la fattura di un altro cliente a un passo dall'essere collegata.
+  var diQui = lista.filter(function (f) { return f.cantiere_id === c.cantiere_id })
+  var altre = lista.filter(function (f) { return f.cantiere_id !== c.cantiere_id })
+
+  var opzioni = ''
+  if (diQui.length) {
+    opzioni += '<optgroup label="Fatture di questo cantiere">' +
+      diQui.map(opzioneFatturaCollegabile).join('') + '</optgroup>'
+  }
+  if (mostraAltreFatture && altre.length) {
+    opzioni += '<optgroup label="Altre fatture emesse — verificare il cliente">' +
+      altre.map(opzioneFatturaCollegabile).join('') + '</optgroup>'
+  }
+
+  var corpo
+  if (!opzioni) {
+    // Niente da proporre: si dice perche', e si offre la strada per le altre
+    // invece di lasciare una tendina vuota senza spiegazione.
+    corpo = '<div class="cru-vuoto">' +
+      (diQui.length === 0 && altre.length > 0
+        ? 'Nessuna fattura di <strong>questo cantiere</strong> ancora libera. ' +
+          'Ci sono ' + altre.length + ' altre fatture emesse, di altri cantieri o senza cantiere: ' +
+          '<button type="button" class="link-btn" onclick="chiediAltreFatture()">mostrale, verifico io il cliente</button>.'
+        : 'Nessuna fattura emessa ancora libera da collegare.') +
+      ' <button type="button" class="link-btn" onclick="chiudiCollegaFattura()">Chiudi</button></div>'
+  } else {
+    corpo = '<div class="form-row" style="align-items:center; gap:8px">' +
+        '<select id="acc-collega-sel" class="form-input" style="flex:1">' + opzioni + '</select>' +
+        '<button type="button" class="btn-primary" onclick="collegaFatturaEmessa(\'' + esc(a.id) + '\')">🔗 Collega</button>' +
+        '<button type="button" class="btn-secondary" onclick="chiudiCollegaFattura()">Annulla</button>' +
+      '</div>' +
+      '<div class="cant-sub" style="padding-top:6px">Solo fatture emesse non ancora collegate a una rata. ' +
+      'La rata prende l\'<strong>imponibile</strong> della fattura (IVA esclusa) e diventa fatturata. ' +
+      'Sulla fattura viene scritto solo il cantiere, se manca: nient\'altro.</div>' +
+      (!mostraAltreFatture && altre.length
+        ? '<div class="cant-sub">Ci sono anche <strong>' + altre.length + '</strong> fatture emesse di altri cantieri o senza cantiere. ' +
+          '<button type="button" class="link-btn" onclick="chiediAltreFatture()">Mostra anche quelle</button> — ' +
+          'controlla il cliente prima di collegarne una.</div>'
+        : '') +
+      (mostraAltreFatture && altre.length
+        ? '<div class="cant-sub avviso-altre">⚠️ Nella tendina ci sono anche fatture di <strong>altri cantieri o senza cantiere</strong>: ' +
+          'il nome del cliente è scritto accanto a ogni voce.</div>'
+        : '')
+  }
+  return '<tr class="acc-collega"><td></td><td colspan="4">' + corpo + '</td></tr>'
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -20370,6 +20460,9 @@ async function fattureEmesseCollegabili() {
 async function apriCollegaFattura(accontoId) {
   try {
     fattureCollegabili = await fattureEmesseCollegabili()
+    // 62g — si riparte sempre dalle fatture di questo cantiere: la richiesta di
+    // vedere le altre vale per quella volta, non per sempre.
+    mostraAltreFatture = false
     accontoDaCollegare = accontoId
     renderSchedaCantiere()
   } catch (e) {
@@ -20380,6 +20473,7 @@ async function apriCollegaFattura(accontoId) {
 function chiudiCollegaFattura() {
   accontoDaCollegare = null
   fattureCollegabili = null
+  mostraAltreFatture = false
   renderSchedaCantiere()
 }
 
@@ -20391,6 +20485,20 @@ async function collegaFatturaEmessa(accontoId) {
   var imponibile = safeNum(f.totale_imponibile) || 0
   var rataImp = safeNum(t.a.importo) || 0
 
+  // 62g — il cliente della fattura non e' il committente del cantiere: i due
+  // nomi scritti uno sotto l'altro, perche' e' l'unica cosa che ferma un clic
+  // partito per sbaglio. Se il committente non si sa (lettura di ripiego dei
+  // cantieri), non si afferma che sono diversi: lo dice gia' la sezione della
+  // tendina da cui la fattura e' stata scelta.
+  var committente = committenteCantiere(t.c.cantiere_id)
+  if (!stessoCliente(f.cliente_nome, committente)) {
+    if (!window.confirm(
+        'Attenzione: i due nomi non coincidono.\n\n' +
+        'Cliente della fattura n. ' + (f.numero || '') + ':\n    ' + (f.cliente_nome || '—') + '\n\n' +
+        'Committente del cantiere:\n    ' + (committente || '—') + '\n\n' +
+        'Collegando, questa fattura entra nel contratto di questo cantiere e la rata si CONGELA: ' +
+        'non si stacca più. Continuare?')) return
+  }
   if (f.cantiere_id && f.cantiere_id !== t.c.cantiere_id) {
     if (!window.confirm('La fattura n. ' + (f.numero || '') + ' è già collegata a un altro cantiere (' +
       nomeCantiereDaId(f.cantiere_id) + '). Collegarla comunque a questa rata? Il cantiere sulla fattura NON viene cambiato.')) return
@@ -20428,6 +20536,7 @@ async function collegaFatturaEmessa(accontoId) {
   }
   accontoDaCollegare = null
   fattureCollegabili = null
+  mostraAltreFatture = false
   await ricaricaContrattoERidisegna()
   showCantieriBanner(nota.indexOf('NON') !== -1 ? 'warn' : 'ok',
     'Rata n. ' + t.a.ordine + ' collegata alla fattura n. ' + (f.numero || '') + ' (' + fmtNumIt(imponibile) + ' CHF IVA esclusa).' + nota)
