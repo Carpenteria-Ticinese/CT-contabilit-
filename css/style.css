@@ -3176,3 +3176,71 @@ tr.off-vecchia td { color: var(--text2); }
     print-color-adjust: exact;
   }
 }
+
+/* ── 62d · COEFFICIENTE DI SCONTO ─────────────────────────────────────────── */
+.coef-box {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 0 0 14px;
+  background: var(--bg);
+}
+.coef-testa { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.coef-et {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text2); font-weight: 700;
+}
+.coef-val { font-family: monospace; font-size: 22px; font-weight: 700; color: var(--primary); }
+.coef-pct { font-size: 14px; font-weight: 600; color: var(--text); }
+.coef-spiega { font-size: 13px; color: var(--text2); margin: 6px 0 12px; line-height: 1.5; }
+
+/* La calcolatrice: due campi che si inseguono, con il segno in mezzo. */
+.coef-calc { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.coef-campo { flex: 1 1 150px; min-width: 130px; }
+.coef-campo .form-input { margin-bottom: 0; }
+.coef-freccia {
+  flex: 0 0 auto; padding-bottom: 10px;
+  font-family: monospace; font-size: 13px; color: var(--text2); white-space: nowrap;
+}
+
+/* L'avviso nell'editor della fattura, sotto il cantiere scelto */
+.coef-avviso {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 6px;
+  font-size: 13.5px; line-height: 1.5; color: var(--text);
+}
+
+/* ── 62e · l'incasso sulla riga della rata ────────────────────────────────── */
+.acc-inc { display: inline-block; margin-left: 6px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.acc-inc.ok     { color: var(--ok); }
+.acc-inc.parz   { color: var(--warn); }
+.acc-inc.aperto { color: var(--info); }
+
+/* ── 62f · il foglio del piano pagamenti ──────────────────────────────────── */
+.piano-cantiere { font-size: 13px; color: #444; margin: 0 0 18px; }
+.piano-conto { max-width: 420px; margin-bottom: 16px; }
+.inv.piano .ro-section { margin-top: 20px; }
+
+@media print {
+  body.stampa-piano #piano-print { display: block; }
+  body.stampa-piano #piano-print,
+  body.stampa-piano #piano-print * { visibility: visible; }
+  body.stampa-piano #piano-print {
+    position: absolute; left: 0; top: 0; width: 100%; padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  body.stampa-piano #fatture-print,
+  body.stampa-piano #ricevuta-print,
+  body.stampa-piano #sollecito-print,
+  body.stampa-piano #codici-foglio,
+  body.stampa-piano #busta-foglio { display: none; }
+  body.stampa-piano #piano-print .inv { max-width: 100%; }
+  body.stampa-piano #piano-print .inv-logo { height: 68px; }
+  /* Una rata non si spezza fra due pagine. */
+  body.stampa-piano #piano-print .inv-table tr { break-inside: avoid; page-break-inside: avoid; }
+}
