@@ -250,15 +250,26 @@ function badgePagamento(verso, stato) {
 //   parziale -> «🟠 Incassato in parte — residuo 3.200,00 CHF»
 //   pagato   -> «✅ Incassato»
 function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
-  var e = etichettaPagamento(verso, stato)
+  // 61b — lo stato che si LEGGE tiene conto anche delle note di credito; quello
+  // nel database resta del trigger, che conta solo i pagamenti.
+  var statoVero = statoConStorno(tabella, id, totale, stato)
+  var e = etichettaPagamento(verso, statoVero)
   var cifra = ''
   // La cifra solo se i pagamenti sono stati letti davvero: senza, si omette.
   // Mai uno zero al posto di un dato che non c'e'.
-  if (stato !== 'pagato' && cacheOk('pagamenti')) {
-    var residuo = round2((safeNum(totale) || 0) - totalePagatoDi(tabella, id))
-    cifra = (stato === 'parziale' ? ' — residuo ' : ' · ') + fmtNumIt(residuo) + ' CHF'
+  if (statoVero !== 'pagato' && cacheOk('pagamenti')) {
+    var residuo = residuoDocumento(tabella, id, totale)
+    cifra = (statoVero === 'parziale' ? ' — residuo ' : ' · ') + fmtNumIt(residuo) + ' CHF'
   }
-  return badge(e.cls, e.icona + ' ' + e.testo + cifra)
+  // 61b — quando a chiudere il conto e' stata una nota di credito, lo si dice:
+  // «Incassato» su una fattura incassata a meta' sarebbe incomprensibile.
+  var nota = ''
+  if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito') && stornoNoteCredito(id) > 0.005) {
+    nota = (statoVero === 'pagato' && stato !== 'pagato')
+      ? ' — chiusa con nota di credito'
+      : ' (al netto della nota di credito)'
+  }
+  return badge(e.cls, e.icona + ' ' + e.testo + cifra + nota)
 }
 
 // Testo del bottone che porta ALLO stato indicato.
@@ -3512,6 +3523,14 @@ async function loadFattureList() {
     // anche senza i pagamenti. La CIFRA si omette e il banner lo dice.
     var contorno = []
     try { await loadPagamenti() } catch (eP) { contorno.push('residui non disponibili: ' + (eP.message || eP)) }
+    // 61b — le note di credito servono al residuo come i pagamenti: se non si
+    // leggono, il residuo si omette (non si mostra una cifra che sarebbe
+    // sbagliata per difetto) e il banner lo dice.
+    try { await loadNoteCredito(true) } catch (eN) { contorno.push('note di credito non lette, i residui non ne tengono conto: ' + (eN.message || eN)) }
+    // 61g — i solleciti: senza, la vista «Scadute» direbbe «nessun sollecito»
+    // su fatture gia' sollecitate tre volte. Meglio un elenco che lo dichiara.
+    try { await loadSolleciti(true) } catch (eS) { contorno.push('solleciti non letti: ' + (eS.message || eS)) }
+    try { await loadImpostazioniConta() } catch (_) { /* i testi hanno un ripiego */ }
     try { await loadAllegati() } catch (eA) { contorno.push('allegati: ' + (eA.message || eA)) }
     renderFattureTable()
     if (contorno.length) showFattureBanner('fatture-list-banner', 'warn',
@@ -3604,6 +3623,14 @@ function renderFattureTable() {
     })
   }
 
+  // 61g — la vista «Scadute»: un'altra tabella, non un filtro di questa.
+  html('fatture-scadute-barra', barraScaduteHtml())
+  if (vistaFattureScadute) {
+    html('fatture-contatore', '')
+    html('fatture-table', tabellaFattureScaduteHtml())
+    return
+  }
+
   // 59·B — quante, e in che stato. Sempre, anche a elenco vuoto.
   html('fatture-contatore', contatoreElencoHtml(fattureList, list,
     { sing: 'fattura', plur: 'fatture' },
@@ -3623,18 +3650,28 @@ function renderFattureTable() {
     return '<tr class="row-clickable" onclick="viewFattura(\'' + f.id + '\')">' +
       '<td><span class="cod">' + esc(f.numero || '— bozza —') + '</span></td>' +
       '<td class="dim">' + esc(fmtDate(f.data_emissione)) + '</td>' +
-      '<td>' + esc(f.cliente_nome || '') + (f.tipo === 'nota_credito' ? ' ' + badge('warn', 'Nota credito') : '') + '</td>' +
+      // 61c — il badge «Nota credito» qui non c'e' piu': lo dice la colonna
+      // Stato, per esteso e con la fattura stornata. Due volte sulla stessa
+      // riga era rumore.
+      '<td>' + esc(f.cliente_nome || '') + '</td>' +
       '<td class="num">' + fmtImporto(f.totale, f.valuta) + '</td>' +
       '<td>' + statoFatturaBadge(f.stato) +
         // L'incasso si mostra solo sulle fatture emesse: su una bozza non
         // significa niente, su una annullata sarebbe fuorviante.
-        (f.stato === 'emessa' && f.tipo !== 'nota_credito'
-          ? ' ' + badgePagamentoConResiduo('entrata', f.stato_pagamento, 'tm_conta_fatture', f.id, f.totale)
-          : (f.stato === 'emessa' ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '')) +
-        // FASE 7 — si vede a colpo d'occhio a quali fatture manca il PDF: senza
-        // questa spia il pacchetto esce incompleto e ci si accorge solo dopo.
-        (f.stato === 'emessa' && !contaAllegati('tm_conta_fatture', f.id)
-          ? ' <span class="pdf-mancante">📎 PDF mancante</span>'
+        // 61c — e MAI su una nota di credito: non si incassa, non ha residuo,
+        // non ha scadenza. Al suo posto si dice che cosa storna.
+        (f.tipo === 'nota_credito'
+          ? ' ' + badge('warn', '↩️ ' + esc(testoNotaStorna(f.id)))
+          : (f.stato === 'emessa'
+              ? ' ' + badgePagamentoConResiduo('entrata', f.stato_pagamento, 'tm_conta_fatture', f.id, f.totale)
+              : '')) +
+        // FASE 7 — la spia dice a quali fatture manca il documento NEL
+        // PACCHETTO per il commercialista. 61d — non «PDF mancante»: il PDF lo
+        // genera il programma dai dati, non manca da nessuna parte. Quello che
+        // manca e' un file allegato, e il pacchetto si costruisce dagli
+        // allegati: senza, il commercialista riceve uno ZIP senza la fattura.
+        (f.stato === 'emessa' && f.tipo !== 'nota_credito' && !contaAllegati('tm_conta_fatture', f.id)
+          ? ' <span class="pdf-mancante">📎 PDF non nel pacchetto</span>'
           : '') + '</td>' +
       '<td class="row-actions">' + fattureRowActions(f) + '</td>' +
     '</tr>'
@@ -3643,6 +3680,26 @@ function renderFattureTable() {
     '<th style="width:110px">Numero</th><th style="width:100px">Data</th><th>Cliente</th>' +
     '<th style="width:130px;text-align:right">Totale</th><th style="width:120px">Stato</th><th style="width:150px">Azioni</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>')
+}
+
+// 61g — il bottone che apre la vista «Scadute», con quante sono. Sta sopra
+// l'elenco e non e' un filtro: e' un'altra tabella, con il ritardo, il residuo
+// e lo stato dei solleciti, in ordine di ritardo.
+function barraScaduteHtml() {
+  var n = fattureScadute().length
+  if (vistaFattureScadute) {
+    return '<div class="scadute-barra aperta">' +
+      '<strong>🔴 Fatture scadute</strong> — non incassate oltre la scadenza, dalla più vecchia. ' +
+      '<button type="button" class="btn-secondary" onclick="mostraFattureScadute(false)">← Torna all\'elenco completo</button>' +
+    '</div>'
+  }
+  if (!n) return ''
+  return '<div class="scadute-barra">' +
+    '<button type="button" class="btn-secondary" onclick="mostraFattureScadute(true)">' +
+      '🔴 Scadute (' + n + ')</button>' +
+    '<span class="dim">' + (n === 1 ? 'una fattura è scaduta' : n + ' fatture sono scadute') +
+    ' e non incassata' + (n === 1 ? '' : 'e') + '.</span>' +
+  '</div>'
 }
 
 // ── Editor bozza ─────────────────────────────────────────────────────────────
@@ -4957,6 +5014,9 @@ async function viewFattura(id) {
     // della scadenza su una bozza. Cache condivisa: se e' gia' letta non costa
     // niente, e se fallisce la fattura si vede lo stesso.
     try { await loadContatti() } catch (_) { /* la scadenza ripiega sull'azienda */ }
+    // 61b/61c — le note di credito: servono al residuo e al riquadro della
+    // nota. Se non si leggono, il residuo non le conta e si vede dal riquadro.
+    try { await loadNoteCredito() } catch (_) { /* il residuo lo dira' senza storno */ }
     // Per la nota di credito: carica il riferimento alla fattura originale (per la stampa)
     var rifInfo = null
     if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
@@ -4979,14 +5039,32 @@ async function viewFattura(id) {
     // stampa quando si allega o si toglie la polizza, senza rileggere tutto.
     righeDetailCorrenti = righe || []
     rifInfoCorrente = rifInfo
+    // 61g — i solleciti della fattura: servono al bottone e alla riga di stato.
+    try { await loadSolleciti() } catch (_) { /* il bottone ripartira' dal primo */ }
     renderFatturaPrint(f, righe || [], rifInfo)
     renderDetailActions(f)
+    // La riga che racconta il ritardo e i solleciti, sopra il documento.
+    var statoSol = (f.stato === 'emessa' && f.tipo !== 'nota_credito') ? testoStatoSolleciti(f) : ''
+    html('fatture-stato-solleciti', statoSol
+      ? '<div class="sol-stato-riga">⏰ ' + esc(statoSol) + '</div>' : '')
     // FASE 8 — pagamenti e rate. Solo sui documenti veri: su una bozza non
     // esiste ancora niente da pagare.
     try {
       await loadPagamenti(); await loadRate()
-      html('fatture-pagamenti', f.stato === 'bozza' ? ''
-        : boxPagamentiHtml('tm_conta_fatture', f.id, f.totale, 'entrata', f.cliente_nome))
+      // 61c — su una nota di credito il riquadro non c'e': non si incassa, non
+      // ha residuo e non ha rate. Al suo posto una riga che dice cosa storna.
+      if (f.tipo === 'nota_credito') {
+        html('fatture-pagamenti',
+          '<div class="card"><div class="card-title">↩️ Nota di credito</div>' +
+          '<div>' + esc(testoNotaStorna(f.id)) + '.</div>' +
+          '<div class="form-hint" style="margin-top:6px">' +
+            'Una nota di credito non si incassa: riduce il residuo della fattura che storna, ' +
+            'e su quella si registrano i pagamenti.' +
+          '</div></div>')
+      } else {
+        html('fatture-pagamenti', f.stato === 'bozza' ? ''
+          : boxPagamentiHtml('tm_conta_fatture', f.id, f.totale, 'entrata', f.cliente_nome))
+      }
     } catch (ePag) {
       // 52·B — un riquadro vuoto sembra «nessun pagamento»: si dice cosa manca.
       html('fatture-pagamenti', '<div class="card"><div class="card-title">💳 Pagamenti</div>' +
@@ -5299,6 +5377,17 @@ function renderFatturaPrint(f, righe, rifInfo) {
 function renderDetailActions(f) {
   var a = '<div class="form-actions" style="margin-top:0">'
   a += '<button class="btn-primary" onclick="printFattura()">🖨 Stampa</button>'
+  // 61g — il sollecito si prepara da qui e dalla vista «Scadute». Compare solo
+  // su una fattura emessa, scaduta e con qualcosa ancora da incassare: sulle
+  // altre non significa niente.
+  if (f.stato === 'emessa' && f.tipo !== 'nota_credito' && f.data_scadenza &&
+      f.data_scadenza < oggiISO() &&
+      residuoDocumento('tm_conta_fatture', f.id, f.totale) > 0.005) {
+    var liv = prossimoLivelloSollecito(f.id)
+    a += liv
+      ? '<button class="btn-secondary" onclick="preparaSollecito(\'' + esc(f.id) + '\')">📨 Prepara ' + liv + 'º sollecito</button>'
+      : '<button class="btn-secondary" disabled title="I tre solleciti sono già stati preparati">📨 Solleciti: tre su tre</button>'
+  }
   // Stesso CSS di stampa, stesso risultato: cambia solo il nome del file proposto.
   a += '<button class="btn-secondary" onclick="scaricaFatturaPDF()">📄 Scarica PDF</button>'
   // FASE 21 — la busta col destinatario gia' pronto.
@@ -5311,8 +5400,10 @@ function renderDetailActions(f) {
     a += '<button class="btn-secondary" onclick="apriAggiungiAllegato(\'tm_conta_fatture\', \'' +
       esc(f.id) + '\', \'Fattura ' + esc(String(f.numero || '').replace(/'/g, '')) +
       '\', \'fattura\')">' +
-      (contaAllegati('tm_conta_fatture', f.id)
-        ? '📎 Aggiungi un allegato' : '📎 Allega il PDF della fattura') + '</button>'
+      // 61d — una etichetta sola: il PDF non «va allegato» perche' manchi,
+      // si allega perche' il pacchetto per il commercialista si costruisce
+      // dagli allegati. Il resto lo dice la spia nell'elenco.
+      '📎 Aggiungi un allegato</button>'
   }
   if (f.stato === 'bozza') {
     a += '<button class="btn-secondary" onclick="editFattura(\'' + f.id + '\')">✏️ Modifica bozza</button>'
@@ -6656,6 +6747,8 @@ async function initImpostazioniPage() {
     // FASE 24 — le due aliquote IVA (vedi il blocco della differenza IVA).
     setVal('imp-iva-ordinaria', impostazione('iva_aliquota_ordinaria', String(IVA_ORDINARIA_DEFAULT)))
     setVal('imp-iva-saldo', impostazione('iva_aliquota_saldo', ''))
+    // 61h — spese, tasso di mora e i tre testi dei solleciti.
+    riempiImpostazioniSolleciti()
   } catch (_) { /* i dati della ditta si caricano lo stesso */ }
   html('impostazioni-banner', loadingRow('Caricamento dati azienda…'))
   try {
@@ -8751,8 +8844,11 @@ async function stampaProvaBusta() {
 }
 
 // Le due porte d'ingresso: dal documento e dalla rubrica.
-async function apriBustaDaFattura(id) {
-  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+// 61g — il secondo parametro serve a chi chiama dall'elenco (il sollecito):
+// li' currentDetailFattura e' di un'altra fattura, o non c'e'. Chi chiama con
+// il solo id continua a funzionare come prima.
+async function apriBustaDaFattura(id, record) {
+  var f = record || ((currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null)
   showPage('busta')
   await initBustaPage()
   if (f) {
@@ -11996,10 +12092,21 @@ function calcolaScadenze(righe, oggi, preavviso) {
     // piu' attenzione. Adesso si salta solo cio' che e' saldato davvero.
     if (r.stato_pagamento === 'pagato') continue
     if (!confermata(r)) continue          // le righe da confermare non sono avvisi
+    // 61c — una nota di credito non si incassa: non e' una scadenza, ne' un
+    // incasso non arrivato. Sparisce da qui, e il suo importo si ritrova
+    // sottratto dal residuo della fattura che storna (qui sotto).
+    if (eNotaDiCredito(r.tabella_origine, r.id_origine)) continue
     // FASE 8 — quello che scade e' il RESIDUO, non l'importo pieno: su una
     // fattura da 400 con 200 gia' versati, restano da pagare 200.
     var res = safeNum(r.residuo)
     if (res == null) res = (safeNum(r.importo_totale) || 0) - (safeNum(r.importo_pagato) || 0)
+    // 61b — la vista non conosce le note di credito (il legame rif_fattura_id
+    // non ci passa): lo storno si toglie qui, con la stessa regola di tutto il
+    // resto. Una fattura coperta per intero da una nota esce dalle scadenze.
+    if (r.tabella_origine === 'tm_conta_fatture' && cacheOk('noteCredito')) {
+      res = round2(res - stornoNoteCredito(r.id_origine))
+      if (res <= 0.005) continue
+    }
     var imp = res
 
     // FASE 8 — un documento con un piano rateale compare per la PROSSIMA RATA
@@ -12073,6 +12180,10 @@ async function initScadenzePage() {
     await loadFlussi(true)
     await loadPagamenti(true)
     await loadRate(true)
+    // 61b — senza le note di credito il residuo delle Scadenze sarebbe quello
+    // vecchio: una fattura gia' coperta da una nota resterebbe fra gli incassi
+    // non arrivati. Se non si leggono, l'errore si vede.
+    await loadNoteCredito(true)
     renderScadenze()
     await refreshScadenzeCount()
   } catch (e) {
@@ -14154,7 +14265,9 @@ async function raccogliDocumentiPacchetto(da, a) {
       id: f.id,
       // Una fattura senza PDF non e' un errore dello Storage: e' un PDF che
       // nessuno ha ancora allegato. Il motivo va scritto per esteso.
-      motivoSeManca: 'PDF non ancora allegato'
+      // 61d — il motivo dice la conseguenza, non il difetto: il documento non
+      // c'e' DENTRO QUESTO PACCHETTO, ed e' quello che il commercialista nota.
+      motivoSeManca: 'PDF della fattura non allegato al pacchetto'
     })
   })
 
@@ -14738,6 +14851,107 @@ function bottoneAnnullaUltimo(tabella, id) {
     '🗑️ Elimina pagamento<span class="elimina-pag-dettaglio">' + esc(imp) + ' CHF · ' + esc(dt) + '</span></button>'
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 61b + 61c — LE NOTE DI CREDITO NEL RESIDUO
+//
+// Il caso che ha fatto nascere questo blocco: fattura 2026-09-009 da 1'350, una
+// tenda non fornita, nota di credito da 200, incassati 1'150. L'elenco diceva
+// «Incassato in parte — residuo 200,00» sulla fattura e «Non incassato ·
+// 200,00 CHF» sulla nota. Due bugie: quei 200 sono stornati, non in arrivo, e
+// una nota di credito non si incassa mai.
+//
+// LA REGOLA, in un posto solo:
+//     residuo = totale − pagamenti − note di credito EMESSE collegate
+//
+// Lo stato scritto nel database resta quello del trigger, che conta solo i
+// pagamenti: non si tocca (vedi la nota su trg_pagamenti_ricalcola). Quello che
+// cambia e' cio' che si MOSTRA, e lo decide residuoDocumento() insieme a
+// statoConStorno(): se il residuo e' zero perche' una nota ha coperto il resto,
+// si legge «Incassato», non «Incassato in parte — residuo 0,00».
+//
+// Il legame nota → fattura e' `rif_fattura_id`, che c'e' dalla prima versione e
+// lo scrive creaNotaCredito(). Una nota SENZA quel riferimento non si puo'
+// collegare a niente: non entra in nessun calcolo e lo si dice dove serve.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var noteCreditoCache = null
+
+// Le note di credito dell'azienda. Poche righe, si leggono tutte in un colpo
+// come gli allegati. Ci sono anche le bozze: servono a scrivere «storna la
+// fattura n. X» accanto a una bozza, ma NON entrano nel residuo (lo filtra
+// noteCreditoDi()).
+async function loadNoteCredito(force) {
+  if (cacheOk('noteCredito') && !force) return noteCreditoCache || []
+  await richiediAccesso('loadNoteCredito')   // 52·B1: mai un elenco vuoto per silenzio
+  const { data, error } = await sb.from('tm_conta_fatture')
+    .select('id, numero, data_emissione, totale, stato, rif_fattura_id')
+    .eq('azienda_id', currentAziendaId)
+    .eq('tipo', 'nota_credito')
+  if (error) throw error
+  noteCreditoCache = data || []
+  segnaCacheOk('noteCredito')
+  return noteCreditoCache
+}
+
+// Le note di credito EMESSE che stornano questa fattura. Una bozza non e'
+// ancora un documento e non storna niente; una annullata nemmeno.
+function noteCreditoDi(fatturaId) {
+  return (noteCreditoCache || []).filter(function (n) {
+    return n.rif_fattura_id === fatturaId && n.stato === 'emessa'
+  })
+}
+
+// Quanto e' stato stornato su questa fattura. Zero se non ci sono note.
+// Le note sono salvate con l'importo POSITIVO: il segno lo mette chi sottrae.
+function stornoNoteCredito(fatturaId) {
+  return noteCreditoDi(fatturaId).reduce(function (s, n) { return s + (safeNum(n.totale) || 0) }, 0)
+}
+
+// La nota di credito di cui questo id e' la nota (non la fattura): serve a
+// riconoscere una riga di nota negli elenchi e nelle scadenze senza dover
+// leggere il tipo dal documento.
+function eNotaDiCredito(tabella, id) {
+  if (tabella !== 'tm_conta_fatture') return false
+  return (noteCreditoCache || []).some(function (n) { return n.id === id })
+}
+
+// La nota di credito, cercata per id. null se non e' una nota.
+function notaCreditoById(id) {
+  return (noteCreditoCache || []).filter(function (n) { return n.id === id })[0] || null
+}
+
+// IL RESIDUO, per chi lo mostra. Le note valgono solo sulle fatture di
+// VENDITA: sugli acquisti una nota ricevuta e' un documento suo (vedi
+// SQL_FASE4b_nota_ricevuta.sql, parte JS non fatta).
+function residuoDocumento(tabella, id, totale) {
+  var res = (safeNum(totale) || 0) - totalePagatoDi(tabella, id)
+  if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) res -= stornoNoteCredito(id)
+  return round2(res)
+}
+
+// Lo stato da MOSTRARE. Quello del database conta solo i pagamenti; qui si
+// tiene conto anche dello storno, perche' una fattura coperta da una nota di
+// credito non e' «incassata in parte»: non c'e' piu' niente da incassare.
+// Non si scrive niente nel database: e' solo la parola che si legge.
+function statoConStorno(tabella, id, totale, statoDb) {
+  if (tabella !== 'tm_conta_fatture' || !cacheOk('noteCredito')) return statoDb
+  if (stornoNoteCredito(id) <= 0.005) return statoDb
+  var res = residuoDocumento(tabella, id, totale)
+  if (res <= 0.005) return 'pagato'
+  return (totalePagatoDi(tabella, id) > 0.005) ? 'parziale' : 'aperto'
+}
+
+// «storna la fattura n. 2026-09-009», per il badge di una nota di credito.
+// Se il riferimento manca lo dice: e' un dato che si puo' ancora sistemare
+// solo prima dell'emissione (dopo, rif_fattura_id e' congelato dal trigger).
+function testoNotaStorna(idNota) {
+  var n = notaCreditoById(idNota)
+  if (!n) return 'Nota di credito'
+  if (!n.rif_fattura_id) return 'Nota di credito — fattura stornata non indicata'
+  var f = (fattureList || []).filter(function (x) { return x.id === n.rif_fattura_id })[0]
+  return 'Nota di credito — storna la fattura n. ' + (f && f.numero ? f.numero : '—')
+}
+
 function totalePagatoDi(tabella, id) {
   return pagamentiDi(tabella, id).reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
 }
@@ -14832,7 +15046,10 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
   }
 
   var gia = totalePagatoDi(tabella, id)
-  var residuo = docPagamentoCorrente.importo - gia
+  // 61b — lo stesso residuo dell'elenco e della scheda, note di credito
+  // comprese: l'importo proposto qui non puo' dire un'altra cifra.
+  var storno = (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) ? stornoNoteCredito(id) : 0
+  var residuo = residuoDocumento(tabella, id, docPagamentoCorrente.importo)
 
   html('pag-riepilogo',
     rigaPag('Importo del documento', docPagamentoCorrente.importo) +
@@ -14902,7 +15119,10 @@ function controllaImportoPagamento() {
   if (!docPagamentoCorrente) return
   var imp = safeNum(getVal('pag-importo'))
   var gia = totalePagatoDi(docPagamentoCorrente.tabella, docPagamentoCorrente.id)
-  var residuo = docPagamentoCorrente.importo - gia
+  // 61b — anche qui il residuo e' quello vero: senza, su una fattura con una
+  // nota di credito comparirebbe un avviso di sforamento che non c'e'.
+  var residuo = residuoDocumento(docPagamentoCorrente.tabella, docPagamentoCorrente.id,
+                                 docPagamentoCorrente.importo)
   if (imp != null && imp > residuo + 0.005) {
     html('pag-avviso',
       '<div class="lettura-nota avviso"><span aria-hidden="true">⚠️</span><span>' +
@@ -15070,11 +15290,29 @@ async function scriviPagamento(d, valori, idModifica, opzioni) {
   if (!senzaTotale && (totaleDoc == null || totaleDoc <= 0)) {
     throw new Error('Documento senza importo: non posso verificare lo sforamento, quindi il pagamento NON è stato registrato.')
   }
+  // 61b — le note di credito EMESSE che stornano questa fattura. Lettura sua,
+  // dritta dal database, come quella dei pagamenti qui sopra e per lo stesso
+  // motivo: se il controllo non puo' contare, non e' un controllo e non si
+  // scrive. Senza questa riga, su una fattura da 1'350 con una nota da 200 un
+  // pagamento legittimo di 1'150 verrebbe bloccato come sforamento.
+  var stornato = 0
+  if (d.tabella === 'tm_conta_fatture') {
+    const { data: notes, error: eNote } = await sb.from('tm_conta_fatture')
+      .select('id, totale')
+      .eq('tipo', 'nota_credito').eq('stato', 'emessa').eq('rif_fattura_id', d.id)
+    if (eNote) throw new Error('Non riesco a leggere le note di credito di questa fattura, quindi NON scrivo: ' + (eNote.message || eNote))
+    stornato = (notes || []).reduce(function (sum, n) { return sum + (safeNum(n.totale) || 0) }, 0)
+  }
   if (!senzaTotale) {
-    var residuo = round2(totaleDoc - giaPagato)
-    var eccedenza = round2(giaPagato + imp - totaleDoc)
+    var totaleNetto = round2(totaleDoc - stornato)
+    var residuo = round2(totaleNetto - giaPagato)
+    var eccedenza = round2(giaPagato + imp - totaleNetto)
     if (eccedenza > 0.005) {
-      var cifre = testoCifrePagamento(totaleDoc, giaPagato, residuo, imp, eccedenza)
+      var cifre = testoCifrePagamento(totaleNetto, giaPagato, residuo, imp, eccedenza) +
+        (stornato > 0.005
+          ? '\n(totale del documento ' + fmtNumIt(totaleDoc) + ' CHF, meno ' +
+            fmtNumIt(stornato) + ' CHF di note di credito)'
+          : '')
       if (eccedenza > SOGLIA_ECCEDENZA_CHF) {
         throw new Error('Pagamento NON registrato: supera il totale del documento.\n\n' + cifre)
       }
@@ -15159,6 +15397,15 @@ async function salvaPagamento() {
     invalidaCachePagamenti()
     chiudiRegistraPagamento()
     await ricaricaDopoPagamento(d)
+    // 61e — la ricevuta si CHIEDE, dopo che tutto il resto e' andato a posto e
+    // gli elenchi sono stati riletti (datiRicevuta legge da li'). Solo su un
+    // incasso nuovo di una fattura di vendita: correggere un pagamento non e'
+    // un incasso, e su un acquisto la ricevuta la fa il fornitore.
+    if (creato && creato.id && d.tabella === 'tm_conta_fatture') {
+      try { await chiediRicevuta(creato.id) } catch (eRic) {
+        console.warn('Ricevuta non stampata:', eRic.message || eRic)
+      }
+    }
     if (avvisoRata) {
       var idBanner = d.tabella === 'tm_conta_fatture' ? 'fatture-list-banner'
                    : d.tabella === 'tm_conta_fatture_acquisto' ? 'acquisti-list-banner' : 'inserimento-banner'
@@ -15229,6 +15476,12 @@ function elencoPagamentiHtml(tabella, id, verso) {
         esc([p.metodo, p.riferimento].filter(Boolean).join(' · ') || '—') +
         (r ? ' <span class="pag-rata-tag">salda la rata ' + r.numero_rata + '</span>' : '') +
       '</span>' +
+      // 61e — la ricevuta si ristampa quando serve: chi ha risposto «no» alla
+      // domanda dopo l'incasso non deve restare senza. Solo sulle vendite.
+      (verso === 'entrata'
+        ? '<button type="button" class="azione-rapida" ' +
+            'onclick="stampaRicevuta(\'' + esc(p.id) + '\')">🧾 Ricevuta</button>'
+        : '') +
       '<button type="button" class="azione-rapida" ' +
         'onclick="apriModificaPagamento(\'' + esc(p.id) + '\')">✏️ Modifica</button>' +
       '<button type="button" class="azione-rapida" ' +
@@ -15485,13 +15738,716 @@ function elencoRateHtml(tabella, id) {
   }).join('') + '</div>'
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 61e — LA RICEVUTA DI PAGAMENTO
+//
+// Un foglio come la fattura: stessa impaginazione, stessa posizione
+// dell'indirizzo, cosi' entra nella stessa busta a finestra. Non e' un
+// documento fiscale nuovo: e' la conferma di un versamento gia' registrato.
+//
+// NON SI STAMPA MAI DA SOLA. Dopo aver registrato un incasso l'app CHIEDE, e
+// se la risposta e' no non succede niente: il pagamento e' gia' scritto. Si
+// ristampa quando si vuole dal bottone accanto al pagamento, nella scheda.
+//
+// SOLO SULLE VENDITE. Su una fattura d'acquisto la ricevuta la fa il
+// fornitore: stamparne una qui vorrebbe dire dichiarare di aver ricevuto dei
+// soldi che invece sono usciti.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// I dati della ricevuta, raccolti da quello che c'e' gia' in memoria.
+// null se il pagamento non si trova o non e' di una fattura di vendita.
+function datiRicevuta(idPagamento) {
+  var p = (pagamentiCache || []).filter(function (x) { return x.id === idPagamento })[0]
+  if (!p || p.tabella_origine !== 'tm_conta_fatture') return null
+  var f = (fattureList || []).filter(function (x) { return x.id === p.id_origine })[0]
+  if (!f) return null
+  var totale  = safeNum(f.totale) || 0
+  var pagato  = totalePagatoDi('tm_conta_fatture', f.id)
+  var residuo = residuoDocumento('tm_conta_fatture', f.id, totale)
+  return {
+    pagamento: p,
+    fattura: f,
+    totale: totale,
+    pagato: pagato,
+    residuo: residuo,
+    // «a saldo» quando dopo questo versamento non resta piu' niente: e' il
+    // dato che conta per chi paga, e va scritto a lettere, non dedotto.
+    saldo: residuo <= 0.005,
+    note: noteCreditoDi(f.id)
+  }
+}
+
+// Il foglio. Riusa le classi della fattura (.inv, .inv-cliente): la busta a
+// finestra non sa che documento sta guardando, sa solo dov'e' l'indirizzo.
+function renderRicevutaPrint(d) {
+  var a = aziendaInfo || {}
+  var v = d.fattura.valuta || 'CHF'
+  var azNome = a.nome || aziendaNome()
+  var formaExtra = formaGiuridicaDaMostrare(azNome, a.forma_giuridica)
+
+  var addrLines = []
+  if (a.indirizzo) addrLines.push(a.indirizzo)
+  var cittaRiga = unisciParti([a.cap, a.citta], ' ')
+  if (cittaRiga) addrLines.push(cittaRiga)
+  var contattiLine = unisciParti([(a.telefono ? 'Tel. ' + a.telefono : null), a.email], ' · ')
+  if (contattiLine) addrLines.push(contattiLine)
+  if (isSoggettoIva() && a.numero_iva) addrLines.push('IVA ' + a.numero_iva)
+
+  var p = d.pagamento
+  var metodo = String(p.metodo || '').trim()
+  // «in contanti», «con bonifico»: la preposizione cambia con il metodo, e
+  // «pagato in Bonifico» si legge male. Senza metodo la frase lo salta.
+  var inMetodo = metodo ? (metodo.toLowerCase() === 'contanti' ? ' in contanti' : ' con ' + metodo) : ''
+
+  var frase =
+    'Ricevuto da <strong>' + esc(d.fattura.cliente_nome || '') + '</strong> ' +
+    'la somma di <strong>' + esc(v + ' ' + fmtNumIt(p.importo)) + '</strong>' +
+    esc(inMetodo) + ' il <strong>' + esc(fmtDate(p.data)) + '</strong>, ' +
+    (d.saldo ? 'a <strong>saldo</strong>' : 'in <strong>acconto</strong>') +
+    ' della fattura n. <strong>' + esc(d.fattura.numero || '—') + '</strong>' +
+    (d.fattura.data_emissione ? ' del ' + esc(fmtDate(d.fattura.data_emissione)) : '') + '.'
+
+  // Il quadro dei conti: sempre, anche a saldo. Chi riceve la ricevuta deve
+  // poter rifare il conto senza avere davanti nient'altro.
+  var righeConto =
+    rigaRicevuta('Totale della fattura', fmtNumIt(d.totale) + ' ' + v) +
+    (d.note.length
+      ? d.note.map(function (n) {
+          return rigaRicevuta('Nota di credito n. ' + (n.numero || '—') +
+                              (n.data_emissione ? ' del ' + fmtDate(n.data_emissione) : ''),
+                              '− ' + fmtNumIt(n.totale) + ' ' + v)
+        }).join('')
+      : '') +
+    rigaRicevuta('Versamenti registrati', fmtNumIt(d.pagato) + ' ' + v) +
+    rigaRicevuta(d.saldo ? 'Resta da versare' : 'Resta da versare',
+                 fmtNumIt(d.residuo) + ' ' + v, true)
+
+  // Luogo e data della FIRMA, non del versamento: si firma oggi.
+  var luogo = String(a.citta || '').trim()
+
+  html('ricevuta-print',
+    '<div class="inv ric">' +
+      '<div class="inv-head">' +
+        '<div class="inv-brand">' +
+          '<img src="' + esc(logoAziendaSrc()) + '" alt="Logo azienda" class="inv-logo" onerror="logoOnError(this)">' +
+          '<div class="inv-brand-info">' +
+            '<div class="inv-azienda-nome">' + esc(azNome) +
+              (formaExtra ? ' <span class="inv-forma">' + esc(formaExtra) + '</span>' : '') +
+            '</div>' +
+            '<div class="inv-azienda-addr">' + esc(addrLines.join('\n')) + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="inv-meta">' +
+          '<div class="inv-title">RICEVUTA<br>DI PAGAMENTO</div>' +
+          '<table class="inv-meta-tbl">' +
+            '<tr><td>Data</td><td>' + esc(fmtDate(oggiISO())) + '</td></tr>' +
+            '<tr><td>Fattura</td><td class="inv-num-cell">' + esc(d.fattura.numero || '—') + '</td></tr>' +
+          '</table>' +
+        '</div>' +
+      '</div>' +
+      // Stessa larghezza e stessa posizione della fattura: e' quello che cade
+      // nella finestra della busta.
+      '<div class="inv-cliente">' +
+        '<div class="inv-cliente-lbl">Rilasciata a</div>' +
+        '<div class="inv-cliente-nome">' + esc(d.fattura.cliente_nome || '') + '</div>' +
+        (d.fattura.cliente_indirizzo ? '<div class="inv-cli-addr">' + esc(d.fattura.cliente_indirizzo) + '</div>' : '') +
+        (d.fattura.cliente_paese && String(d.fattura.cliente_paese).toUpperCase() !== 'CH'
+          ? '<div>' + esc(d.fattura.cliente_paese) + '</div>' : '') +
+      '</div>' +
+      '<div class="ric-frase">' + frase + '</div>' +
+      '<div class="ric-conto">' + righeConto + '</div>' +
+      (d.saldo
+        ? '<div class="ric-esito ok">✅ La fattura risulta interamente saldata.</div>'
+        : '<div class="ric-esito">⏳ Resta da versare ' + esc(fmtNumIt(d.residuo) + ' ' + v) + '.</div>') +
+      (d.note.length
+        ? '<div class="inv-note">Sulla fattura risultano ' +
+            (d.note.length === 1 ? 'una nota di credito' : d.note.length + ' note di credito') +
+            ', già detratta' + (d.note.length === 1 ? '' : 'e') + ' dal conto qui sopra.</div>'
+        : '') +
+      '<div class="ric-firma">' +
+        '<div class="ric-firma-luogo">' + esc(unisciParti([luogo, fmtDate(oggiISO())], ', ')) + '</div>' +
+        '<div class="ric-firma-riga"></div>' +
+        '<div class="ric-firma-et">Firma</div>' +
+      '</div>' +
+      '<div class="inv-footer"><strong>' + esc(azNome) +
+        (unisciParti([a.uid], '') ? ' · UID ' + esc(String(a.uid).trim()) : '') +
+        '</strong><br>Ricevuta di pagamento — non sostituisce la fattura.</div>' +
+    '</div>')
+}
+
+function rigaRicevuta(etichetta, valore, forte) {
+  return '<div class="ric-conto-riga' + (forte ? ' forte' : '') + '">' +
+    '<span>' + esc(etichetta) + '</span><span>' + esc(valore) + '</span></div>'
+}
+
+// Stampa: stessa meccanica della busta (una classe sul body decide quale
+// foglio esce) e stessa rete di sicurezza per rimetterla a posto.
+async function stampaRicevuta(idPagamento) {
+  var d = datiRicevuta(idPagamento)
+  if (!d) {
+    window.alert('Ricevuta non stampata: il pagamento non si trova più in memoria. Riapri la fattura e riprova dal riquadro Pagamenti.')
+    return
+  }
+  try { await loadAziendaInfo() } catch (_) { /* l'intestazione esce con quello che c'e' */ }
+  renderRicevutaPrint(d)
+  document.body.classList.add('stampa-ricevuta')
+  var titoloPrima = document.title
+  document.title = sanificaNomeFile('Ricevuta_' + (d.fattura.numero || '') + '_' +
+                                    nomeClientePerFile(d.fattura.cliente_nome))
+  var pulisci = function () {
+    document.body.classList.remove('stampa-ricevuta')
+    document.title = titoloPrima
+    window.removeEventListener('afterprint', pulisci)
+  }
+  window.addEventListener('afterprint', pulisci)
+  // Il logo deve essere arrivato, altrimenti esce un riquadro vuoto.
+  try { await attendiImmagini('ricevuta-print', 2000) } catch (_) {}
+  window.print()
+  setTimeout(pulisci, 60000)
+}
+
+// La domanda dopo un incasso. Mai automatica: si chiede, e il no non costa
+// niente perche' il pagamento e' gia' registrato.
+async function chiediRicevuta(idPagamento) {
+  var d = datiRicevuta(idPagamento)
+  if (!d) return
+  var testo = 'Pagamento registrato: ' + fmtNumIt(d.pagamento.importo) + ' ' +
+    (d.fattura.valuta || 'CHF') + ' del ' + fmtDate(d.pagamento.data) + '.\n\n' +
+    (d.saldo ? 'La fattura risulta saldata.' : 'Resta da versare ' + fmtNumIt(d.residuo) + ' ' + (d.fattura.valuta || 'CHF') + '.') +
+    '\n\nVuoi stampare la ricevuta?'
+  if (!window.confirm(testo)) return
+  await stampaRicevuta(idPagamento)
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 61g + 61h — I SOLLECITI
+//
+// Tre livelli, una lettera per livello, pronta da stampare e imbustare con la
+// stampa buste che c'e' gia'. Il destinatario viene dalla fattura, che l'ha
+// preso dalla rubrica: non si sceglie e non si ricopia. L'unica cosa che si
+// scrive a mano e' la formula di apertura, perche' «Gentile Signora Marotta»
+// non si ricava da un campo «cliente_nome».
+//
+// LA SCADENZA DELLA FATTURA NON SI TOCCA MAI. Un sollecito ha un termine suo,
+// che vive sulla riga del sollecito: spostare la scadenza della fattura
+// vorrebbe dire riscrivere un documento gia' uscito, e cancellare il ritardo
+// proprio mentre lo si sta contestando. La fattura resta scaduta dal giorno in
+// cui e' scaduta.
+//
+// TABELLA SUA, NIENTE COLONNE SULLA FATTURA. Come la 58: tm_conta_fatture ha
+// il trigger di immutabilita', e una colonna in piu' li' sarebbe una tentazione
+// per sempre. Il legame sta su tm_conta_solleciti.fattura_id.
+//
+// I TESTI STANNO NELLE IMPOSTAZIONI, non qui. Quelli qui sotto sono il seme
+// della prima volta e quello che rimette a posto «↺ Ripristina il testo
+// predefinito»: la lettera che esce legge SEMPRE dalle impostazioni.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var sollecitiCache = null
+
+var CHIAVI_SOLLECITO = {
+  spese: 'sollecito_spese',
+  tasso: 'sollecito_tasso_mora',
+  testo: ['sollecito_testo_1', 'sollecito_testo_2', 'sollecito_testo_3']
+}
+
+var TESTI_SOLLECITO_SEME = [
+  'Gentile [nome],\n' +
+  'ci permettiamo un breve promemoria: la fattura n. [numero] del [data], di CHF [importo], risulta ancora aperta nei nostri conti.\n' +
+  'Le saremmo grati se potesse provvedere entro il [nuovo termine]. Se ha già effettuato il pagamento in questi giorni, la ringraziamo e La preghiamo di considerare questo scritto non avvenuto.\n' +
+  'Per qualsiasi chiarimento siamo volentieri a disposizione.\n' +
+  'Cordiali saluti',
+
+  'Gentile [nome],\n' +
+  'torniamo sulla fattura n. [numero] del [data], di CHF [importo], per la quale Le avevamo scritto il [data 1º sollecito] e che risulta ancora aperta.\n' +
+  'Le chiediamo cortesemente di saldarla entro il [nuovo termine]. Se il pagamento incontra difficoltà o se qualcosa nella fattura non Le è chiaro, ci contatti pure: troviamo volentieri una soluzione insieme.\n' +
+  'Cordiali saluti',
+
+  'Gentile [nome],\n' +
+  'nonostante i nostri solleciti del [data 1º] e del [data 2º], la fattura n. [numero] del [data], di CHF [importo], risulta tuttora non saldata.\n' +
+  'La invitiamo a provvedere entro il [nuovo termine]. Trascorso tale termine saremo purtroppo costretti ad avviare la procedura di incasso, che comporterebbe spese ulteriori a Suo carico — una conseguenza che preferiremmo evitare.\n' +
+  'Restiamo a disposizione per concordare una soluzione.\n' +
+  'Cordiali saluti'
+]
+
+// ── Le impostazioni ─────────────────────────────────────────────────────────
+// Spese a zero = non si addebitano, ed e' il valore di partenza: addebitarle
+// senza averle pattuite sulla fattura non si puo'.
+function speseSollecito() {
+  var v = safeNum((impostazioniConta || {})[CHIAVI_SOLLECITO.spese])
+  return (v != null && v > 0) ? round2(v) : 0
+}
+
+function tassoMora() {
+  var v = safeNum((impostazioniConta || {})[CHIAVI_SOLLECITO.tasso])
+  return (v != null && v >= 0) ? v : 5
+}
+
+function testoSollecito(livello) {
+  var chiave = CHIAVI_SOLLECITO.testo[livello - 1]
+  var t = (impostazioniConta || {})[chiave]
+  if (t != null && String(t).trim()) return String(t)
+  return TESTI_SOLLECITO_SEME[livello - 1]
+}
+
+// ── La cache ────────────────────────────────────────────────────────────────
+async function loadSolleciti(force) {
+  if (cacheOk('solleciti') && !force) return sollecitiCache || []
+  await richiediAccesso('loadSolleciti')   // 52·B1: mai un elenco vuoto per silenzio
+  const { data, error } = await sb.from('tm_conta_solleciti')
+    .select('id, fattura_id, livello, data_preparato, data_inviato, nuovo_termine, importo_dovuto, spese, interessi')
+    .eq('azienda_id', currentAziendaId)
+    .order('livello')
+  if (error) throw error
+  sollecitiCache = data || []
+  segnaCacheOk('solleciti')
+  return sollecitiCache
+}
+
+function sollecitiDi(fatturaId) {
+  return (sollecitiCache || []).filter(function (s) { return s.fattura_id === fatturaId })
+    .sort(function (a, b) { return a.livello - b.livello })
+}
+
+function sollecitoDiLivello(fatturaId, livello) {
+  return sollecitiDi(fatturaId).filter(function (s) { return s.livello === livello })[0] || null
+}
+
+// Il prossimo livello da preparare: 1, 2, 3, oppure null se i tre sono fatti.
+function prossimoLivelloSollecito(fatturaId) {
+  for (var l = 1; l <= 3; l++) if (!sollecitoDiLivello(fatturaId, l)) return l
+  return null
+}
+
+// ── Il ritardo e il nuovo termine ───────────────────────────────────────────
+// Giorni di ritardo: dalla scadenza a oggi. Zero o meno = non e' in ritardo.
+function giorniRitardo(f, oggi) {
+  if (!f || !f.data_scadenza) return null
+  var g = diffGiorni(oggi || oggiISO(), f.data_scadenza)
+  return (g != null && g > 0) ? g : 0
+}
+
+// Il termine del sollecito: +15 giorni se la fattura era a 30, +10 se era a 10.
+// La regola generale, con la stessa soglia: un termine lungo si riapre lungo.
+// La scadenza della FATTURA resta dov'e': questo vive sul sollecito.
+function giorniNuovoTermine(f) {
+  var g = (f && f.data_scadenza && f.data_emissione) ? diffGiorni(f.data_scadenza, f.data_emissione) : null
+  return (g != null && g >= 30) ? 15 : 10
+}
+
+// ── Le fatture scadute ──────────────────────────────────────────────────────
+// Emesse, non note di credito, con una scadenza passata e un residuo ancora
+// aperto. Il residuo e' quello vero (61b): una fattura chiusa da una nota di
+// credito non e' scaduta, e' finita.
+function fattureScadute(oggi) {
+  oggi = oggi || oggiISO()
+  return (fattureList || []).filter(function (f) {
+    if (f.stato !== 'emessa' || f.tipo === 'nota_credito') return false
+    if (!f.data_scadenza || f.data_scadenza >= oggi) return false
+    return residuoDocumento('tm_conta_fatture', f.id, f.totale) > 0.005
+  }).sort(function (a, b) {
+    // Il ritardo piu' lungo in cima: e' l'ordine in cui si telefona.
+    return String(a.data_scadenza).localeCompare(String(b.data_scadenza))
+  })
+}
+
+// La riga che racconta lo stato, per l'elenco e per la scheda:
+// «scaduta da 34 giorni · 1º sollecito inviato il 12.09.2026 · nuovo termine 27.09.2026»
+function testoStatoSolleciti(f, oggi) {
+  var parti = []
+  var gg = giorniRitardo(f, oggi)
+  if (gg) parti.push('scaduta da ' + gg + (gg === 1 ? ' giorno' : ' giorni'))
+  sollecitiDi(f.id).forEach(function (s) {
+    var ordinale = s.livello + 'º sollecito'
+    parti.push(s.data_inviato
+      ? ordinale + ' inviato il ' + fmtDate(s.data_inviato)
+      : ordinale + ' preparato, NON inviato')
+    if (s.nuovo_termine) parti.push('nuovo termine ' + fmtDate(s.nuovo_termine))
+  })
+  return parti.join(' · ')
+}
+
+// ── La lettera ──────────────────────────────────────────────────────────────
+// I segnaposto, sostituiti uno per uno. Si accettano sia «1º» sia «1°»: sono
+// due caratteri diversi e nessuno se ne accorge finche' la lettera non esce
+// con «[data 1° sollecito]» stampato dentro.
+function compilaTestoSollecito(testo, v) {
+  var mappa = {
+    '[nome]': v.nome,
+    '[numero]': v.numero,
+    '[data]': v.data,
+    '[importo]': v.importo,
+    '[nuovo termine]': v.nuovoTermine,
+    '[data 1º sollecito]': v.data1,
+    '[data 1° sollecito]': v.data1,
+    '[data 1º]': v.data1,
+    '[data 1°]': v.data1,
+    '[data 2º sollecito]': v.data2,
+    '[data 2° sollecito]': v.data2,
+    '[data 2º]': v.data2,
+    '[data 2°]': v.data2
+  }
+  var out = String(testo || '')
+  Object.keys(mappa).forEach(function (k) {
+    out = out.split(k).join(mappa[k] == null ? '—' : String(mappa[k]))
+  })
+  return out
+}
+
+// Tutto quello che serve alla lettera, in un oggetto solo.
+function datiSollecito(f, livello, aperturaScritta) {
+  var oggi = oggiISO()
+  var s1 = sollecitoDiLivello(f.id, 1)
+  var s2 = sollecitoDiLivello(f.id, 2)
+  var residuo = residuoDocumento('tm_conta_fatture', f.id, f.totale)
+  var giorniT = giorniNuovoTermine(f)
+  var nuovoTermine = addDays(oggi, giorniT)
+  // La data che conta per i solleciti precedenti e' quella di INVIO; se non e'
+  // stata registrata si ripiega su quella di preparazione, dicendo il vero.
+  function dataDi(s) { return s ? (s.data_inviato || s.data_preparato) : null }
+  return {
+    fattura: f,
+    livello: livello,
+    oggi: oggi,
+    residuo: residuo,
+    spese: speseSollecito(),
+    giorniTermine: giorniT,
+    nuovoTermine: nuovoTermine,
+    giorniRitardo: giorniRitardo(f, oggi),
+    apertura: aperturaScritta,
+    data1: dataDi(s1),
+    data2: dataDi(s2),
+    valuta: f.valuta || 'CHF'
+  }
+}
+
+function renderSollecitoPrint(d) {
+  var a = aziendaInfo || {}
+  var f = d.fattura
+  var azNome = a.nome || aziendaNome()
+  var formaExtra = formaGiuridicaDaMostrare(azNome, a.forma_giuridica)
+
+  var addrLines = []
+  if (a.indirizzo) addrLines.push(a.indirizzo)
+  var cittaRiga = unisciParti([a.cap, a.citta], ' ')
+  if (cittaRiga) addrLines.push(cittaRiga)
+  var contattiLine = unisciParti([(a.telefono ? 'Tel. ' + a.telefono : null), a.email], ' · ')
+  if (contattiLine) addrLines.push(contattiLine)
+
+  var corpo = compilaTestoSollecito(testoSollecito(d.livello), {
+    nome: d.apertura,
+    numero: f.numero || '—',
+    data: f.data_emissione ? fmtDate(f.data_emissione) : '—',
+    importo: fmtNumIt(d.residuo),
+    nuovoTermine: fmtDate(d.nuovoTermine),
+    data1: d.data1 ? fmtDate(d.data1) : null,
+    data2: d.data2 ? fmtDate(d.data2) : null
+  })
+
+  // 61h — il calcolo in calce: SOLO sul terzo, e solo se le spese ci sono.
+  // A zero la lettera non le nomina affatto, ed e' il valore di partenza.
+  // NOTA: gli interessi di mora non sono ancora qui — il calcolo va approvato
+  // prima di scriverlo (vedi la relazione della 61). Quando ci saranno, si
+  // aggiunge una riga sola a questo blocco.
+  var calce = ''
+  if (d.livello === 3 && d.spese > 0) {
+    calce =
+      '<div class="sol-calce">' +
+        '<div class="sol-calce-tit">Importo dovuto</div>' +
+        rigaRicevuta('Fattura n. ' + (f.numero || '—'), fmtNumIt(d.residuo) + ' ' + d.valuta) +
+        rigaRicevuta('Spese di sollecito', fmtNumIt(d.spese) + ' ' + d.valuta) +
+        rigaRicevuta('Totale dovuto', fmtNumIt(round2(d.residuo + d.spese)) + ' ' + d.valuta, true) +
+      '</div>'
+  }
+
+  html('sollecito-print',
+    '<div class="inv sol">' +
+      '<div class="inv-head">' +
+        '<div class="inv-brand">' +
+          '<img src="' + esc(logoAziendaSrc()) + '" alt="Logo azienda" class="inv-logo" onerror="logoOnError(this)">' +
+          '<div class="inv-brand-info">' +
+            '<div class="inv-azienda-nome">' + esc(azNome) +
+              (formaExtra ? ' <span class="inv-forma">' + esc(formaExtra) + '</span>' : '') +
+            '</div>' +
+            '<div class="inv-azienda-addr">' + esc(addrLines.join('\n')) + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="inv-meta">' +
+          '<div class="inv-title">' + esc(d.livello + 'º SOLLECITO') + '</div>' +
+          '<table class="inv-meta-tbl">' +
+            '<tr><td>Data</td><td>' + esc(fmtDate(d.oggi)) + '</td></tr>' +
+            '<tr><td>Fattura</td><td class="inv-num-cell">' + esc(f.numero || '—') + '</td></tr>' +
+            '<tr><td>Scadenza</td><td>' + esc(f.data_scadenza ? fmtDate(f.data_scadenza) : '—') + '</td></tr>' +
+          '</table>' +
+        '</div>' +
+      '</div>' +
+      // Stessa posizione dell'indirizzo della fattura: stessa busta, stessa
+      // finestra. E' il motivo per cui questa lettera riusa .inv-cliente.
+      '<div class="inv-cliente">' +
+        '<div class="inv-cliente-nome">' + esc(f.cliente_nome || '') + '</div>' +
+        (f.cliente_indirizzo ? '<div class="inv-cli-addr">' + esc(f.cliente_indirizzo) + '</div>' : '') +
+        (f.cliente_paese && String(f.cliente_paese).toUpperCase() !== 'CH'
+          ? '<div>' + esc(f.cliente_paese) + '</div>' : '') +
+      '</div>' +
+      '<div class="sol-corpo">' + escRighe(corpo) + '</div>' +
+      calce +
+      '<div class="ric-firma">' +
+        '<div class="ric-firma-luogo">' +
+          esc(unisciParti([String(a.citta || '').trim(), fmtDate(d.oggi)], ', ')) + '</div>' +
+        '<div class="ric-firma-riga"></div>' +
+        '<div class="ric-firma-et">' + esc(azNome) + '</div>' +
+      '</div>' +
+      '<div class="inv-footer"><strong>' + esc(azNome) +
+        (unisciParti([a.uid], '') ? ' · UID ' + esc(String(a.uid).trim()) : '') +
+        '</strong></div>' +
+    '</div>')
+}
+
+// ── Preparare un sollecito, dall'inizio alla fine ───────────────────────────
+async function preparaSollecito(idFattura) {
+  var f = (fattureList || []).filter(function (x) { return x.id === idFattura })[0]
+  if (!f) { window.alert('Fattura non trovata: ricarica l\'elenco.'); return }
+  try {
+    await loadImpostazioniConta()
+    await loadSolleciti()
+  } catch (e) {
+    window.alert('Solleciti non letti: ' + (e.message || e) + '\n\nNon preparo niente: non saprei a che livello sono.')
+    return
+  }
+
+  var livello = prossimoLivelloSollecito(idFattura)
+  if (!livello) {
+    window.alert('Su questa fattura i tre solleciti sono già stati preparati.\n\nOltre il terzo non c\'è un quarto: si valuta la procedura di incasso.')
+    return
+  }
+
+  var residuo = residuoDocumento('tm_conta_fatture', f.id, f.totale)
+  if (residuo <= 0.005) {
+    window.alert('Su questa fattura non resta niente da incassare: nessun sollecito da preparare.')
+    return
+  }
+
+  // 61h — l'avviso sulle spese: pattuite o no lo sa solo chi ha scritto la
+  // fattura. Il programma non puo' saperlo e non finge di saperlo.
+  var spese = speseSollecito()
+  if (spese > 0) {
+    if (!window.confirm('Questo sollecito addebita ' + fmtNumIt(spese) + ' CHF di spese.\n\n' +
+        'Le spese si addebitano solo se pattuite: verifica che la clausola fosse sulla fattura ' +
+        'o nelle condizioni accettate dal cliente.\n\nContinuo?')) return
+  }
+
+  // L'unica cosa che si scrive a mano: il destinatario viene dalla fattura.
+  var aperturaProposta = 'Signora ' + String(f.cliente_nome || '').split(' ').slice(-1)[0]
+  var apertura = window.prompt(
+    'Formula di apertura della lettera (dopo «Gentile»):\n\n' +
+    'Il destinatario e l\'indirizzo vengono dalla fattura e non si toccano.',
+    aperturaProposta)
+  if (apertura === null) return          // annullato: non si prepara niente
+  apertura = String(apertura).trim() || aperturaProposta
+
+  var d = datiSollecito(f, livello, apertura)
+  try { await loadAziendaInfo() } catch (_) { /* l'intestazione esce con quello che c'e' */ }
+  renderSollecitoPrint(d)
+
+  document.body.classList.add('stampa-sollecito')
+  var titoloPrima = document.title
+  document.title = sanificaNomeFile('Sollecito' + d.livello + '_' + (f.numero || '') + '_' +
+                                    nomeClientePerFile(f.cliente_nome))
+  var pulisci = function () {
+    document.body.classList.remove('stampa-sollecito')
+    document.title = titoloPrima
+    window.removeEventListener('afterprint', pulisci)
+  }
+  window.addEventListener('afterprint', pulisci)
+  try { await attendiImmagini('sollecito-print', 2000) } catch (_) {}
+  window.print()
+  setTimeout(pulisci, 60000)
+
+  // ── Dopo la stampa: inviato o no? ───────────────────────────────────────
+  // La riga si scrive in ogni caso. Se non si risponde resta «preparato, non
+  // inviato», che e' la verita' e si vede nell'elenco: un sollecito stampato e
+  // dimenticato nel cassetto e' esattamente il caso da non perdere di vista.
+  var risposta = window.prompt(
+    'Sollecito stampato.\n\nL\'hai inviato? Scrivi la data (gg.mm.aaaa), oppure lascia vuoto ' +
+    'se non l\'hai ancora spedito: resterà «preparato, non inviato».',
+    fmtDate(d.oggi))
+  var dataInviato = null
+  if (risposta !== null && String(risposta).trim()) {
+    dataInviato = dataDaTestoIt(String(risposta).trim())
+    if (!dataInviato) {
+      window.alert('Data non capita: la registro come «preparato, non inviato». ' +
+                   'Puoi correggerla dalla scheda della fattura.')
+    }
+  }
+
+  try {
+    const { error } = await sb.from('tm_conta_solleciti').insert({
+      azienda_id: currentAziendaId,
+      fattura_id: f.id,
+      livello: livello,
+      data_preparato: d.oggi,
+      data_inviato: dataInviato,
+      nuovo_termine: d.nuovoTermine,
+      importo_dovuto: d.residuo,
+      spese: d.spese,
+      interessi: 0,
+      created_by: currentUser ? currentUser.id : null
+    }).select()
+    if (error) throw error
+    await loadSolleciti(true)
+    renderFattureTable()
+    showFattureBanner('fatture-list-banner', 'ok',
+      d.livello + 'º sollecito registrato' +
+      (dataInviato ? ' — inviato il ' + fmtDate(dataInviato) : ' — preparato, NON inviato') +
+      '. Nuovo termine: ' + fmtDate(d.nuovoTermine) + '. La scadenza della fattura non è cambiata.')
+  } catch (e) {
+    showFattureBanner('fatture-list-banner', 'err',
+      'Sollecito STAMPATO ma NON registrato: ' + (e.message || e) +
+      ' — l\'elenco non lo sa, e al prossimo giro ripartirebbe dallo stesso livello.')
+    return
+  }
+
+  // La busta, con la stampa che c'e' gia'.
+  if (window.confirm('Stampo anche la busta?')) apriBustaDaFattura(f.id, f)
+}
+
+// Registra a posteriori la data d'invio di un sollecito preparato e mai spedito.
+async function segnaSollecitoInviato(idSollecito) {
+  var s = (sollecitiCache || []).filter(function (x) { return x.id === idSollecito })[0]
+  if (!s) return
+  var risposta = window.prompt('Data di invio del ' + s.livello + 'º sollecito (gg.mm.aaaa):', fmtDate(oggiISO()))
+  if (risposta === null) return
+  var d = dataDaTestoIt(String(risposta).trim())
+  if (!d) { window.alert('Data non capita: non ho cambiato niente.'); return }
+  try {
+    const { error } = await sb.from('tm_conta_solleciti')
+      .update({ data_inviato: d }).eq('id', idSollecito).eq('azienda_id', currentAziendaId).select()
+    if (error) throw error
+    await loadSolleciti(true)
+    renderFattureTable()
+    showFattureBanner('fatture-list-banner', 'ok',
+      s.livello + 'º sollecito segnato come inviato il ' + fmtDate(d) + '.')
+  } catch (e) {
+    showFattureBanner('fatture-list-banner', 'err', 'Non registrato: ' + (e.message || e))
+  }
+}
+
+// «12.09.2026» → «2026-09-12». null se non e' una data. Non si usa mai
+// toISOString (sposta il giorno con il fuso): si compone la stringa a mano.
+function dataDaTestoIt(t) {
+  var m = String(t || '').match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/)
+  if (m) {
+    var iso = m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2)
+    return validaData(iso) ? iso : null
+  }
+  // Anche il formato del database, per chi lo scrive cosi'.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(t).trim()) && validaData(String(t).trim())) return String(t).trim()
+  return null
+}
+
+// ── La vista «Scadute» ──────────────────────────────────────────────────────
+var vistaFattureScadute = false
+
+function mostraFattureScadute(si) {
+  vistaFattureScadute = !!si
+  renderFattureTable()
+}
+
+function tabellaFattureScaduteHtml() {
+  var oggi = oggiISO()
+  var list = fattureScadute(oggi)
+  if (!list.length) {
+    return '<div class="dim" style="padding:10px 0">✅ Nessuna fattura scaduta: non c\'è niente da sollecitare.</div>'
+  }
+  var rows = list.map(function (f) {
+    var gg = giorniRitardo(f, oggi)
+    var res = residuoDocumento('tm_conta_fatture', f.id, f.totale)
+    var sol = sollecitiDi(f.id)
+    var prossimo = prossimoLivelloSollecito(f.id)
+    var statoSol = sol.length
+      ? sol.map(function (s) {
+          return '<div class="sol-riga-stato">' +
+            esc(s.livello + 'º ') +
+            (s.data_inviato
+              ? '<span class="sol-inviato">✅ inviato il ' + esc(fmtDate(s.data_inviato)) + '</span>'
+              : '<button type="button" class="azione-rapida" onclick="event.stopPropagation(); segnaSollecitoInviato(\'' + esc(s.id) + '\')">⏳ preparato, non inviato — segna la data</button>') +
+            (s.nuovo_termine ? ' <span class="dim">nuovo termine ' + esc(fmtDate(s.nuovo_termine)) + '</span>' : '') +
+            '</div>'
+        }).join('')
+      : '<span class="dim">nessun sollecito</span>'
+    return '<tr class="row-clickable" onclick="viewFattura(\'' + f.id + '\')">' +
+      '<td><span class="cod">' + esc(f.numero || '—') + '</span></td>' +
+      '<td>' + esc(f.cliente_nome || '') + '</td>' +
+      '<td class="dim">' + esc(fmtDate(f.data_scadenza)) + '</td>' +
+      '<td class="num sol-ritardo">' + esc(String(gg)) + '</td>' +
+      '<td class="num">' + esc(fmtNumIt(res)) + ' ' + esc(f.valuta || 'CHF') + '</td>' +
+      '<td>' + statoSol + '</td>' +
+      '<td class="row-actions">' +
+        (prossimo
+          ? '<button class="icon-btn" onclick="event.stopPropagation(); preparaSollecito(\'' + f.id + '\')">📨 Prepara ' + prossimo + 'º sollecito</button>'
+          : '<span class="dim">tre solleciti fatti</span>') +
+      '</td>' +
+    '</tr>'
+  }).join('')
+  return '<div class="table-wrap"><table><thead><tr>' +
+    '<th style="width:110px">Numero</th><th>Cliente</th><th style="width:100px">Scadenza</th>' +
+    '<th style="width:90px;text-align:right" title="Giorni di ritardo">Ritardo</th>' +
+    '<th style="width:130px;text-align:right">Residuo</th>' +
+    '<th style="width:280px">Solleciti</th><th style="width:190px">Azioni</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+}
+
+// ── Le impostazioni dei solleciti ───────────────────────────────────────────
+function riempiImpostazioniSolleciti() {
+  setVal('imp-sol-spese', (impostazioniConta || {})[CHIAVI_SOLLECITO.spese] || '')
+  setVal('imp-sol-tasso', (impostazioniConta || {})[CHIAVI_SOLLECITO.tasso] || '')
+  for (var l = 1; l <= 3; l++) setVal('imp-sol-testo-' + l, testoSollecito(l))
+}
+
+async function salvaImpostazioniSolleciti() {
+  html('imp-sol-banner', '')
+  try {
+    var spese = getVal('imp-sol-spese')
+    var tasso = getVal('imp-sol-tasso')
+    if (spese !== '' && (safeNum(spese) == null || safeNum(spese) < 0)) {
+      throw new Error('le spese devono essere un numero maggiore o uguale a zero')
+    }
+    if (tasso !== '' && (safeNum(tasso) == null || safeNum(tasso) < 0)) {
+      throw new Error('il tasso di mora deve essere un numero maggiore o uguale a zero')
+    }
+    await salvaImpostazioneConta(CHIAVI_SOLLECITO.spese, spese === '' ? '0' : spese,
+      'Spese addebitate su un sollecito. 0 = non si addebitano.')
+    await salvaImpostazioneConta(CHIAVI_SOLLECITO.tasso, tasso === '' ? '5' : tasso,
+      'Tasso di mora annuo in percento. 5 = il tasso di legge (CO art. 104).')
+    for (var l = 1; l <= 3; l++) {
+      await salvaImpostazioneConta(CHIAVI_SOLLECITO.testo[l - 1],
+        el('imp-sol-testo-' + l) ? el('imp-sol-testo-' + l).value : '',
+        'Testo del ' + l + 'o sollecito. Segnaposto fra parentesi quadre.')
+    }
+    showFattureBanner('imp-sol-banner', 'ok', 'Solleciti salvati.')
+  } catch (e) {
+    showFattureBanner('imp-sol-banner', 'err', 'Non salvato: ' + (e.message || e))
+  }
+}
+
+// Rimette nei campi i testi di partenza. Non salva: si guarda, e si salva se
+// vanno bene — altrimenti basta uscire dalla pagina senza toccare niente.
+function ripristinaTestiSolleciti() {
+  for (var l = 1; l <= 3; l++) setVal('imp-sol-testo-' + l, TESTI_SOLLECITO_SEME[l - 1])
+  showFattureBanner('imp-sol-banner', 'warn',
+    'Testi predefiniti rimessi nei campi. Non sono ancora salvati: premi «💾 Salva i solleciti».')
+}
+
 // ── Il riquadro completo «Pagamenti e rate» per la scheda del documento ─────
 
 function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
   var gia = totalePagatoDi(tabella, id)
-  var residuo = (safeNum(importoDoc) || 0) - gia
+  // 61b — lo storno delle note di credito emesse entra nel residuo, qui come
+  // nell'elenco e nelle scadenze: una sola regola, residuoDocumento().
+  var storno = (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) ? stornoNoteCredito(id) : 0
+  var residuo = residuoDocumento(tabella, id, importoDoc)
   var rate = rateDi(tabella, id)
-  var e = etichettaPagamento(verso, gia <= 0.005 ? 'aperto' : (residuo > 0.005 ? 'parziale' : 'pagato'))
+  var e = etichettaPagamento(verso, (gia + storno) <= 0.005 ? 'aperto' : (residuo > 0.005 ? 'parziale' : 'pagato'))
   var argomenti = "'" + esc(tabella) + "', '" + esc(id) + "', " + (safeNum(importoDoc) || 0) +
                   ", '" + esc(verso) + "', '" + esc(String(nome || '').replace(/'/g, '')) + "'"
 
@@ -15500,6 +16456,9 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
     '<div class="pag-sommario">' +
       rigaPag('Importo del documento', safeNum(importoDoc) || 0) +
       rigaPag(etichettaPagamento(verso, 'pagato').testo, gia) +
+      // 61b — la riga compare solo se c'e' davvero uno storno: su una fattura
+      // senza note di credito uno «− 0,00» sarebbe solo una domanda in piu'.
+      (storno > 0.005 ? rigaPag('Note di credito', -storno) : '') +
       rigaPag('Residuo', residuo, true) +
       '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + e.testo) + '</div>' +
     '</div>' +
@@ -17766,7 +18725,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '60'
+var VERSIONE = '61'
 
 function controllaVersionePagina() {
   try {
