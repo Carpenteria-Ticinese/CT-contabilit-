@@ -3488,13 +3488,20 @@ function friendlyFatturaError(e) {
   return m
 }
 
-function statoFatturaBadge(stato) {
+function statoFatturaBadge(stato, motivo) {
   // Solo ciclo di vita del documento: l'incasso e' un'altra cosa e ha il suo
   // badge separato (badgePagamento). Un badge unico che mostrava l'incasso al
   // posto di «emessa» faceva sparire l'informazione che la fattura era emessa.
   var map  = { bozza: 'info', emessa: 'warn', annullata: 'err' }
   var icon = { bozza: '✏️', emessa: '📨', annullata: '🚫' }
-  return badge(map[stato] || 'info', (icon[stato] || '') + ' ' + (stato || ''))
+  var testo = (icon[stato] || '') + ' ' + (stato || '')
+  // 62c — su un documento annullato il perche' si legge passandoci sopra.
+  // Nella scheda c'e' per esteso: il tooltip non e' mai l'unico posto.
+  if (stato === 'annullata' && motivo) {
+    return '<span class="badge badge-err" title="' + esc('Annullata: ' + motivo) + '">' +
+           esc(testo) + '</span>'
+  }
+  return badge(map[stato] || 'info', testo)
 }
 
 async function initFatturePage() {
@@ -3512,7 +3519,10 @@ async function loadFattureList() {
     await richiediAccesso('lettura delle fatture')
     const { data, error } = await sb
       .from('tm_conta_fatture')
-      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at')
+      // 62c — annullata_motivo serve al tooltip dell'elenco. La colonna arriva
+      // con SQL_FASE62c_annullamento.sql: quello va applicato PRIMA di caricare
+      // questa versione, altrimenti l'elenco non si carica e lo dice.
+      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, annullata_motivo')
       .eq('azienda_id', currentAziendaId)
       .order('created_at', { ascending: false })
     if (error) throw error
@@ -3655,7 +3665,7 @@ function renderFattureTable() {
       // riga era rumore.
       '<td>' + esc(f.cliente_nome || '') + '</td>' +
       '<td class="num">' + fmtImporto(f.totale, f.valuta) + '</td>' +
-      '<td>' + statoFatturaBadge(f.stato) +
+      '<td>' + statoFatturaBadge(f.stato, f.annullata_motivo) +
         // L'incasso si mostra solo sulle fatture emesse: su una bozza non
         // significa niente, su una annullata sarebbe fuorviante.
         // 61c — e MAI su una nota di credito: non si incassa, non ha residuo,
@@ -5039,6 +5049,9 @@ async function viewFattura(id) {
     // stampa quando si allega o si toglie la polizza, senza rileggere tutto.
     righeDetailCorrenti = righe || []
     rifInfoCorrente = rifInfo
+    // 62c — se il documento e' annullato, il perche' sta in cima: e' la prima
+    // cosa da sapere guardandolo.
+    html('fatture-annullata', boxAnnullamentoHtml(f))
     // 61g — i solleciti della fattura: servono al bottone e alla riga di stato.
     try { await loadSolleciti() } catch (_) { /* il bottone ripartira' dal primo */ }
     renderFatturaPrint(f, righe || [], rifInfo)
@@ -5053,7 +5066,14 @@ async function viewFattura(id) {
       await loadPagamenti(); await loadRate()
       // 61c — su una nota di credito il riquadro non c'e': non si incassa, non
       // ha residuo e non ha rate. Al suo posto una riga che dice cosa storna.
-      if (f.tipo === 'nota_credito') {
+      if (f.stato === 'annullata') {
+        // 62c — su un documento annullato non si registra niente: e' fuori da
+        // ogni somma, e un riquadro con «+ Registra pagamento» sarebbe un
+        // invito a rimetterci dentro dei soldi.
+        html('fatture-pagamenti',
+          '<div class="card"><div class="card-title">💳 Pagamenti</div>' +
+          '<div>Nessuno: su un documento annullato non si registrano pagamenti.</div></div>')
+      } else if (f.tipo === 'nota_credito') {
         html('fatture-pagamenti',
           '<div class="card"><div class="card-title">↩️ Nota di credito</div>' +
           '<div>' + esc(testoNotaStorna(f.id)) + '.</div>' +
@@ -5335,7 +5355,15 @@ function renderFatturaPrint(f, righe, rifInfo) {
     '</div>'
 
   html('fatture-print',
-    '<div class="inv">' +
+    '<div class="inv' + (f.stato === 'annullata' ? ' inv-annullata' : '') + '">' +
+      // 62c — su carta si deve vedere subito: una fattura annullata che gira
+      // stampata senza dirlo e' peggio che non stamparla.
+      (f.stato === 'annullata'
+        ? '<div class="inv-annullata-fascia">ANNULLATA' +
+            (f.annullata_il ? ' il ' + esc(fmtDate(String(f.annullata_il).slice(0, 10))) : '') +
+            (f.annullata_motivo ? '<span class="inv-annullata-motivo">' + esc(f.annullata_motivo) + '</span>' : '') +
+          '</div>'
+        : '') +
       '<div class="inv-head">' +
         '<div class="inv-brand">' +
           '<img src="' + esc(logoSrc) + '" alt="Logo azienda" class="inv-logo" onerror="logoOnError(this)">' +
@@ -5372,6 +5400,179 @@ function renderFatturaPrint(f, righe, rifInfo) {
       '<div id="fatture-qrpage"></div>' +
     '</div>'
   )
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 62c — ANNULLARE UN DOCUMENTO EMESSO
+//
+// Una fattura o una nota di credito emessa non si cancella e non si corregge:
+// il numero è uscito. Ma può essere sbagliata e non ancora consegnata, e allora
+// si ANNULLA: tiene il suo numero, resta negli elenchi, e smette di contare.
+//
+// NON SERVE NIENTE DI SPECIALE NEL DATABASE. `stato` non è fra i 16 campi
+// congelati di tm_conta_fatture_immutabili(): ha una macchina a stati sua, che
+// permette già emessa → annullata e vieta ogni ritorno. Le due colonne della
+// motivazione sono nuove, e il trigger congela un elenco esplicito lasciando
+// passare tutto il resto: si scrivono nello stesso UPDATE.
+//
+// COSA SMETTE DI CONTARE, E DOVE (nessuno di questi punti è stato toccato oggi:
+// funzionavano già per lo stato `annullata`, che esisteva nel database da
+// sempre — mancava solo il modo di arrivarci):
+//   · v_conta_flussi ha WHERE f.stato = 'emessa'  → fuori da Scadenze,
+//     Situazione, Cantieri, differenza IVA
+//   · loadExportDataset legge .eq('stato','emessa') → fuori dall'export
+//   · noteCreditoDi() filtra stato === 'emessa'     → una NOTA annullata non
+//     storna più niente, e il residuo della fattura torna su da solo
+//   · fattureScadute() richiede stato === 'emessa'  → niente solleciti
+//   · accontoAnnullato() la esclude da «già fatturato» (58)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Il testo che spiega perché un documento NON si può annullare, oppure null se
+// si può. Il controllo sui pagamenti è la parte che conta: un documento pagato
+// annullato lascerebbe dei soldi incassati appesi a un documento che non esiste
+// più per nessuna somma.
+function motivoNoAnnullamento(f, pagamenti) {
+  if (!f) return 'Documento non trovato.'
+  if (f.stato === 'bozza') {
+    return 'Questa è una bozza, non un documento emesso: non si annulla, si elimina.'
+  }
+  if (f.stato === 'annullata') {
+    return 'Questo documento è già annullato.'
+  }
+  if (f.stato !== 'emessa') return 'Si annullano solo i documenti emessi.'
+  if (pagamenti && pagamenti.length) {
+    var somma = pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
+    return 'Su questo documento ci sono ' +
+      (pagamenti.length === 1 ? 'un pagamento registrato' : pagamenti.length + ' pagamenti registrati') +
+      ', per ' + fmtNumIt(somma) + ' CHF in tutto.\n\n' +
+      'Un documento annullato esce da tutte le somme: quei soldi resterebbero ' +
+      'attaccati a un documento che non conta più, e non si ritroverebbero.\n\n' +
+      'Prima togli i pagamenti dal riquadro Pagamenti (uno per uno, con «🗑️ Elimina»), poi annulla.'
+  }
+  return null
+}
+
+async function annullaDocumento(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id)
+    ? currentDetailFattura
+    : (fattureList || []).filter(function (x) { return x.id === id })[0]
+  if (!f) { window.alert('Documento non trovato: ricarica l\'elenco.'); return }
+
+  var eNC = (f.tipo === 'nota_credito')
+  var nomeDoc = eNC ? 'nota di credito' : 'fattura'
+
+  try {
+    // I pagamenti si leggono ADESSO, dritti dal database: la cache potrebbe
+    // essere di mezz'ora fa o vuota per un errore ingoiato, e qui un elenco
+    // vuoto per sbaglio vorrebbe dire «via libera». Stessa regola di
+    // scriviPagamento: se il controllo non può contare, non si annulla.
+    await richiediSessione('il documento NON è stato annullato')
+    const { data: pag, error: ePag } = await sb.from('tm_conta_pagamenti')
+      .select('id, importo, data')
+      .eq('tabella_origine', 'tm_conta_fatture').eq('id_origine', id)
+    if (ePag) throw new Error('Non riesco a leggere i pagamenti di questo documento, quindi NON lo annullo: ' + (ePag.message || ePag))
+
+    var no = motivoNoAnnullamento(f, pag || [])
+    if (no) { window.alert('Non annullato.\n\n' + no); return }
+
+    // Le conseguenze, dette PRIMA con le cifre davanti. Sono due casi diversi
+    // e vanno spiegati diversamente: annullare una nota fa RISALIRE il residuo
+    // della fattura che stornava.
+    var conseguenze = ''
+    if (eNC) {
+      var rifNum = '—'
+      var n = notaCreditoById(id)
+      if (n && n.rif_fattura_id) {
+        var fr = (fattureList || []).filter(function (x) { return x.id === n.rif_fattura_id })[0]
+        if (fr) {
+          rifNum = fr.numero || '—'
+          conseguenze = '\n\nQuesta nota storna la fattura n. ' + rifNum + ': annullandola, ' +
+            'quei ' + fmtNumIt(safeNum(f.totale) || 0) + ' CHF tornano da incassare su quella fattura.'
+        }
+      }
+    } else {
+      var note = noteCreditoDi(id)
+      if (note.length) {
+        conseguenze = '\n\nAttenzione: ' +
+          (note.length === 1 ? 'una nota di credito storna' : note.length + ' note di credito stornano') +
+          ' questa fattura (n. ' + note.map(function (x) { return x.numero || '—' }).join(', ') + '). ' +
+          (note.length === 1 ? 'Resta emessa' : 'Restano emesse') +
+          ' e non si annulla' + (note.length === 1 ? '' : 'no') + ' da sol' +
+          (note.length === 1 ? 'a' : 'e') + ': se anche quella va annullata, si fa a parte.'
+      }
+    }
+
+    var motivo = window.prompt(
+      'Annullare la ' + nomeDoc + ' n. ' + (f.numero || '—') + ' di ' +
+      fmtNumIt(safeNum(f.totale) || 0) + ' ' + (f.valuta || 'CHF') + '?\n\n' +
+      'Il numero resta ed è bruciato: non si riusa. Il documento non si cancella ' +
+      'e non si modifica, esce solo da tutte le somme.' + conseguenze + '\n\n' +
+      'Scrivi PERCHÉ la annulli (obbligatorio, resta sul documento):', '')
+    if (motivo === null) return                       // annullato l'annullamento
+    motivo = String(motivo).trim()
+    if (motivo.length < 3) {
+      window.alert('Non annullato: la motivazione è obbligatoria.\n\n' +
+        'Riletta fra un anno, «annullata» senza un perché non si spiega da sola.')
+      return
+    }
+
+    html('fatture-detail-banner', loadingRow('Annullamento…'))
+    // Un UPDATE normale: il trigger di immutabilità ammette già
+    // emessa → annullata, e le due colonne della motivazione sono nuove,
+    // quindi non sono nell'elenco dei campi congelati.
+    const { data: agg, error } = await sb.from('tm_conta_fatture')
+      // annullata_il e' un ISTANTE (timestamptz), non una data di calendario:
+      // qui toISOString e' giusto — porta con se' il fuso e non sposta niente.
+      // La regola «mai toISOString» vale per le DATE (data, scadenza, emissione),
+      // dove tagliare la stringa a dieci caratteri sposta il giorno.
+      .update({ stato: 'annullata', annullata_motivo: motivo, annullata_il: new Date().toISOString() })
+      .eq('id', id).eq('azienda_id', currentAziendaId).eq('stato', 'emessa')
+      .select()
+    if (error) throw error
+    if (!agg || !agg.length) {
+      throw new Error('nessuna riga aggiornata: il documento potrebbe essere già stato annullato da un\'altra scheda. Ricarica la pagina.')
+    }
+
+    // Le note di credito cambiano peso: se era una nota, il residuo della
+    // fattura che stornava torna su. Gli elenchi si rileggono da capo.
+    invalidaCachePagamenti()
+    scadeCache('noteCredito')
+    await loadFattureList()
+    await viewFattura(id)
+    showFattureBanner('fatture-detail-banner', 'ok',
+      'Documento n. ' + (f.numero || '—') + ' annullato. Il numero resta e non si riusa; ' +
+      'il documento è fuori da tutte le somme, dalle Scadenze e dall\'export.' +
+      (eNC ? ' Il residuo della fattura stornata è tornato su.' : ''))
+  } catch (e) {
+    var m = String(e.message || e)
+    // Se il trigger di immutabilità si lamenta, è un segnale: vuol dire che
+    // qualcosa è cambiato nel database e non va aggirato.
+    if (m.indexOf('non puo modificare') !== -1 || m.indexOf('non puo tornare') !== -1) {
+      m = 'Il database ha rifiutato il passaggio ad «annullata»: ' + m +
+          ' — non va aggirato, segnalalo.'
+    }
+    showFattureBanner('fatture-detail-banner', 'err', 'Documento NON annullato: ' + m)
+  }
+}
+
+// Il riquadro che resta sulla scheda di un documento annullato: quando, e
+// perché. Vuoto se il documento non è annullato.
+function boxAnnullamentoHtml(f) {
+  if (!f || f.stato !== 'annullata') return ''
+  var quando = f.annullata_il ? fmtDateTime(f.annullata_il) : null
+  return '<div class="card annullata-box">' +
+    '<div class="card-title">🚫 Documento annullato</div>' +
+    (quando ? '<div class="annullata-quando">Annullato il ' + esc(quando) + '</div>' : '') +
+    '<div class="annullata-motivo">' +
+      (f.annullata_motivo
+        ? esc(f.annullata_motivo)
+        : '<span class="dim">Nessuna motivazione registrata: annullato prima che il programma la chiedesse.</span>') +
+    '</div>' +
+    '<div class="form-hint" style="margin-top:8px">' +
+      'Il numero resta assegnato e non si riusa. Il documento non conta in nessuna somma, ' +
+      'non compare nelle Scadenze e non entra nell\'export.' +
+    '</div>' +
+  '</div>'
 }
 
 function renderDetailActions(f) {
@@ -5423,6 +5624,11 @@ function renderDetailActions(f) {
          f.id + '\', ' + (safeNum(f.totale) || 0) + ', \'entrata\', \'' +
          esc(String(f.cliente_nome || '').replace(/'/g, '')) + '\')">➕ Registra incasso</button>'
     if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
+    // 62c — annullare: il numero resta, il documento esce da tutte le somme.
+    // Rosso perche' non si torna indietro, ma non e' una cancellazione: il
+    // documento resta dov'e' ed e' per questo che si chiama «Annulla».
+    a += '<button class="btn-secondary danger" onclick="annullaDocumento(\'' + esc(f.id) +
+         '\')" title="Il documento tiene il suo numero e smette di contare. Serve una motivazione scritta.">🚫 Annulla documento</button>'
   } else if (f.stato === 'annullata') {
     // Ramo che prima non esisteva: lo stato annullata era gia ammesso dal
     // database ma nell'interfaccia la scheda restava senza indicazioni.
@@ -14949,7 +15155,12 @@ function testoNotaStorna(idNota) {
   if (!n) return 'Nota di credito'
   if (!n.rif_fattura_id) return 'Nota di credito — fattura stornata non indicata'
   var f = (fattureList || []).filter(function (x) { return x.id === n.rif_fattura_id })[0]
-  return 'Nota di credito — storna la fattura n. ' + (f && f.numero ? f.numero : '—')
+  var t = 'Nota di credito — storna la fattura n. ' + (f && f.numero ? f.numero : '—')
+  // 62c — se la fattura stornata e' stata annullata, la nota resta emessa ma
+  // non storna piu' niente: va detto dov'e' scritto cosa storna, o sembra che
+  // stia ancora togliendo qualcosa a un documento che non conta piu'.
+  if (f && f.stato === 'annullata') t += ' (annullata: questa nota non storna più nulla)'
+  return t
 }
 
 function totalePagatoDi(tabella, id) {
@@ -18725,7 +18936,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '61'
+var VERSIONE = '62'
 
 function controllaVersionePagina() {
   try {
