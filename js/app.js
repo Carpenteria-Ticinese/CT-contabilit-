@@ -13965,6 +13965,11 @@ async function initCantieriPage() {
     await loadCantieri()
     await loadFlussi(true)
     await loadPagamenti(true)
+    // 62h — senza queste, il contratto sommava le rate al lordo e il residuo
+    // delle rate ignorava lo storno: la pagina Cantieri non le leggeva affatto.
+    // Non bloccante: se non si leggono, il riquadro lo dichiara invece di
+    // mostrare una cifra al lordo spacciata per netta.
+    try { await loadNoteCredito(true) } catch (eNC) { console.warn('Note di credito non lette:', eNC.message || eNC) }
     await loadMappaCantieri(true)
     await loadSpeseCantiere(true)
     await loadRegiaCantiere(true)
@@ -15096,7 +15101,10 @@ async function loadNoteCredito(force) {
   if (cacheOk('noteCredito') && !force) return noteCreditoCache || []
   await richiediAccesso('loadNoteCredito')   // 52·B1: mai un elenco vuoto per silenzio
   const { data, error } = await sb.from('tm_conta_fatture')
-    .select('id, numero, data_emissione, totale, stato, rif_fattura_id')
+    // 62h — `totale_imponibile` serve al contratto, che ragiona IVA esclusa.
+    // `totale` resta quello che usa il residuo di una fattura, che il cliente
+    // paga IVA inclusa: due colonne per due domande diverse.
+    .select('id, numero, data_emissione, totale, totale_imponibile, stato, rif_fattura_id')
     .eq('azienda_id', currentAziendaId)
     .eq('tipo', 'nota_credito')
   if (error) throw error
@@ -15115,8 +15123,15 @@ function noteCreditoDi(fatturaId) {
 
 // Quanto e' stato stornato su questa fattura. Zero se non ci sono note.
 // Le note sono salvate con l'importo POSITIVO: il segno lo mette chi sottrae.
-function stornoNoteCredito(fatturaId) {
-  return noteCreditoDi(fatturaId).reduce(function (s, n) { return s + (safeNum(n.totale) || 0) }, 0)
+//
+// 62h — `campo` decide QUALE cifra sommare, e la funzione resta una sola:
+//   'totale'            → quello che il cliente non deve piu' pagare (IVA inclusa).
+//                         E' il residuo di una fattura: e' il valore di partenza.
+//   'totale_imponibile' → il netto, per il contratto di cantiere, che e' tutto
+//                         IVA esclusa. Vedi §3 di STATO_PRECONTABILITA.md.
+function stornoNoteCredito(fatturaId, campo) {
+  var col = campo || 'totale'
+  return noteCreditoDi(fatturaId).reduce(function (s, n) { return s + (safeNum(n[col]) || 0) }, 0)
 }
 
 // La nota di credito di cui questo id e' la nota (non la fattura): serve a
@@ -18942,7 +18957,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '64'
+var VERSIONE = '65'
 
 function controllaVersionePagina() {
   try {
@@ -19644,23 +19659,128 @@ function totaliContratto(c) {
   var base = safeNum(c.importo_contratto) || 0
   var varianti = 0
   ;(c.varianti || []).forEach(function (v) { varianti += safeNum(v.importo) || 0 })
-  var rate = 0, fatturato = 0, daFatturare = 0
+  var rate = 0, fatturatoLordo = 0, daFatturare = 0
   ;(c.acconti || []).forEach(function (a) {
     if (accontoAnnullato(a)) return
     var imp = safeNum(a.importo) || 0
     rate += imp
-    if (a.stato === 'fatturata') fatturato += imp
+    if (a.stato === 'fatturata') fatturatoLordo += imp
     else daFatturare += imp
   })
+  // 62h — quello che e' stato fatturato DAVVERO: le rate fatturate meno le note
+  // di credito che stornano le loro fatture. L'importo scritto sulla rata non
+  // si tocca (e' congelato): lo storno vive qui, a fianco.
+  // Se le note non si sono lette, NON si sottrae niente e il riquadro lo dice:
+  // meglio una cifra al lordo dichiarata che una netta inventata.
+  var stornato = cacheOk('noteCredito') ? stornoContratto(c) : 0
+  var fatturato = round2(fatturatoLordo - stornato)
   var aggiornato = base + varianti
   return { base: base, varianti: varianti, aggiornato: aggiornato,
-           rate: rate, fatturato: fatturato, daFatturare: daFatturare,
-           resta: aggiornato - fatturato, differenzaRate: rate - aggiornato }
+           rate: rate, fatturato: fatturato, fatturatoLordo: fatturatoLordo,
+           stornato: stornato, stornoLeggibile: cacheOk('noteCredito'),
+           daFatturare: daFatturare,
+           resta: round2(aggiornato - fatturato), differenzaRate: rate - aggiornato }
 }
 
 function nomeCantiereContratto(c) {
   var x = (cantieriCache || []).filter(function (k) { return k.id === c.cantiere_id })[0]
   return x ? nomeCantiere(x, false) : ('cantiere non più presente (' + String(c.cantiere_id).slice(0, 8) + '…)')
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 62h — IL CONTRATTO E LE NOTE DI CREDITO
+//
+// Il riquadro «Contratto e acconti» sommava gli importi scritti sulle rate e
+// si fermava li': sul cantiere Marotta diceva «Già fatturato 4'482,00» mentre
+// il netto vero era 4'188, perche' la fattura 2026-09-009 era stornata da una
+// nota di credito da 294. «Resta del contratto aggiornato» usciva sbagliato
+// della stessa cifra.
+//
+// Il residuo delle FATTURE lo teneva già in conto dalla 61b: qui si usa la
+// stessa funzione, non una seconda.
+//
+// L'IMPORTO SCRITTO SULLA RATA NON SI TOCCA. E' l'imponibile della fattura
+// emessa, e una rata fatturata e' congelata dal trigger. Lo storno si mostra
+// a parte: la rata dice quanto e' stata fatturata, la riga sotto dice quanto
+// e' stato stornato.
+//
+// PERCHE' `totale_imponibile` E NON `totale`. Contratto, varianti e rate sono
+// IVA ESCLUSA (vedi §3 di STATO_PRECONTABILITA.md). Sottrarre qui il `totale`
+// di una nota — che è IVA inclusa — oggi darebbe lo stesso numero, perche' CT
+// non e' soggetta IVA, e il giorno che lo diventasse sbaglierebbe dell'8,1 %
+// senza che nessuno colleghi le due cose. stornoNoteCredito() prende quindi
+// la colonna da usare: `totale` per il residuo di una fattura (che il cliente
+// paga IVA inclusa), `totale_imponibile` qui.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Le note di credito che stornano le fatture delle rate di questo contratto,
+// una voce per nota: serve a scrivere QUALE nota storna QUALE fattura.
+function storniContratto(c) {
+  var out = []
+  ;(c.acconti || []).forEach(function (a) {
+    if (accontoAnnullato(a) || a.stato !== 'fatturata') return
+    var f = a.fattura
+    if (!f || !f.id) return
+    noteCreditoDi(f.id).forEach(function (n) {
+      out.push({
+        nota: n.numero || '—',
+        dataNota: n.data_emissione || null,
+        fattura: f.numero || '—',
+        rata: a.ordine,
+        // IVA esclusa, come tutto il resto del contratto.
+        importo: safeNum(n.totale_imponibile) || 0
+      })
+    })
+  })
+  return out
+}
+
+// Quanto e' stato stornato in tutto su questo contratto, IVA esclusa.
+function stornoContratto(c) {
+  return round2(storniContratto(c).reduce(function (s, x) { return s + x.importo }, 0))
+}
+
+// La riga sotto «Già fatturato»: sempre visibile quando c'e' uno storno, con
+// il numero della nota e la fattura che storna. Se le note non si sono lette,
+// non si mostra uno zero: si dice che non si sa.
+function rigaStornoContrattoHtml(c) {
+  if (!cacheOk('noteCredito')) {
+    return '<div class="pag-riga storno-ignoto"><span>Note di credito</span>' +
+      '<span>⚠️ non lette: «già fatturato» potrebbe essere al lordo</span></div>'
+  }
+  var lista = storniContratto(c)
+  if (!lista.length) return ''
+  var dettaglio = lista.map(function (x) {
+    return 'n. ' + x.nota + (x.dataNota ? ' del ' + fmtDate(x.dataNota) : '') +
+           ' sulla fattura ' + x.fattura + ' (rata ' + x.rata + '): −' + fmtNumIt(x.importo) + ' CHF'
+  })
+  return '<div class="pag-riga storno"><span>di cui stornato con note di credito</span>' +
+      '<span>− ' + esc(fmtNumIt(stornoContratto(c))) + ' CHF</span></div>' +
+    '<div class="storno-dettaglio">' + esc(dettaglio.join(' · ')) + '</div>'
+}
+
+// Il pezzo che va sulla riga della rata, dopo lo stato d'incasso:
+//   «↩️ stornata di 294,00 CHF con NC-2026-09-001»
+function testoStornoRata(a) {
+  if (!cacheOk('noteCredito')) return ''
+  var f = a && a.fattura
+  if (!f || !f.id || accontoAnnullato(a)) return ''
+  var note = noteCreditoDi(f.id)
+  if (!note.length) return ''
+  var tot = round2(note.reduce(function (s, n) { return s + (safeNum(n.totale_imponibile) || 0) }, 0))
+  return '<span class="acc-storno">↩️ stornata di ' + esc(fmtNumIt(tot)) + ' CHF con ' +
+    esc(note.map(function (n) { return n.numero || '—' }).join(', ')) + '</span>'
+}
+
+// Lo storno per il foglio della cliente, a parole. Sul piano pagamenti i
+// numeri devono tornare con quello che ha pagato: senza questa riga non
+// tornano, ed e' la prima cosa che si controlla.
+function frasiStornoPiano(c) {
+  if (!cacheOk('noteCredito')) return []
+  return storniContratto(c).map(function (x) {
+    return 'Nota di credito n. ' + x.nota + (x.dataNota ? ' del ' + fmtDate(x.dataNota) : '') +
+      ', a storno della fattura n. ' + x.fattura + ': − ' + fmtNumIt(x.importo) + ' CHF'
+  })
 }
 
 // ── Il blocco nella scheda del cantiere ──────────────────────────────────────
@@ -19790,6 +19910,8 @@ function accontiHtml(c, t) {
     '<div class="pag-sommario" style="margin-top:10px">' +
       rigaPag('Rate scritte', t.rate) +
       rigaPag('Già fatturato', t.fatturato) +
+      // 62h — lo storno, con il numero della nota e la fattura che storna.
+      rigaStornoContrattoHtml(c) +
       // 62e — quanto e' arrivato davvero, e quanto e' fatturato ma fermo.
       rigaPag('Già incassato', inc.incassato) +
       rigaPag('Fatturato non ancora incassato', inc.daIncassare) +
@@ -19819,7 +19941,7 @@ function rigaAccontoHtml(c, a) {
     // incassata, e viene dallo stesso residuoDocumento() di tutto il resto.
     stato = '<span class="badge badge-ok">✅ fatturata</span> ' +
       (f ? '<span class="dim">n. ' + esc(f.numero || '') + (f.data_emissione ? ' del ' + esc(fmtDate(f.data_emissione)) : '') + '</span>' : '') +
-      testoIncassoRata(a)
+      testoIncassoRata(a) + testoStornoRata(a)
     azioni = f ? '<button type="button" class="icon-btn" onclick="apriFatturaDaAcconto(\'' + esc(f.id) + '\')">Apri fattura</button>' : ''
   } else if (f) {
     stato = '<span class="badge badge-warn">📄 bozza collegata</span> ' +
@@ -20266,14 +20388,27 @@ function renderPianoPrint(c, cantiere) {
           : '') +
         rigaRicevuta('Totale aggiornato', fmtNumIt(t.aggiornato) + ' CHF', true) +
       '</div>' +
+      // 62h — senza lo storno, sul foglio della cliente i conti non tornano con
+      // quello che ha pagato: e' la prima cosa che si controlla.
+      (frasiStornoPiano(c).length
+        ? '<div class="inv-note piano-storno"><strong>Note di credito emesse a Suo favore:</strong><br>' +
+          esc(frasiStornoPiano(c).join('\n')) + '</div>'
+        : '') +
       '<div class="inv-note">Tutti gli importi sono <strong>IVA esclusa</strong>.</div>' +
       (varHtml ? '<div class="ro-section">Le varianti</div>' + varHtml : '') +
 
       '<div class="ro-section">Le rate</div>' +
       rateHtml +
       '<div class="ric-conto piano-conto">' +
+        (t.stornato > 0.005
+          ? rigaRicevuta('Fatturato, al netto delle note di credito', fmtNumIt(t.fatturato) + ' CHF')
+          : '') +
         rigaRicevuta('Totale pagato', fmtNumIt(inc.incassato) + ' CHF') +
-        rigaRicevuta('Resta da pagare', fmtNumIt(round2(t.aggiornato - inc.incassato)) + ' CHF', true) +
+        // 62h — «resta da pagare» tiene conto dello storno: il contratto
+        // aggiornato meno quello che e' stato pagato e meno quello che e' stato
+        // stornato, che la cliente non deve piu'.
+        rigaRicevuta('Resta da pagare',
+                     fmtNumIt(round2(t.aggiornato - inc.incassato - t.stornato)) + ' CHF', true) +
       '</div>' +
       (inc.leggibile ? '' :
         '<div class="inv-note">Nota: alcuni pagamenti non erano leggibili quando il foglio è stato stampato.</div>') +
@@ -20656,10 +20791,18 @@ async function disegnaBoxAcconto(f) {
   var t = trovaAccontoPerFattura(f.id)
   if (!t) return
   var tot = totaliContratto(t.c)
+  // 62h — anche qui al netto: era lo stesso difetto del riquadro del cantiere,
+  // una schermata piu' in la'. Le note che stornano LE ALTRE rate si tolgono;
+  // quella di questa fattura no, perche' «questa rata» si legge a parte.
   var altre = 0
   ;(t.c.acconti || []).forEach(function (x) {
-    if (x.id !== t.a.id && x.stato === 'fatturata' && !accontoAnnullato(x)) altre += safeNum(x.importo) || 0
+    if (x.id === t.a.id || x.stato !== 'fatturata' || accontoAnnullato(x)) return
+    altre += safeNum(x.importo) || 0
+    if (x.fattura && x.fattura.id && cacheOk('noteCredito')) {
+      altre -= stornoNoteCredito(x.fattura.id, 'totale_imponibile')
+    }
   })
+  altre = round2(altre)
   var questa = safeNum(f.totale_imponibile) || 0
   var annullata = f.stato === 'annullata'
   html('fatture-acconto',
