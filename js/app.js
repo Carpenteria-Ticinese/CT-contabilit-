@@ -1090,14 +1090,24 @@ async function ensureContiIva(force) {
   // Stessa guardia di loadContatti e loadCantieri.
   await richiediAccesso('ensureContiIva')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb
-      .from('tm_conta_piano_conti')
-      .select('id, codice_conto, descrizione, tipo, azienda_id, attivo, gruppo_codice')
-      .eq('paese', 'CH')
-      .eq('attivo', true)
-      .order('codice_conto')
-    if (error) throw error
-    contiCache = data || []
+    var campiConti = 'id, codice_conto, descrizione, tipo, azienda_id, attivo, gruppo_codice'
+    function leggiConti(campi) {
+      return sb.from('tm_conta_piano_conti')
+        .select(campi)
+        .eq('paese', 'CH')
+        .eq('attivo', true)
+        .order('codice_conto')
+    }
+    // 68·2 — si prova con la colonna nuova; se SQL_FASE68 non e' stato lanciato
+    // si rilegge senza, invece di lasciare il piano dei conti vuoto con un
+    // errore incomprensibile. Stesso ripiego del `cellulare` nella FASE 29.
+    var res = await leggiConti(campiConti + ', iva_predefinita_id')
+    if (res.error && /iva_predefinita_id/.test(String(res.error.message || ''))) {
+      contiHaIvaPredefinita = false
+      res = await leggiConti(campiConti)
+    }
+    if (res.error) throw res.error
+    contiCache = res.data || []
     segnaCacheOk('conti')
   } catch (e) {
     // NON si scrive [] nella cache: il prossimo tentativo deve poter riuscire.
@@ -7840,6 +7850,12 @@ let contattiDoppiaCategoria = true
 // FASE 29 — stessa idea per la colonna `cellulare`: se manca (SQL_FASE29 non
 // lanciato) non si legge e non si scrive, e tutto funziona come prima.
 let contattiHaCellulare = true
+// 68·2 — stessa idea per `iva_predefinita_id` sul piano dei conti: arriva con
+// SQL_FASE68. Se manca, il campo «IVA proposta» non compare e non si scrive,
+// e tutto il resto funziona come prima.
+let contiHaIvaPredefinita = true
+// 68·3 — e per `tipo` / `azienda_id` sui gruppi, che arrivano dallo stesso file.
+let gruppiHaColonneNuove = true
 
 // ── Caricamento dati di base ─────────────────────────────────────────────────
 
@@ -7855,12 +7871,23 @@ async function loadGruppi(force) {
   // Stessa guardia di loadContatti e loadCantieri.
   await richiediAccesso('loadGruppi')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb
-      .from('tm_conta_gruppi')
-      .select('codice, nome, esempi, ordine')
-      .order('ordine')
-    if (error) throw error
-    gruppiCache = data || []
+    // 68·3 — `tipo` e `azienda_id` arrivano con SQL_FASE68. Senza, i gruppi si
+    // leggono come prima: i 9 di sistema ci sono comunque, e i bottoni per
+    // crearne di nuovi non compaiono.
+    // Si leggono TUTTI, anche i disattivati: un gruppo disattivato deve sparire
+    // dalle TENDINE (lo fa buildGruppoOptions), non dallo storico — se sparisse
+    // di qui, i conti che lo usano direbbero «gruppo non trovato» e la
+    // Situazione perderebbe il nome di una riga.
+    function leggiGruppi(campi) {
+      return sb.from('tm_conta_gruppi').select(campi).order('ordine')
+    }
+    var resG = await leggiGruppi('codice, nome, esempi, ordine, attivo, tipo, azienda_id')
+    if (resG.error && /tipo|azienda_id/.test(String(resG.error.message || ''))) {
+      gruppiHaColonneNuove = false
+      resG = await leggiGruppi('codice, nome, esempi, ordine, attivo')
+    }
+    if (resG.error) throw resG.error
+    gruppiCache = resG.data || []
     segnaCacheOk('gruppi')
   } catch (e) {
     // Non si segna come riuscita: il prossimo tentativo riprova.
@@ -7877,10 +7904,15 @@ function buildGruppoOptions(selected) {
   // deve ottenere un menu che dice la verita', non uno muto.
   if (!gruppiCache || !gruppiCache.length) return opzioneGruppiMancanti()
   var out = '<option value="">— nessun gruppo —</option>'
+  // 68·3 — un gruppo disattivato non si sceglie piu'. Resta pero' selezionabile
+  // se e' gia' quello del documento aperto: togliergli l'opzione lo
+  // cancellerebbe in silenzio al primo salvataggio.
   ;(gruppiCache || []).forEach(function (g) {
+    if (g.attivo === false && g.codice !== selected) return
     out += '<option value="' + esc(g.codice) + '"' +
            (g.codice === selected ? ' selected' : '') + '>' +
-           esc(g.codice + ' · ' + g.nome) + '</option>'
+           esc(g.codice + ' · ' + g.nome) +
+           (g.attivo === false ? ' (disattivato)' : '') + '</option>'
   })
   return out
 }
@@ -9900,6 +9932,16 @@ async function initCodiciPage(force) {
     setVal('cod-filtro-tipo', '')
     setVal('cod-cerca', '')
     html('codici-foglio', foglioCodiciHtml())
+    // 68·2 e 68·3 — i moduli partono chiusi, e l'elenco di quello che e' mio
+    // si ridisegna a ogni apertura della pagina.
+    mostraFormConto(false); contoInModifica = undefined
+    mostraFormGruppo(false); gruppoInModifica = undefined
+    html('codici-banner', '')
+    var box = el('codici-gestione')
+    if (box) box.style.display = gruppiHaColonneNuove ? 'block' : 'none'
+    var avvisoSql = el('codici-serve-sql')
+    if (avvisoSql) avvisoSql.style.display = gruppiHaColonneNuove ? 'none' : 'block'
+    renderGestioneCodici()
   } catch (e) {
     html('codici-foglio',
       '<div class="fase-banner err" role="alert">' +
@@ -10095,6 +10137,425 @@ function foglioCodiciHtml() {
              '<span class="cod-quanti">(' + gruppi.length + ')</span></h2>' +
            gruppiHtml +
          '</div>'
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 68·2 e 68·3 — CREARE UN CONTO, CREARE UN GRUPPO
+//
+// Niente controlli di ruolo scritti qui dentro: in questo modulo l'utente è uno
+// solo e le policy del database sono permissive, quindi un «sei autorizzato?»
+// nel JavaScript sarebbe una finta che protegge nessuno. Quello che NON si può
+// fare lo impedisce il database:
+//   · i conti del pacchetto CH e i 9 gruppi di sistema hanno azienda_id NULL,
+//     e le policy di scrittura vogliono azienda_id = la propria azienda;
+//   · un codice di gruppo doppione lo rifiuta la chiave primaria, che vede
+//     anche i gruppi delle altre aziende — cosa che il programma non può fare;
+//   · un gruppo con dei conti dentro non si cancella: lo blocca la chiave
+//     esterna tm_conta_piano_conti_gruppo_fk.
+// Qui si scrivono solo gli AVVISI, che servono a capire prima di premere.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Gli intervalli del piano svizzero. Sono un AVVISO, mai un blocco: un conto
+// fuori intervallo è quasi sempre uno sbaglio di battitura, ma «quasi» non
+// basta per rifiutare il lavoro di qualcuno.
+var INTERVALLI_CONTO = {
+  attivo:     { da: 1000, a: 1999, testo: '1000–1999' },
+  passivo:    { da: 2000, a: 2799, testo: '2000–2799' },
+  patrimonio: { da: 2800, a: 2999, testo: '2800–2999' },
+  ricavo:     { da: 3000, a: 3999, testo: '3000–3999' },
+  costo:      { da: 4000, a: 6999, testo: '4000–6999' }
+}
+
+// Il numero di un conto è di solito un numero, ma non deve esserlo per forza:
+// se non lo è, l'intervallo non si controlla invece di dire una sciocchezza.
+function fuoriIntervallo(numero, tipo) {
+  var r = INTERVALLI_CONTO[tipo]
+  if (!r) return null
+  // parseInt e' troppo generoso: su «4A00» leggerebbe 4 e direbbe «fuori
+  // intervallo», che e' un avviso costruito su un numero che nessuno ha
+  // scritto. Se non e' tutto cifre, l'intervallo non si controlla.
+  var testo = String(numero || '').trim()
+  if (!/^[0-9]+$/.test(testo)) return null
+  var n = parseInt(testo, 10)
+  if (n >= r.da && n <= r.a) return null
+  return r
+}
+
+// Un conto con lo stesso numero, fra quelli che il programma vede (pacchetto CH
+// + i propri). Torna il conto, o null.
+function contoConNumero(numero, escludiId) {
+  var n = String(numero || '').trim()
+  if (!n) return null
+  return (contiCache || []).filter(function (c) {
+    return String(c.codice_conto) === n && c.id !== escludiId
+  })[0] || null
+}
+
+// Quante volte questo conto è stato usato in una classificazione. Lettura sua,
+// dritta dal database: la cache non ce l'ha, e qui un numero sbagliato per
+// difetto farebbe offrire una cancellazione che cancella dello storico.
+async function usiDelConto(contoId) {
+  const { count, error } = await sb.from('tm_conta_classificazioni')
+    .select('id', { count: 'exact', head: true })
+    .eq('conto_id', contoId)
+  if (error) throw new Error('non riesco a contare i documenti che usano questo conto: ' + (error.message || error))
+  return count || 0
+}
+
+// ── Il modulo «Nuovo conto» ─────────────────────────────────────────────────
+var contoInModifica = null      // id del conto aperto, null = nuovo, undefined = chiuso
+
+function apriNuovoConto() {
+  contoInModifica = null
+  mostraFormConto(true)
+  setVal('nc-numero', '')
+  setVal('nc-nome', '')
+  setVal('nc-tipo', 'costo')
+  riempiSelectGruppi('nc-gruppo', '')
+  riempiSelectIvaConto('')
+  html('nc-avvisi', '')
+  var e = el('nc-numero'); if (e) e.focus()
+}
+
+function apriModificaConto(id) {
+  var c = (contiCache || []).filter(function (x) { return x.id === id })[0]
+  if (!c) return
+  // I conti del pacchetto CH non si modificano: le policy li rifiutano, e il
+  // modulo non si apre nemmeno per non far scrivere a vuoto.
+  if (c.azienda_id == null) {
+    window.alert('Questo conto fa parte del pacchetto svizzero: è condiviso e non si modifica.\n\n' +
+      'Se ti serve diverso, creane uno tuo con «➕ Nuovo conto».')
+    return
+  }
+  contoInModifica = id
+  mostraFormConto(true)
+  setVal('nc-numero', c.codice_conto)
+  setVal('nc-nome', c.descrizione)
+  setVal('nc-tipo', c.tipo)
+  riempiSelectGruppi('nc-gruppo', c.gruppo_codice || '')
+  riempiSelectIvaConto(c.iva_predefinita_id || '')
+  html('nc-avvisi', '')
+}
+
+function chiudiFormConto() { mostraFormConto(false); contoInModifica = undefined }
+
+function mostraFormConto(si) {
+  var f = el('conto-form'); if (f) f.style.display = si ? 'block' : 'none'
+  var b = el('conto-nuovo-btn'); if (b) b.style.display = si ? 'none' : ''
+  if (el('conto-form-titolo')) {
+    el('conto-form-titolo').textContent = contoInModifica ? 'Modifica conto' : 'Nuovo conto'
+  }
+}
+
+// La tendina dell'IVA proposta. Se la colonna non c'è (SQL_FASE68 non lanciato)
+// il campo non compare affatto: meglio niente che un campo che non si salva.
+function riempiSelectIvaConto(selected) {
+  var box = el('nc-iva-box')
+  if (box) box.style.display = contiHaIvaPredefinita ? '' : 'none'
+  var sel = el('nc-iva')
+  if (!sel || !contiHaIvaPredefinita) return
+  var out = '<option value="">— nessuna proposta —</option>'
+  ;(ivaCache || []).forEach(function (i) {
+    out += '<option value="' + esc(i.id) + '"' + (i.id === selected ? ' selected' : '') + '>' +
+           esc(i.codice + ' · ' + i.descrizione) + '</option>'
+  })
+  sel.innerHTML = out
+}
+
+// Gli avvisi si aggiornano mentre si scrive: il doppione e l'intervallo si
+// vedono PRIMA di premere Salva, non dopo.
+function controllaConto() {
+  var numero = getVal('nc-numero')
+  var tipo = getVal('nc-tipo')
+  var avvisi = []
+  var doppio = contoConNumero(numero, contoInModifica || undefined)
+  if (doppio) {
+    avvisi.push('⚠️ Il numero <strong>' + esc(numero) + '</strong> è già usato da «' +
+      esc(doppio.descrizione || '') + '»' +
+      (doppio.azienda_id == null ? ' (pacchetto svizzero)' : ' (un tuo conto)') +
+      '. Puoi salvare lo stesso solo se il numero doppio è voluto: nell\'elenco si vedranno due righe uguali.')
+  }
+  var r = fuoriIntervallo(numero, tipo)
+  if (r) {
+    avvisi.push('⚠️ Il numero <strong>' + esc(numero) + '</strong> è fuori dall\'intervallo dei conti di tipo «' +
+      esc(tipo) + '» (<strong>' + esc(r.testo) + '</strong>). Si può salvare — è un avviso, non un divieto.')
+  }
+  html('nc-avvisi', avvisi.length
+    ? '<div class="nota-cruscotto avviso"><span aria-hidden="true">⚠️</span><span>' +
+      avvisi.join('<br>') + '</span></div>'
+    : '')
+}
+
+async function salvaConto() {
+  var numero = getVal('nc-numero')
+  var nome   = getVal('nc-nome')
+  var tipo   = getVal('nc-tipo')
+  if (!numero) { showCodiciBanner('err', 'Scrivi il numero del conto.'); return }
+  if (!nome)   { showCodiciBanner('err', 'Scrivi il nome del conto.'); return }
+  if (!currentAziendaId) { showCodiciBanner('err', 'Sessione non attiva: rientra e riprova.'); return }
+
+  var campi = {
+    codice_conto: numero,
+    descrizione: nome,
+    tipo: tipo,
+    gruppo_codice: getVal('nc-gruppo') || null
+  }
+  // La colonna può non esserci: in quel caso non si scrive, come il cellulare
+  // della rubrica quando SQL_FASE29 non era stato lanciato.
+  if (contiHaIvaPredefinita) campi.iva_predefinita_id = getVal('nc-iva') || null
+
+  try {
+    if (contoInModifica) {
+      const { error } = await sb.from('tm_conta_piano_conti')
+        .update(campi).eq('id', contoInModifica).select('id')
+      if (error) throw error
+    } else {
+      campi.paese = 'CH'
+      campi.attivo = true
+      // azienda_id è quello che la policy controlla: senza, l'INSERT è rifiutato.
+      campi.azienda_id = currentAziendaId
+      const { error } = await sb.from('tm_conta_piano_conti').insert(campi).select('id')
+      if (error) throw error
+    }
+    chiudiFormConto()
+    await ricaricaCodici()
+    showCodiciBanner('ok', 'Conto ' + numero + ' salvato alle ' + oraAdesso() + '.')
+  } catch (e) {
+    showCodiciBanner('err', 'Conto NON salvato: ' + messaggioErroreCodici(e))
+  }
+}
+
+// Disattivare: il conto sparisce dalle tendine ma resta nello storico. Si
+// cancella solo un conto che non ha mai classificato niente.
+async function disattivaConto(id) {
+  var c = (contiCache || []).filter(function (x) { return x.id === id })[0]
+  if (!c) return
+  if (c.azienda_id == null) {
+    window.alert('Questo conto fa parte del pacchetto svizzero: non si disattiva da qui.')
+    return
+  }
+  var usi
+  try {
+    usi = await usiDelConto(id)
+  } catch (e) {
+    showCodiciBanner('err', 'Non disattivato: ' + (e.message || e) + ' — senza quel numero non so cosa ti sto facendo perdere.')
+    return
+  }
+  var testo = usi > 0
+    ? 'Il conto ' + c.codice_conto + ' «' + (c.descrizione || '') + '» è usato da ' +
+      usi + (usi === 1 ? ' documento' : ' documenti') + '.\n\n' +
+      'Disattivandolo sparisce dalle tendine, ma i documenti che lo usano restano ' +
+      'come sono e continuano a mostrarlo. Non si cancella niente.\n\nDisattivo?'
+    : 'Il conto ' + c.codice_conto + ' «' + (c.descrizione || '') + '» non è usato da nessun documento.\n\n' +
+      'Disattivandolo sparisce dalle tendine. Resta nel database e si può riattivare.\n\nDisattivo?'
+  if (!window.confirm(testo)) return
+  try {
+    const { error } = await sb.from('tm_conta_piano_conti')
+      .update({ attivo: false }).eq('id', id).select('id')
+    if (error) throw error
+    await ricaricaCodici()
+    showCodiciBanner('ok', 'Conto ' + c.codice_conto + ' disattivato: non compare più nelle tendine.')
+  } catch (e) {
+    showCodiciBanner('err', 'Conto NON disattivato: ' + messaggioErroreCodici(e))
+  }
+}
+
+// ── Il modulo «Nuovo gruppo» ────────────────────────────────────────────────
+var gruppoInModifica = null
+
+function apriNuovoGruppo() {
+  gruppoInModifica = null
+  mostraFormGruppo(true)
+  setVal('ng-codice', '')
+  setVal('ng-nome', '')
+  setVal('ng-tipo', 'costo')
+  setVal('ng-esempi', '')
+  html('ng-avvisi', '')
+  var e = el('ng-codice'); if (e) e.focus()
+}
+
+function apriModificaGruppo(codice) {
+  var g = (gruppiCache || []).filter(function (x) { return x.codice === codice })[0]
+  if (!g) return
+  if (g.azienda_id == null) {
+    window.alert('«' + codice + ' · ' + (g.nome || '') + '» è uno dei gruppi di sistema: è condiviso con le altre app e non si modifica.\n\n' +
+      'Se ti serve diverso, creane uno tuo con «➕ Nuovo gruppo».')
+    return
+  }
+  gruppoInModifica = codice
+  mostraFormGruppo(true)
+  setVal('ng-codice', g.codice)
+  setVal('ng-nome', g.nome || '')
+  setVal('ng-tipo', g.tipo || 'costo')
+  setVal('ng-esempi', g.esempi || '')
+  html('ng-avvisi', '')
+}
+
+function chiudiFormGruppo() { mostraFormGruppo(false); gruppoInModifica = undefined }
+
+function mostraFormGruppo(si) {
+  var f = el('gruppo-form'); if (f) f.style.display = si ? 'block' : 'none'
+  var b = el('gruppo-nuovo-btn'); if (b) b.style.display = si ? 'none' : ''
+  if (el('gruppo-form-titolo')) {
+    el('gruppo-form-titolo').textContent = gruppoInModifica ? 'Modifica gruppo' : 'Nuovo gruppo'
+  }
+  // Il codice di un gruppo che esiste non si cambia: è la chiave, e sta scritto
+  // sui conti e nell'export. Per cambiarlo si fa un gruppo nuovo.
+  var c = el('ng-codice'); if (c) c.disabled = !!gruppoInModifica
+}
+
+function controllaGruppo() {
+  var cod = String(getVal('ng-codice') || '').toUpperCase()
+  setVal('ng-codice', cod)
+  var avvisi = []
+  if (cod && cod.length !== 3) {
+    avvisi.push('⚠️ Il codice deve essere di <strong>tre lettere</strong>: è la colonna che l\'export usa per raggruppare.')
+  }
+  var g = (gruppiCache || []).filter(function (x) { return x.codice === cod })[0]
+  if (g && cod !== gruppoInModifica) {
+    avvisi.push('❌ Il codice <strong>' + esc(cod) + '</strong> è già usato da «' + esc(g.nome || '') + '»' +
+      (g.azienda_id == null ? ' (gruppo di sistema)' : '') + '. Scegline un altro.')
+  } else if (cod.length === 3 && !gruppoInModifica) {
+    avvisi.push('ℹ️ Se il codice fosse già usato da un\'altra ditta il programma non può vederlo, ' +
+      'ma il database lo rifiuta al salvataggio e te lo dice.')
+  }
+  html('ng-avvisi', avvisi.length
+    ? '<div class="nota-cruscotto avviso"><span aria-hidden="true">⚠️</span><span>' +
+      avvisi.join('<br>') + '</span></div>'
+    : '')
+}
+
+async function salvaGruppo() {
+  var cod  = String(getVal('ng-codice') || '').toUpperCase().trim()
+  var nome = getVal('ng-nome')
+  if (cod.length !== 3) { showCodiciBanner('err', 'Il codice del gruppo è di tre lettere.'); return }
+  if (!nome) { showCodiciBanner('err', 'Scrivi il nome del gruppo.'); return }
+  if (!currentAziendaId) { showCodiciBanner('err', 'Sessione non attiva: rientra e riprova.'); return }
+
+  var campi = {
+    nome: nome,
+    tipo: getVal('ng-tipo') || 'costo',
+    esempi: getVal('ng-esempi') || null
+  }
+  try {
+    if (gruppoInModifica) {
+      const { error } = await sb.from('tm_conta_gruppi')
+        .update(campi).eq('codice', gruppoInModifica).select('codice')
+      if (error) throw error
+    } else {
+      campi.codice = cod
+      campi.azienda_id = currentAziendaId
+      // In fondo all'elenco: l'ordine dei 9 di sistema non si tocca.
+      campi.ordine = 100 + (gruppiCache || []).filter(function (g) { return g.azienda_id != null }).length
+      campi.attivo = true
+      const { error } = await sb.from('tm_conta_gruppi').insert(campi).select('codice')
+      if (error) throw error
+    }
+    chiudiFormGruppo()
+    await ricaricaCodici()
+    showCodiciBanner('ok', 'Gruppo ' + cod + ' salvato alle ' + oraAdesso() + '.')
+  } catch (e) {
+    showCodiciBanner('err', 'Gruppo NON salvato: ' + messaggioErroreCodici(e))
+  }
+}
+
+// Quanti conti hanno questo gruppo. Si legge dalla cache dei conti: ci sono
+// tutti quelli che il programma vede, ed è esattamente l'insieme che conta.
+function contiDelGruppo(codice) {
+  return (contiCache || []).filter(function (c) { return c.gruppo_codice === codice })
+}
+
+async function disattivaGruppo(codice) {
+  var g = (gruppiCache || []).filter(function (x) { return x.codice === codice })[0]
+  if (!g) return
+  if (g.azienda_id == null) {
+    window.alert('«' + codice + '» è un gruppo di sistema: non si disattiva da qui.')
+    return
+  }
+  var dentro = contiDelGruppo(codice)
+  var testo = dentro.length
+    ? 'Il gruppo ' + codice + ' «' + (g.nome || '') + '» ha ' + dentro.length +
+      (dentro.length === 1 ? ' conto dentro' : ' conti dentro') + ': ' +
+      dentro.slice(0, 5).map(function (c) { return c.codice_conto }).join(', ') +
+      (dentro.length > 5 ? '…' : '') + '.\n\n' +
+      'NON si cancella: si disattiva. Sparisce dalle tendine, i conti restano dove sono ' +
+      'e i totali già calcolati non cambiano.\n\nDisattivo?'
+    : 'Il gruppo ' + codice + ' «' + (g.nome || '') + '» non ha nessun conto dentro.\n\n' +
+      'Disattivandolo sparisce dalle tendine. Resta nel database e si può riattivare.\n\nDisattivo?'
+  if (!window.confirm(testo)) return
+  try {
+    const { error } = await sb.from('tm_conta_gruppi')
+      .update({ attivo: false }).eq('codice', codice).select('codice')
+    if (error) throw error
+    await ricaricaCodici()
+    showCodiciBanner('ok', 'Gruppo ' + codice + ' disattivato.')
+  } catch (e) {
+    showCodiciBanner('err', 'Gruppo NON disattivato: ' + messaggioErroreCodici(e))
+  }
+}
+
+// ── Il contorno ─────────────────────────────────────────────────────────────
+function showCodiciBanner(tipo, msg) { showFattureBanner('codici-banner', tipo, msg) }
+
+// Gli errori del database, tradotti. Quelli che arrivano qui sono tre, e
+// ognuno ha un motivo preciso che vale la pena dire per esteso.
+function messaggioErroreCodici(e) {
+  var m = String(e && (e.message || e) || '')
+  if (/duplicate key|already exists|_pkey/i.test(m)) {
+    return 'quel codice è già usato — anche da un\'altra ditta, che il programma non vede. Scegline un altro. (' + m + ')'
+  }
+  if (/violates row-level security|permission denied/i.test(m)) {
+    return 'il database non permette di scrivere qui. Succede sui conti del pacchetto svizzero ' +
+           'e sui 9 gruppi di sistema, che sono condivisi. (' + m + ')'
+  }
+  if (/violates foreign key/i.test(m)) {
+    return 'c\'è ancora qualcosa che lo usa: non si cancella, si disattiva. (' + m + ')'
+  }
+  return m
+}
+
+async function ricaricaCodici() {
+  await ensureContiIva(true)
+  await loadGruppi(true)
+  html('codici-foglio', foglioCodiciHtml())
+  renderGestioneCodici()
+}
+
+// L'elenco dei conti propri e dei gruppi propri, con i bottoni. Sta sopra il
+// foglio, in un riquadro no-print: il foglio resta quello da stampare.
+function renderGestioneCodici() {
+  var mieiConti = (contiCache || []).filter(function (c) { return c.azienda_id != null })
+  var mieiGruppi = (gruppiCache || []).filter(function (g) { return g.azienda_id != null })
+
+  var conti = mieiConti.length
+    ? mieiConti.map(function (c) {
+        return '<div class="gest-riga">' +
+          '<span class="cod-num">' + esc(String(c.codice_conto)) + '</span>' +
+          '<span>' + esc(c.descrizione || '') + ' <span class="dim">· ' + esc(c.tipo) +
+            (c.gruppo_codice ? ' · ' + esc(c.gruppo_codice) : '') + '</span></span>' +
+          '<span class="gest-azioni">' +
+            '<button type="button" class="icon-btn" onclick="apriModificaConto(\'' + esc(c.id) + '\')">✏️ Modifica</button>' +
+            '<button type="button" class="icon-btn danger" onclick="disattivaConto(\'' + esc(c.id) + '\')">🚫 Disattiva</button>' +
+          '</span></div>'
+      }).join('')
+    : '<div class="dim">Nessun conto tuo: ci sono solo quelli del pacchetto svizzero.</div>'
+
+  var gruppi = mieiGruppi.length
+    ? mieiGruppi.map(function (g) {
+        var dentro = contiDelGruppo(g.codice).length
+        return '<div class="gest-riga">' +
+          '<span class="cod-num">' + esc(g.codice) + '</span>' +
+          '<span>' + esc(g.nome || '') + ' <span class="dim">· ' + esc(g.tipo || 'tipo non indicato') +
+            ' · ' + dentro + (dentro === 1 ? ' conto' : ' conti') + '</span></span>' +
+          '<span class="gest-azioni">' +
+            '<button type="button" class="icon-btn" onclick="apriModificaGruppo(\'' + esc(g.codice) + '\')">✏️ Modifica</button>' +
+            '<button type="button" class="icon-btn danger" onclick="disattivaGruppo(\'' + esc(g.codice) + '\')">🚫 Disattiva</button>' +
+          '</span></div>'
+      }).join('')
+    : '<div class="dim">Nessun gruppo tuo: ci sono solo i 9 di sistema.</div>'
+
+  html('gest-conti', conti)
+  html('gest-gruppi', gruppi)
 }
 
 function stampaElencoCodici() {
@@ -12205,9 +12666,13 @@ function buildGruppoOptionsCls(selected) {
   // Stessa regola del menu principale: un elenco vuoto si dichiara.
   if (!gruppiCache || !gruppiCache.length) return opzioneGruppiMancanti()
   var out = '<option value=""' + (!selected ? ' selected' : '') + '>— Non assegnato —</option>'
+  // 68·3 — come nell'altro menu: i disattivati non si scelgono piu', ma quello
+  // gia' scritto sul documento resta, o si cancellerebbe da solo salvando.
   ;(gruppiCache || []).forEach(function (g) {
+    if (g.attivo === false && g.codice !== selected) return
     out += '<option value="' + esc(g.codice) + '"' + (g.codice === selected ? ' selected' : '') + '>' +
-           esc(g.codice + ' · ' + g.nome) + '</option>'
+           esc(g.codice + ' · ' + g.nome) +
+           (g.attivo === false ? ' (disattivato)' : '') + '</option>'
   })
   return out
 }
@@ -19091,7 +19556,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '68'
+var VERSIONE = '69'
 
 function controllaVersionePagina() {
   try {
