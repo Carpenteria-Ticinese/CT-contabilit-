@@ -19556,7 +19556,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '69'
+var VERSIONE = '70'
 
 function controllaVersionePagina() {
   try {
@@ -21090,11 +21090,11 @@ function renderPianoPrint(c, cantiere) {
           ? rigaRicevuta('Fatturato, al netto delle note di credito', fmtNumIt(t.fatturato) + ' CHF')
           : '') +
         rigaRicevuta('Totale pagato', fmtNumIt(inc.incassato) + ' CHF') +
-        // 62h — «resta da pagare» tiene conto dello storno: il contratto
-        // aggiornato meno quello che e' stato pagato e meno quello che e' stato
-        // stornato, che la cliente non deve piu'.
+        // 70·1 — come sul riassunto: lo storno NON si sottrae qui. E' gia'
+        // dentro il contratto aggiornato, e toglierlo due volte mostrava alla
+        // cliente un debito residuo piu' basso di quello vero.
         rigaRicevuta('Resta da pagare',
-                     fmtNumIt(round2(t.aggiornato - inc.incassato - t.stornato)) + ' CHF', true) +
+                     fmtNumIt(round2(t.aggiornato - inc.incassato)) + ' CHF', true) +
       '</div>' +
       (inc.leggibile ? '' :
         '<div class="inv-note">Nota: alcuni pagamenti non erano leggibili quando il foglio è stato stampato.</div>') +
@@ -21370,7 +21370,12 @@ function renderCartellaPrint(c, cantiere) {
                    fmtNumIt(t.fatturato) + ' CHF') +
       rigaRicevuta('Incassato', fmtNumIt(inc.incassato) + ' CHF') +
       rigaRicevuta('Resta da fatturare', fmtNumIt(round2(t.aggiornato - t.fatturato)) + ' CHF') +
-      rigaRicevuta('Resta da incassare', fmtNumIt(round2(t.aggiornato - t.stornato - inc.incassato)) + ' CHF', true) +
+      // 70·1 — NIENTE storno qui. La nota di credito e' gia' dentro il
+      // contratto aggiornato (la variante che l'ha generata, e lo sconto gia'
+      // applicato al firmato): toglierla una seconda volta faceva sparire 294
+      // franchi che la cliente deve ancora. Resta da incassare = contratto
+      // aggiornato meno quello che e' arrivato, e basta.
+      rigaRicevuta('Resta da incassare', fmtNumIt(round2(t.aggiornato - inc.incassato)) + ' CHF', true) +
     '</div>' +
     (t.stornoLeggibile ? '' :
       '<div class="inv-note">⚠️ Le note di credito non sono state lette: «fatturato netto» potrebbe essere al lordo.</div>') +
