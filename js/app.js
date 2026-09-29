@@ -11211,11 +11211,12 @@ function proponiStatoDaData() {
 // nel formato con il mese; il cliente e' la ragione sociale se e' un'azienda,
 // altrimenti cognome e nome, in maiuscolo. Per una nota di credito il numero
 // porta gia' il suo «NC-», per una bozza si scrive «bozza».
+// 67·7 — «2026-09-009 Marotta Benedetta.pdf»: numero, spazio, nome. Prima
+// c'era un trattino basso e il nome in maiuscolo, e nella cartella le fatture
+// non si ordinavano.
 function nomeFilePdfFattura(f) {
   if (!f) return 'Fattura'
-  var num = f.numero || 'bozza'
-  var chi = nomeClientePerFile(f.cliente_nome)
-  return sanificaNomeFile(chi ? (num + '_' + chi) : num)
+  return nomeFileDocumento(f.numero || 'bozza', f.cliente_nome, 'Fattura')
 }
 
 // Il cliente come va nel nome del file: maiuscolo, accenti sciolti nella
@@ -13980,8 +13981,11 @@ async function initCantieriPage() {
     contrattoInModifica = false
     accontoDaCollegare = null
     riempiTendinaCantieri()
-    if (cantiereApertoId) apriCantiere(cantiereApertoId)
-    else tornaElencoCantieri()
+    // 67·2 — entrando si vede sempre il confronto fra cantieri. La scheda si
+    // apre solo cliccando una riga: riaprire l'ultimo visitato faceva credere
+    // che quello fosse tutto, e l'elenco non lo si trovava piu'.
+    // tornaElencoCantieri() azzera anche cantiereApertoId.
+    tornaElencoCantieri()
   } catch (e) {
     html('cantieri-tabella', '')
     showCantieriBanner('err', 'Cantieri non caricati: ' + (e.message || e))
@@ -16124,8 +16128,8 @@ async function stampaRicevuta(idPagamento) {
   renderRicevutaPrint(d)
   document.body.classList.add('stampa-ricevuta')
   var titoloPrima = document.title
-  document.title = sanificaNomeFile('Ricevuta_' + (d.fattura.numero || '') + '_' +
-                                    nomeClientePerFile(d.fattura.cliente_nome))
+  document.title = nomeFileDocumento('Ricevuta ' + (d.fattura.numero || ''),
+                                     d.fattura.cliente_nome, 'Ricevuta')
   var pulisci = function () {
     document.body.classList.remove('stampa-ricevuta')
     document.title = titoloPrima
@@ -16483,8 +16487,8 @@ async function preparaSollecito(idFattura) {
 
   document.body.classList.add('stampa-sollecito')
   var titoloPrima = document.title
-  document.title = sanificaNomeFile('Sollecito' + d.livello + '_' + (f.numero || '') + '_' +
-                                    nomeClientePerFile(f.cliente_nome))
+  document.title = nomeFileDocumento('Sollecito ' + d.livello + ' ' + (f.numero || ''),
+                                     f.cliente_nome, 'Sollecito')
   var pulisci = function () {
     document.body.classList.remove('stampa-sollecito')
     document.title = titoloPrima
@@ -18957,7 +18961,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '65'
+var VERSIONE = '67'
 
 function controllaVersionePagina() {
   try {
@@ -19675,11 +19679,18 @@ function totaliContratto(c) {
   var stornato = cacheOk('noteCredito') ? stornoContratto(c) : 0
   var fatturato = round2(fatturatoLordo - stornato)
   var aggiornato = base + varianti
+  // 67·5 — le rate al netto degli storni: e' con questa che si confronta il
+  // contratto aggiornato, non con la somma lorda.
+  var rateNette = round2(rate - stornato)
   return { base: base, varianti: varianti, aggiornato: aggiornato,
-           rate: rate, fatturato: fatturato, fatturatoLordo: fatturatoLordo,
+           rate: rate, rateNette: rateNette,
+           fatturato: fatturato, fatturatoLordo: fatturatoLordo,
            stornato: stornato, stornoLeggibile: cacheOk('noteCredito'),
            daFatturare: daFatturare,
-           resta: round2(aggiornato - fatturato), differenzaRate: rate - aggiornato }
+           // 67·4 — la parte di contratto per cui non c'e' ancora una rata.
+           nonCoperto: round2(aggiornato - rateNette),
+           resta: round2(aggiornato - fatturato),
+           differenzaRate: round2(rateNette - aggiornato) }
 }
 
 function nomeCantiereContratto(c) {
@@ -19811,11 +19822,20 @@ function bloccoContrattoHtml(cantiereId) {
     '</div>' +
     // 62d — il coefficiente di sconto, subito sotto i totali: e' li' che serve.
     bloccoCoefficienteHtml(c) +
-    '<div class="form-actions" style="margin:0 0 14px">' +
+    // 67·6 — se ribasso e sconto non riproducono il firmato, lo si dice.
+    avvisoScontiHtml(c) +
+    // 62j — la stampa che si usa davvero non è un bottone come gli altri: sta
+    // per prima, in evidenza, e si chiama col nome della cosa che produce.
+    // 62k — sono DUE fogli: quello per la cartella ha il coefficiente e i
+    // conti di casa, quello per il cliente no.
+    '<div class="form-actions stampa-cartella-riga" style="margin:0 0 14px">' +
+      '<button type="button" class="btn-primary btn-stampa-cartella"' +
+        ' onclick="stampaRiassuntoCartella(\'' + esc(cantiereId) + '\')">🖨 Stampa riassunto per la cartella</button>' +
+      '<button type="button" class="btn-secondary" onclick="stampaPianoPagamenti(\'' + esc(cantiereId) + '\')">🖨 Piano pagamenti per il cliente</button>' +
       '<button type="button" class="btn-secondary" onclick="apriModificaContratto()">✏️ Modifica contratto</button>' +
-      // 62f — il foglio per la cliente: contratto, varianti, rate, pagato.
-      '<button type="button" class="btn-secondary" onclick="stampaPianoPagamenti(\'' + esc(cantiereId) + '\')">🖨 Stampa piano pagamenti</button>' +
-    '</div>'
+    '</div>' +
+    '<div class="cant-sub" style="margin:-8px 0 12px">Il <strong>riassunto per la cartella</strong> ha tutto, coefficiente compreso: resta in ufficio. ' +
+      'Il <strong>piano pagamenti</strong> è il foglio da dare al cliente.</div>'
 
   return '<div class="card cant-blocco">' + titolo + testata +
     variantiHtml(c) + accontiHtml(c, t) +
@@ -19823,25 +19843,56 @@ function bloccoContrattoHtml(cantiereId) {
 }
 
 // Il modulo del contratto: nuovo (c = null) o in modifica.
+// 62i — la percentuale da mettere nel campo quando si riapre il contratto:
+// quella COMPLESSIVA, ricavata dai due numeri salvati. Vuota se non si puo'
+// calcolare: un campo vuoto e' onesto, uno zero sarebbe una dichiarazione.
+function valorePctContratto(c) {
+  // 67·6 — se lo sconto e' stato salvato si rivede quello, com'e' stato
+  // scritto. Solo sui contratti vecchi, che le due colonne non ce l'hanno, si
+  // ripiega sulla percentuale complessiva ricavata dai due totali.
+  if (c && c.sconto_pct != null) return String(c.sconto_pct)
+  if (c && c.ribasso_pct != null) return ''
+  var pct = scontoComplessivoPct(c.totale_listino, c.importo_contratto)
+  return (pct == null || Math.abs(pct) < 0.005) ? '' : String(pct)
+}
+
 function formContrattoHtml(c, cantiereId) {
   var nuovo = !c
   return (nuovo
       ? '<div class="form-hint" style="margin-top:0">Nessun contratto registrato per questo cantiere. ' +
         'Scrivi l\'importo firmato: le varianti e le rate si aggiungono dopo, una per una.</div>'
       : '') +
+    // 62i — quattro campi che si inseguono: listino → (ribasso %) → (sconto %)
+    // → firmato, e al contrario. Si salvano solo listino e firmato.
     '<div class="form-row" style="align-items:flex-end">' +
-      '<div class="form-group" style="flex:1; margin-bottom:0">' +
-        '<label for="acc-c-importo" class="form-label">Importo contratto ' + IVA_ESCL + '</label>' +
-        '<input type="number" id="acc-c-importo" class="form-input num" step="0.01" min="0"' +
-          ' value="' + (c && c.importo_contratto != null ? esc(String(c.importo_contratto)) : '') + '" onfocus="this.select()"></div>' +
-      // 62d — il totale di listino dell'offerta: serve solo a ricavare il
-      // coefficiente di sconto. Facoltativo: senza, non si mostra niente.
       '<div class="form-group" style="flex:1; margin-bottom:0">' +
         '<label for="acc-c-listino" class="form-label">Totale listino offerta ' + IVA_ESCL +
           ' <span class="dim">(facoltativo)</span></label>' +
         '<input type="number" id="acc-c-listino" class="form-input num" step="0.01" min="0"' +
           ' placeholder="somma dei prezzi di listino"' +
-          ' value="' + (c && c.totale_listino != null ? esc(String(c.totale_listino)) : '') + '" onfocus="this.select()"></div>' +
+          ' value="' + (c && c.totale_listino != null ? esc(String(c.totale_listino)) : '') + '"' +
+          ' onfocus="this.select()" oninput="onListinoContrattoInput()"></div>' +
+      '<div class="form-group" style="flex:0 0 110px; margin-bottom:0">' +
+        '<label for="acc-c-ribasso" class="form-label">Ribasso %</label>' +
+        '<input type="number" id="acc-c-ribasso" class="form-input num" step="0.01" min="0" max="100"' +
+          ' placeholder="—" onfocus="this.select()" oninput="onScontiContrattoInput()"' +
+          // 67·6 — riaperto, si rivede quello che era stato scritto.
+          ' value="' + (c && c.ribasso_pct != null ? esc(String(c.ribasso_pct)) : '') + '"></div>' +
+      '<div class="form-group" style="flex:0 0 110px; margin-bottom:0">' +
+        '<label for="acc-c-sconto" class="form-label">Sconto %</label>' +
+        '<input type="number" id="acc-c-sconto" class="form-input num" step="0.01" min="0" max="100"' +
+          ' placeholder="—" onfocus="this.select()" oninput="onScontiContrattoInput()"' +
+          ' value="' + (c ? esc(valorePctContratto(c)) : '') + '"></div>' +   // 67·6: lo sconto salvato, se c'e'
+      '<div class="form-group" style="flex:1; margin-bottom:0">' +
+        '<label for="acc-c-importo" class="form-label">Totale firmato ' + IVA_ESCL + '</label>' +
+        '<input type="number" id="acc-c-importo" class="form-input num forte" step="0.01" min="0"' +
+          ' value="' + (c && c.importo_contratto != null ? esc(String(c.importo_contratto)) : '') + '"' +
+          ' onfocus="this.select()" oninput="onFirmatoContrattoInput()"></div>' +
+    '</div>' +
+    '<div class="form-hint conto-sconto" id="acc-c-nota-sconto">' +
+      'Scrivi il <strong>totale di listino</strong> e una percentuale: il totale firmato si calcola da sé. ' +
+      'Oppure scrivi il firmato a mano e la percentuale esce da sola.</div>' +
+    '<div class="form-row" style="align-items:flex-end; margin-top:10px">' +
       '<div class="form-group" style="flex:0 0 160px; margin-bottom:0">' +
         '<label for="acc-c-data" class="form-label">Data contratto</label>' +
         '<input type="date" id="acc-c-data" class="form-input" value="' + esc((c && c.data_contratto) || '') + '"></div>' +
@@ -19868,7 +19919,10 @@ function variantiHtml(c) {
         ' onclick="eliminaVariante(\'' + esc(v.id) + '\')">✕</button></td>' +
     '</tr>'
   }).join('')
-  return '<div class="card-title" style="margin-top:6px">➕➖ Varianti <span class="dim">(' + IVA_ESCL + ')</span></div>' +
+  // 62j — il titolo dice quante sono e quanto pesano, senza doverlo aprire.
+  var sommaVar = c.varianti.reduce(function (t, v) { return t + (safeNum(v.importo) || 0) }, 0)
+  return '<div class="card-title" style="margin-top:6px">➕➖ Varianti ' +
+      titoloConto(c.varianti.length, sommaVar) + ' <span class="dim">(' + IVA_ESCL + ')</span></div>' +
     '<div class="table-wrap"><table class="acc-tabella">' +
       '<thead><tr><th>Data</th><th>Descrizione</th><th class="num">Importo ±</th><th></th></tr></thead>' +
       '<tbody>' + (righe || '<tr><td colspan="4" class="dim">Nessuna variante.</td></tr>') +
@@ -19888,15 +19942,32 @@ function accontiHtml(c, t) {
   var righe = c.acconti.map(function (a) { return rigaAccontoHtml(c, a) }).join('')
   var prossimo = c.acconti.reduce(function (m, a) { return Math.max(m, a.ordine || 0) }, 0) + 1
   var avviso = ''
+  // 67·5 — il confronto e' fra il contratto aggiornato e le rate AL NETTO delle
+  // note di credito. Al lordo segnalava una differenza che non esiste: con
+  // 4'482 di rate, 294 stornati e 4'752 di contratto diceva −270, e quei 270
+  // non erano da nessuna parte.
   if (Math.abs(t.differenzaRate) > 0.005) {
     avviso = '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
       '<span aria-hidden="true">⚠️</span>' +
-      '<span>Le rate sommano <strong>' + esc(fmtNumIt(t.rate)) + ' CHF</strong>, il contratto aggiornato è <strong>' +
+      '<span>Le rate sommano <strong>' + esc(fmtNumIt(t.rate)) + ' CHF</strong>' +
+      (t.stornato > 0.005
+        ? ' lordi (<strong>' + esc(fmtNumIt(t.rateNette)) + ' CHF</strong> al netto di ' +
+          esc(fmtNumIt(t.stornato)) + ' CHF stornati)'
+        : '') +
+      ', il contratto aggiornato è <strong>' +
       esc(fmtNumIt(t.aggiornato)) + ' CHF</strong>: differenza <strong>' +
       (t.differenzaRate > 0 ? '+ ' : '− ') + esc(fmtNumIt(Math.abs(t.differenzaRate))) + ' CHF</strong>. ' +
       'Le rate già fatturate non cambiano: sistema quelle ancora da fatturare.</span></div>'
   }
-  return '<div class="card-title" style="margin-top:16px">🧾 Rate d\'acconto <span class="dim">(' + IVA_ESCL + ')</span></div>' +
+  // 62j — quante rate, e quante sono già fatturate.
+  var vive = c.acconti.filter(function (x) { return !accontoAnnullato(x) })
+  var fatte = vive.filter(function (x) { return x.stato === 'fatturata' }).length
+  var conto = vive.length
+    ? '<span class="titolo-conto">(' + vive.length + (vive.length === 1 ? ' rata' : ' rate') +
+      ' · ' + fatte + ' fatturat' + (fatte === 1 ? 'a' : 'e') + ')</span>'
+    : ''
+  return '<div class="card-title" style="margin-top:16px">🧾 Rate d\'acconto ' +
+      conto + ' <span class="dim">(' + IVA_ESCL + ')</span></div>' +
     '<div class="table-wrap"><table class="acc-tabella">' +
       '<thead><tr><th>N.</th><th>Descrizione</th><th class="num">Importo</th><th>Stato</th><th></th></tr></thead>' +
       '<tbody>' + (righe || '<tr><td colspan="5" class="dim">Nessuna rata scritta.</td></tr>') +
@@ -19907,6 +19978,14 @@ function accontiHtml(c, t) {
         '<td></td>' +
         '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiAcconto(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
       '</tr></tbody></table></div>' +
+    // 62j — le note di credito hanno un blocco loro, col loro nome, qui: fra le
+    // rate e i totali. Prima stavano scritte sotto «Varianti» e nel dettaglio
+    // di «Già fatturato», e per trovarle bisognava sapere già dov'erano.
+    bloccoNoteCreditoHtml(c) +
+    // 67·3 — una fattura collegata alla rata ma senza cantiere non entra in
+    // «Entrate»: la stessa pagina direbbe due cifre diverse per lo stesso
+    // lavoro. Si dice quale, e si assegna con un bottone.
+    avvisoCantiereMancanteHtml(c) +
     '<div class="pag-sommario" style="margin-top:10px">' +
       rigaPag('Rate scritte', t.rate) +
       rigaPag('Già fatturato', t.fatturato) +
@@ -19915,7 +19994,19 @@ function accontiHtml(c, t) {
       // 62e — quanto e' arrivato davvero, e quanto e' fatturato ma fermo.
       rigaPag('Già incassato', inc.incassato) +
       rigaPag('Fatturato non ancora incassato', inc.daIncassare) +
-      rigaPag('Ancora da fatturare (rate scritte)', t.daFatturare) +
+      // 67·4 — due cose diverse che prima erano una sola riga: le rate scritte
+      // che aspettano una fattura, e la parte di contratto per cui una rata
+      // non e' ancora stata scritta. «Ancora da fatturare» diceva 0 mentre
+      // c'erano 564 CHF da fatturare, perche' contava solo le prime.
+      rigaPag('Rate scritte non ancora fatturate', t.daFatturare) +
+      rigaPag('Non ancora coperto da una rata', t.nonCoperto) +
+      (Math.abs(t.nonCoperto) > 0.005
+        ? '<div class="storno-dettaglio">' +
+            (t.nonCoperto > 0
+              ? 'Scrivi una rata per questo importo.'
+              : 'Le rate superano il contratto aggiornato: correggi quelle ancora da fatturare.') +
+          '</div>'
+        : '') +
       rigaPag('Resta del contratto aggiornato', t.resta, true) +
     '</div>' +
     // Le rate sono IVA esclusa, l'incasso sta sul totale della fattura: oggi
@@ -20430,7 +20521,8 @@ async function stampaPianoPagamenti(cantiereId) {
   renderPianoPrint(c, cantiere)
   document.body.classList.add('stampa-piano')
   var titoloPrima = document.title
-  document.title = sanificaNomeFile('Piano_pagamenti_' + (cantiere ? (cantiere.nome || '') : ''))
+  document.title = nomeFileDocumento('Piano pagamenti',
+                                     cantiere ? (cantiere.nome || '') : '', 'Piano pagamenti')
   var pulisci = function () {
     document.body.classList.remove('stampa-piano')
     document.title = titoloPrima
@@ -20440,6 +20532,422 @@ async function stampaPianoPagamenti(cantiereId) {
   try { await attendiImmagini('piano-print', 2000) } catch (_) {}
   window.print()
   setTimeout(pulisci, 60000)
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 62i — LO SCONTO IN PERCENTUALE NEL CONTRATTO
+//
+// Prima il totale firmato si scriveva a mano: 5'150 di listino, il 4 % lo si
+// calcolava con la calcolatrice e si scriveva 4'944. Adesso lo fa il
+// programma, e i campi si inseguono come giorni e scadenza sulla fattura.
+//
+// DUE PERCENTUALI, IN ORDINE, perche' il modello d'offerta ne ha due: prima
+// il ribasso sul totale, poi lo sconto su quello che resta. NON si sommano
+// (4 % + 2 % non fa 6 %): si applicano una dopo l'altra.
+//
+//     firmato = listino × (1 − ribasso/100) × (1 − sconto/100)
+//
+// SI SALVANO SOLO DUE NUMERI: listino e firmato. Le percentuali sono un
+// rapporto fra quei due, come il coefficiente, e un numero derivato che si
+// salva e' un numero che un giorno mentira'.
+//
+// ⚠️ CONSEGUENZA DA SAPERE: due percentuali in sequenza non si possono
+// ricavare da un rapporto solo — 4 % + 2 % e 5,92 % secco danno lo stesso
+// firmato. Riaprendo il contratto si rivede quindi UNA percentuale, quella
+// complessiva, e il campo del ribasso resta vuoto. Il conto non cambia di un
+// centesimo; si perde solo il racconto di come ci si e' arrivati. Se quel
+// racconto serve, si scrive in «Rif. offerta», oppure servono due colonne
+// nuove: e' una decisione, non una dimenticanza.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Applica in sequenza le due percentuali. Una percentuale vuota o zero non
+// tocca niente. Torna null se il listino non c'e': senza base non c'e' sconto.
+function firmatoDaSconti(listino, ribassoPct, scontoPct) {
+  var L = safeNum(listino)
+  if (L == null || L <= 0) return null
+  var r = safeNum(ribassoPct) || 0
+  var s = safeNum(scontoPct) || 0
+  return round2(L * (1 - r / 100) * (1 - s / 100))
+}
+
+// La percentuale COMPLESSIVA che porta dal listino al firmato.
+// null se non si puo' dire (manca il listino, o e' zero).
+function scontoComplessivoPct(listino, firmato) {
+  var L = safeNum(listino), F = safeNum(firmato)
+  if (L == null || L <= 0 || F == null) return null
+  return round2((1 - F / L) * 100)
+}
+
+// I tre campi si inseguono. Da listino + percentuali → il firmato.
+function onScontiContrattoInput() {
+  var f = firmatoDaSconti(getVal('acc-c-listino'), getVal('acc-c-ribasso'), getVal('acc-c-sconto'))
+  if (f != null) setVal('acc-c-importo', String(f))
+  aggiornaNotaScontoContratto()
+}
+
+// Dal firmato scritto a mano → la percentuale complessiva. Il ribasso si
+// svuota: da un rapporto solo non si ricavano due percentuali, e lasciarne
+// uno vecchio scritto vorrebbe dire mostrare un conto che non torna.
+function onFirmatoContrattoInput() {
+  var pct = scontoComplessivoPct(getVal('acc-c-listino'), getVal('acc-c-importo'))
+  if (pct != null) {
+    setVal('acc-c-ribasso', '')
+    setVal('acc-c-sconto', String(pct))
+  }
+  aggiornaNotaScontoContratto()
+}
+
+// Cambiando il listino: se ci sono delle percentuali si rifà il firmato,
+// altrimenti si rilegge la percentuale dal firmato che c'è già.
+function onListinoContrattoInput() {
+  var r = safeNum(getVal('acc-c-ribasso')), s = safeNum(getVal('acc-c-sconto'))
+  if ((r != null && r !== 0) || (s != null && s !== 0)) onScontiContrattoInput()
+  else onFirmatoContrattoInput()
+}
+
+// La riga sotto i campi: il conto per esteso, cosi' si vede cosa sta
+// succedendo mentre si scrive.
+function aggiornaNotaScontoContratto() {
+  var box = el('acc-c-nota-sconto')
+  if (!box) return
+  var L = safeNum(getVal('acc-c-listino'))
+  var F = safeNum(getVal('acc-c-importo'))
+  if (L == null || L <= 0 || F == null) {
+    box.innerHTML = 'Scrivi il <strong>totale di listino</strong> e una percentuale: il totale firmato si calcola da sé. ' +
+      'Oppure scrivi il firmato a mano e la percentuale esce da sola.'
+    return
+  }
+  var r = safeNum(getVal('acc-c-ribasso')) || 0
+  var s = safeNum(getVal('acc-c-sconto')) || 0
+  var pct = scontoComplessivoPct(L, F)
+  var passi = esc(fmtNumIt(L)) + ' CHF'
+  if (r) passi += ' − ' + esc(fmtNumIt(r)) + ' % = ' + esc(fmtNumIt(round2(L * (1 - r / 100)))) + ' CHF'
+  if (s) passi += ' − ' + esc(fmtNumIt(s)) + ' % = ' + esc(fmtNumIt(F)) + ' CHF'
+  if (!r && !s) passi += ' → ' + esc(fmtNumIt(F)) + ' CHF'
+  box.innerHTML = passi +
+    (pct != null ? ' &nbsp;·&nbsp; sconto complessivo <strong>' + esc(fmtNumIt(pct)) + ' %</strong>' +
+      ' &nbsp;·&nbsp; coefficiente <strong>' + esc(fmtCoefficiente(F / L)) + '</strong>' : '') +
+    ((r && s) ? '<br><span class="dim">Le due percentuali si applicano in ordine, non si sommano. ' +
+      'Salvando restano il listino e il firmato: riaprendo vedrai una percentuale sola, quella complessiva.</span>' : '')
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 62j — LE COSE IMPORTANTI SI DEVONO VEDERE
+//
+// Lo storno da 294 stava scritto in due posti, e nessuno dei due si chiamava
+// «nota di credito»: sotto «Varianti» (che è un'altra cosa) e nel dettaglio
+// sotto «Già fatturato». Cercarlo voleva dire sapere già dov'era.
+//
+// Adesso ha un blocco suo, col suo nome, fra le rate e i totali. E i titoli
+// dicono cosa c'è dentro prima di aprirli.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Il blocco «↩️ Note di credito emesse». Vuoto se non ce ne sono: un blocco
+// che dice «nessuna» è una riga in più da leggere per sapere che non c'è
+// niente.
+function bloccoNoteCreditoHtml(c) {
+  if (!cacheOk('noteCredito')) {
+    return '<div class="card-title" style="margin-top:16px">↩️ Note di credito</div>' +
+      '<div class="cru-vuoto">⚠️ Non lette: se ce ne sono, qui non si vedono e «già fatturato» è al lordo.</div>'
+  }
+  var lista = storniContratto(c)
+  if (!lista.length) return ''
+  var righe = lista.map(function (x) {
+    return '<tr>' +
+      '<td class="cod">' + esc(x.nota) + '</td>' +
+      '<td class="dim" style="white-space:nowrap">' + esc(x.dataNota ? fmtDate(x.dataNota) : '—') + '</td>' +
+      '<td>storna la fattura n. <strong>' + esc(x.fattura) + '</strong> <span class="dim">(rata ' + esc(String(x.rata)) + ')</span></td>' +
+      '<td class="num storno-imp">− ' + esc(fmtNumIt(x.importo)) + '</td>' +
+    '</tr>'
+  }).join('')
+  return '<div class="card-title" style="margin-top:16px">↩️ Note di credito emesse ' +
+      titoloConto(lista.length, -stornoContratto(c)) + ' <span class="dim">(' + IVA_ESCL + ')</span></div>' +
+    '<div class="table-wrap"><table class="acc-tabella">' +
+      '<thead><tr><th>Numero</th><th>Data</th><th>Storna</th><th class="num">Importo</th></tr></thead>' +
+      '<tbody>' + righe + '</tbody></table></div>' +
+    '<div class="cant-sub">Una nota di credito abbassa il <strong>già fatturato</strong>: è il motivo per cui ' +
+      'quel totale non è la somma delle rate.</div>'
+}
+
+// «(1: −294,00 CHF)» accanto a un titolo. Vuoto se non c'è niente dentro:
+// un «(0)» è rumore.
+function titoloConto(quanti, somma) {
+  if (!quanti) return ''
+  var segno = (somma < 0) ? '−' : '+'
+  return '<span class="titolo-conto">(' + quanti + ': ' + segno + ' ' +
+    esc(fmtNumIt(Math.abs(somma))) + ' CHF)</span>'
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 62k — IL FOGLIO PER LA CARTELLA
+//
+// DUE FOGLI DIVERSI, e non è una complicazione: sono due documenti con due
+// destinatari. Quello per il cliente non può mostrare il coefficiente di
+// sconto — è il conto di casa — e quello per la cartella senza coefficiente
+// non sostituirebbe l'Excel scritto a mano. Due bottoni, due fogli.
+//
+//   🖨 Stampa riassunto per la cartella → questo, tutto, resta in ufficio
+//   🖨 Piano pagamenti per il cliente   → quello della 62f, senza i conti di casa
+// ══════════════════════════════════════════════════════════════════════════════
+
+function renderCartellaPrint(c, cantiere) {
+  var a = aziendaInfo || {}
+  var t = totaliContratto(c)
+  var inc = totaliIncassoContratto(c)
+  var coef = coefficienteContratto(c)
+  var pct = scontoPercento(coef)
+  var azNome = a.nome || aziendaNome()
+  var committente = String((cantiere && cantiere.committente) || '').trim()
+
+  function sez(titolo) { return '<div class="ro-section">' + esc(titolo) + '</div>' }
+
+  // ── Il contratto, col coefficiente: questo foglio non esce dall'ufficio ──
+  var contratto =
+    '<div class="ric-conto piano-conto">' +
+      (c.totale_listino != null
+        ? rigaRicevuta('Totale di listino dell\'offerta', fmtNumIt(c.totale_listino) + ' CHF') : '') +
+      (pct != null ? rigaRicevuta('Sconto applicato', fmtNumIt(pct) + ' %') : '') +
+      rigaRicevuta('Contratto firmato' + (c.data_contratto ? ' il ' + fmtDate(c.data_contratto) : ''),
+                   fmtNumIt(t.base) + ' CHF') +
+      ((c.varianti || []).length
+        ? rigaRicevuta('Varianti (' + c.varianti.length + ')',
+                       (t.varianti >= 0 ? '+ ' : '− ') + fmtNumIt(Math.abs(t.varianti)) + ' CHF') : '') +
+      rigaRicevuta('Contratto aggiornato', fmtNumIt(t.aggiornato) + ' CHF', true) +
+    '</div>'
+
+  var varianti = (c.varianti || []).length
+    ? sez('Varianti') + '<table class="inv-table"><thead><tr><th style="width:90px">Data</th><th>Descrizione</th>' +
+      '<th class="num" style="width:120px">Importo</th></tr></thead><tbody>' +
+      c.varianti.map(function (v) {
+        var imp = safeNum(v.importo) || 0
+        return '<tr><td>' + esc(fmtDate(v.data)) + '</td><td>' + esc(v.descrizione || '') + '</td>' +
+          '<td class="num">' + (imp >= 0 ? '+ ' : '− ') + esc(fmtNumIt(Math.abs(imp))) + '</td></tr>'
+      }).join('') + '</tbody></table>'
+    : ''
+
+  var storni = storniContratto(c)
+  var noteHtml = storni.length
+    ? sez('Note di credito emesse') +
+      '<table class="inv-table"><thead><tr><th style="width:150px">Numero</th><th style="width:90px">Data</th>' +
+      '<th>Storna la fattura</th><th class="num" style="width:120px">Importo</th></tr></thead><tbody>' +
+      storni.map(function (x) {
+        return '<tr><td>' + esc(x.nota) + '</td><td>' + esc(x.dataNota ? fmtDate(x.dataNota) : '—') + '</td>' +
+          '<td>n. ' + esc(x.fattura) + '</td><td class="num">− ' + esc(fmtNumIt(x.importo)) + '</td></tr>'
+      }).join('') + '</tbody></table>'
+    : ''
+
+  // ── Le rate, con fattura e incasso ──────────────────────────────────────
+  var rate = (c.acconti || []).filter(function (x) { return !accontoAnnullato(x) })
+  var rateHtml = rate.length
+    ? '<table class="inv-table"><thead><tr><th style="width:36px">N.</th><th>Descrizione</th>' +
+      '<th class="num" style="width:110px">Importo</th><th style="width:120px">Fattura</th>' +
+      '<th style="width:190px">Incasso</th></tr></thead><tbody>' +
+      rate.map(function (x) {
+        var f = x.fattura
+        var numero = (x.stato === 'fatturata' && f) ? ('n. ' + (f.numero || '—')) : '—'
+        var incasso = 'da fatturare'
+        if (x.stato === 'fatturata' && f) {
+          var i = incassoDiRata(x)
+          if (!i) incasso = 'incasso non letto'
+          else if (i.stato === 'pagato') {
+            var p = ultimoPagamentoDi('tm_conta_fatture', f.id)
+            incasso = p ? ('incassata il ' + fmtDate(p.data)) : 'incassata'
+          } else if (i.stato === 'parziale') {
+            incasso = 'incassata in parte, resta ' + fmtNumIt(i.residuo) + ' CHF'
+          } else {
+            incasso = 'NON incassata'
+          }
+        } else if (f) {
+          incasso = 'bozza collegata'
+        }
+        return '<tr><td>' + esc(String(x.ordine)) + '</td><td>' + esc(x.descrizione || '') + '</td>' +
+          '<td class="num">' + esc(fmtNumIt(x.importo)) + '</td>' +
+          '<td>' + esc(numero) + '</td><td>' + esc(incasso) + '</td></tr>'
+      }).join('') + '</tbody></table>'
+    : '<div class="inv-note">Nessuna rata scritta.</div>'
+
+  var chiusura =
+    '<div class="ric-conto piano-conto">' +
+      rigaRicevuta('Contratto aggiornato', fmtNumIt(t.aggiornato) + ' CHF') +
+      rigaRicevuta('Fatturato netto' + (t.stornato > 0.005 ? ' (note di credito detratte)' : ''),
+                   fmtNumIt(t.fatturato) + ' CHF') +
+      rigaRicevuta('Incassato', fmtNumIt(inc.incassato) + ' CHF') +
+      rigaRicevuta('Resta da fatturare', fmtNumIt(round2(t.aggiornato - t.fatturato)) + ' CHF') +
+      rigaRicevuta('Resta da incassare', fmtNumIt(round2(t.aggiornato - t.stornato - inc.incassato)) + ' CHF', true) +
+    '</div>' +
+    (t.stornoLeggibile ? '' :
+      '<div class="inv-note">⚠️ Le note di credito non sono state lette: «fatturato netto» potrebbe essere al lordo.</div>') +
+    (inc.leggibile ? '' :
+      '<div class="inv-note">⚠️ Alcuni pagamenti non sono stati letti: «incassato» potrebbe essere incompleto.</div>')
+
+  html('cartella-print',
+    '<div class="inv cartella">' +
+      '<div class="inv-head">' +
+        '<div class="inv-brand">' +
+          '<img src="' + esc(logoAziendaSrc()) + '" alt="Logo azienda" class="inv-logo" onerror="logoOnError(this)">' +
+          '<div class="inv-brand-info">' +
+            '<div class="inv-azienda-nome">' + esc(azNome) + '</div>' +
+            '<div class="inv-azienda-addr">uso interno — non consegnare al cliente</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="inv-meta">' +
+          '<div class="inv-title">RIASSUNTO<br>CANTIERE</div>' +
+          '<table class="inv-meta-tbl">' +
+            '<tr><td>Stampato il</td><td>' + esc(fmtDate(oggiISO())) + '</td></tr>' +
+            (c.rif_offerta ? '<tr><td>Rif. offerta</td><td>' + esc(c.rif_offerta) + '</td></tr>' : '') +
+          '</table>' +
+        '</div>' +
+      '</div>' +
+      '<div class="cartella-testa">' +
+        '<div><span class="cartella-et">Cliente</span> <strong>' +
+          esc(committente || '— non indicato sul cantiere —') + '</strong></div>' +
+        '<div><span class="cartella-et">Cantiere</span> <strong>' +
+          esc(cantiere ? nomeCantiere(cantiere, false) : '—') + '</strong></div>' +
+      '</div>' +
+      sez('Il contratto') + contratto +
+      '<div class="inv-note">Tutti gli importi sono <strong>IVA esclusa</strong>.</div>' +
+      varianti +
+      noteHtml +
+      sez('Le rate') + rateHtml +
+      sez('Come siamo messi') + chiusura +
+      (coef != null
+        ? '<div class="cartella-coef">I prezzi di listino di questa offerta vanno moltiplicati per <strong>' +
+            esc(fmtCoefficiente(coef)) + '</strong>' +
+            (pct != null && Math.abs(pct) > 0.005 ? ' (sconto ' + esc(fmtNumIt(pct)) + ' %)' : '') + '.</div>'
+        : '') +
+      '<div class="inv-footer"><strong>' + esc(azNome) + '</strong><br>' +
+        'Riassunto di cantiere per la cartella — uso interno, non è un documento per il cliente.</div>' +
+    '</div>')
+}
+
+async function stampaRiassuntoCartella(cantiereId) {
+  var c = contrattoDi(cantiereId)
+  if (!c) { showCantieriBanner('err', 'Nessun contratto su questo cantiere: non c\'è niente da riassumere.'); return }
+  var cantiere = (cantieriCache || []).filter(function (k) { return k.id === cantiereId })[0] || null
+  try { await loadAziendaInfo() } catch (_) {}
+  try { await loadPagamenti() } catch (_) {}
+  try { await loadNoteCredito() } catch (_) {}
+  renderCartellaPrint(c, cantiere)
+  document.body.classList.add('stampa-cartella')
+  var titoloPrima = document.title
+  document.title = nomeFileDocumento('Riassunto',
+                                     cantiere ? (cantiere.nome || '') : '', 'Riassunto')
+  var pulisci = function () {
+    document.body.classList.remove('stampa-cartella')
+    document.title = titoloPrima
+    window.removeEventListener('afterprint', pulisci)
+  }
+  window.addEventListener('afterprint', pulisci)
+  try { await attendiImmagini('cartella-print', 2000) } catch (_) {}
+  window.print()
+  setTimeout(pulisci, 60000)
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 67 — LE CORREZIONI DELL'ULTIMO GIRO
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── 67·6 · Ribasso e sconto, salvati ────────────────────────────────────────
+// Il FIRMATO comanda: se le due percentuali non lo riproducono al centesimo,
+// la differenza si mostra e non si corregge niente. Un numero che si sistema
+// da solo e' un numero che un giorno mente senza dirlo.
+function differenzaScontiContratto(c) {
+  if (!c) return null
+  var L = safeNum(c.totale_listino), F = safeNum(c.importo_contratto)
+  if (L == null || L <= 0 || F == null) return null
+  var r = safeNum(c.ribasso_pct), s = safeNum(c.sconto_pct)
+  if (r == null && s == null) return null          // nessuna percentuale scritta
+  var calcolato = firmatoDaSconti(L, r, s)
+  if (calcolato == null) return null
+  var diff = round2(F - calcolato)
+  return (Math.abs(diff) < 0.005) ? null : { calcolato: calcolato, firmato: F, diff: diff }
+}
+
+// La riga che lo dice, sotto il coefficiente. Vuota quando tornano.
+function avvisoScontiHtml(c) {
+  var d = differenzaScontiContratto(c)
+  if (!d) return ''
+  return '<div class="coef-differenza">⚠️ Le percentuali darebbero <strong>' +
+    esc(fmtNumIt(d.calcolato)) + ' CHF</strong>, il firmato è <strong>' +
+    esc(fmtNumIt(d.firmato)) + ' CHF</strong>: differenza ' +
+    (d.diff > 0 ? '+ ' : '− ') + esc(fmtNumIt(Math.abs(d.diff))) + ' CHF. ' +
+    'Comanda il firmato — è la cifra che sta sul contratto. Le percentuali restano come le hai scritte.</div>'
+}
+
+// ── 67·3 · Il cantiere sulla fattura ────────────────────────────────────────
+// Una fattura collegata a una rata ma senza cantiere_id non entra nel blocco
+// «Entrate» del cantiere: la stessa pagina mostrava due cifre diverse per lo
+// stesso lavoro (fatturato 2'988 invece di 4'188). Il legame con la rata non
+// basta: «Entrate» legge il cantiere scritto sulla fattura.
+function fattureRataSenzaCantiere(c) {
+  return (c.acconti || []).filter(function (a) {
+    var f = a.fattura
+    return f && f.id && !accontoAnnullato(a) && !f.cantiere_id
+  })
+}
+
+function avvisoCantiereMancanteHtml(c) {
+  var lista = fattureRataSenzaCantiere(c)
+  if (!lista.length) return ''
+  var righe = lista.map(function (a) {
+    var f = a.fattura
+    return '<div class="manca-cant-riga">' +
+      '<span>La fattura <strong>n. ' + esc(f.numero || '—') + '</strong> (rata ' + esc(String(a.ordine)) +
+      ') non ha il cantiere assegnato e <strong>non entra in «Entrate»</strong>.</span>' +
+      '<button type="button" class="btn-secondary" onclick="assegnaCantiereAFattura(\'' +
+        esc(f.id) + '\', \'' + esc(c.cantiere_id) + '\')">🏗️ Assegna questo cantiere</button>' +
+    '</div>'
+  }).join('')
+  return '<div class="nota-cruscotto avviso manca-cantiere" style="margin:10px 0 0">' +
+    '<span aria-hidden="true">⚠️</span><span>' + righe + '</span></div>'
+}
+
+// Scrive cantiere_id su una fattura. SOLO quel campo: non e' fra i congelati
+// (FASE 27), tutto il resto del documento non si tocca.
+async function assegnaCantiereAFattura(fatturaId, cantiereId) {
+  try {
+    const { data, error } = await sb.from('tm_conta_fatture')
+      .update({ cantiere_id: cantiereId })
+      .eq('id', fatturaId).eq('azienda_id', currentAziendaId).select('id, numero')
+    if (error) throw error
+    if (!data || !data.length) throw new Error('la fattura non si è aggiornata')
+    docCantiereMap = null
+    try { await loadMappaCantieri(true) } catch (_) {}
+    await ricaricaContrattoERidisegna()
+    try { await loadFlussi(true) } catch (_) {}
+    renderSchedaCantiere()
+    showCantieriBanner('ok', 'Cantiere scritto sulla fattura n. ' + (data[0].numero || '') +
+      '. Ora entra nel blocco «Entrate» di questo cantiere.')
+  } catch (e) {
+    showCantieriBanner('err', 'Cantiere NON scritto sulla fattura: ' + (e.message || e))
+  }
+}
+
+// ── 67·7 · Il nome dei file scaricati ───────────────────────────────────────
+// «2026-09-009 Marotta Benedetta.pdf»: numero, spazio, nome. Niente trattini
+// bassi, niente maiuscole forzate, niente simboli — nella cartella di Windows
+// le fatture si devono ordinare da sole per numero.
+//
+// I caratteri che Windows rifiuta ( \ / : * ? " < > | ) diventano uno SPAZIO e
+// non spariscono: «Rossi/Bianchi» deve restare «Rossi Bianchi», non
+// «RossiBianchi», che e' un altro nome.
+function pulisciPerNomeFile(s) {
+  return String(s == null ? '' : s)
+    .replace(/[\/\\:*?"<>|]/g, ' ')
+    .replace(/[\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .trim()
+}
+
+// «numero nome», con lo spazio in mezzo solo se ci sono tutti e due.
+function nomeFileDocumento(numero, nome, ripiego) {
+  var n = pulisciPerNomeFile(numero)
+  var chi = pulisciPerNomeFile(nome)
+  var out = pulisciPerNomeFile(unisciParti([n, chi], ' '))
+  return out || (ripiego || 'Documento')
 }
 
 // ── Azioni nella scheda cantiere ─────────────────────────────────────────────
@@ -20460,9 +20968,16 @@ async function salvaContrattoCantiere(cantiereId) {
   // NULL, non zero (zero vorrebbe dire «listino zero» e farebbe una divisione
   // impossibile). Il coefficiente non si salva: lo calcola il programma.
   var listino = safeNum(getVal('acc-c-listino'))
+  // 67·6 — le due percentuali si salvano come le hai scritte. Il firmato resta
+  // la cifra che comanda: se non tornano, la differenza si mostra e non si
+  // corregge niente.
+  var rib = safeNum(getVal('acc-c-ribasso'))
+  var sco = safeNum(getVal('acc-c-sconto'))
   var campi = { importo_contratto: importo, data_contratto: getVal('acc-c-data') || null,
                 rif_offerta: getVal('acc-c-rif') || null,
-                totale_listino: (listino != null && listino > 0) ? listino : null }
+                totale_listino: (listino != null && listino > 0) ? listino : null,
+                ribasso_pct: (rib != null && rib > 0 && rib <= 100) ? rib : null,
+                sconto_pct:  (sco != null && sco > 0 && sco <= 100) ? sco : null }
   try {
     if (c) {
       const { error } = await sb.from('tm_conta_cantiere_contratto').update(campi).eq('id', c.id).select('id')
@@ -20634,9 +21149,20 @@ async function collegaFatturaEmessa(accontoId) {
         'Collegando, questa fattura entra nel contratto di questo cantiere e la rata si CONGELA: ' +
         'non si stacca più. Continuare?')) return
   }
+  // 67·3 — il cantiere gia' scritto sulla fattura non si sovrascrive in
+  // silenzio: si chiede, con i due nomi davanti, e si lascia scegliere. Se
+  // resta quello vecchio, le entrate di questo cantiere non conteranno la
+  // fattura — e lo si dice qui, non dopo.
+  var spostaCantiere = false
   if (f.cantiere_id && f.cantiere_id !== t.c.cantiere_id) {
-    if (!window.confirm('La fattura n. ' + (f.numero || '') + ' è già collegata a un altro cantiere (' +
-      nomeCantiereDaId(f.cantiere_id) + '). Collegarla comunque a questa rata? Il cantiere sulla fattura NON viene cambiato.')) return
+    if (!window.confirm('La fattura n. ' + (f.numero || '') + ' ha già un altro cantiere.\n\n' +
+      'Cantiere sulla fattura:\n    ' + nomeCantiereDaId(f.cantiere_id) + '\n\n' +
+      'Cantiere di questa rata:\n    ' + nomeCantiereDaId(t.c.cantiere_id) + '\n\n' +
+      'Collegarla comunque a questa rata?')) return
+    spostaCantiere = window.confirm('Vuoi anche SPOSTARE la fattura su «' + nomeCantiereDaId(t.c.cantiere_id) + '»?\n\n' +
+      'Sì  → la fattura entra nelle entrate di questo cantiere ed esce da quelle di «' + nomeCantiereDaId(f.cantiere_id) + '».\n' +
+      'No  → il cantiere sulla fattura resta quello di prima, e questa rata risulterà fatturata ' +
+      'ma la fattura non comparirà fra le entrate di questo cantiere.')
   }
   if (Math.abs(imponibile - rataImp) > 0.005) {
     if (!window.confirm('La rata dice ' + fmtNumIt(rataImp) + ' CHF, la fattura n. ' + (f.numero || '') +
@@ -20656,18 +21182,29 @@ async function collegaFatturaEmessa(accontoId) {
     return
   }
   var nota = ''
-  if (!f.cantiere_id) {
+  // 67·3 — il cantiere si scrive SEMPRE quando manca, e quando c'e' un altro
+  // solo se e' stato detto di sì. Senza, la rata risulta fatturata ma la
+  // fattura non entra nelle entrate del cantiere: due letture della stessa
+  // pagina che dicono cifre diverse.
+  if (!f.cantiere_id || spostaCantiere) {
     try {
       // SOLO cantiere_id: non e' fra i campi congelati (FASE 27).
       const { error: eC } = await sb.from('tm_conta_fatture')
         .update({ cantiere_id: t.c.cantiere_id }).eq('id', f.id).eq('azienda_id', currentAziendaId).select('id')
       if (eC) throw eC
-      nota = ' Sulla fattura è stato scritto il cantiere.'
+      nota = spostaCantiere
+        ? ' La fattura è stata spostata su questo cantiere.'
+        : ' Sulla fattura è stato scritto il cantiere.'
       docCantiereMap = null
       try { await loadMappaCantieri(true) } catch (_) { /* la scheda si aggiorna al prossimo giro */ }
+      try { await loadFlussi(true) } catch (_) { /* le entrate si rifanno al prossimo giro */ }
     } catch (e2) {
-      nota = ' Rata collegata, ma il cantiere sulla fattura NON è stato scritto: ' + (e2.message || e2)
+      nota = ' Rata collegata, ma il cantiere sulla fattura NON è stato scritto: ' + (e2.message || e2) +
+             ' — la fattura non entrerà fra le entrate del cantiere finché non lo assegni.'
     }
+  } else if (f.cantiere_id !== t.c.cantiere_id) {
+    nota = ' Il cantiere sulla fattura è rimasto «' + nomeCantiereDaId(f.cantiere_id) +
+           '»: questa fattura NON entra fra le entrate di questo cantiere.'
   }
   accontoDaCollegare = null
   fattureCollegabili = null
