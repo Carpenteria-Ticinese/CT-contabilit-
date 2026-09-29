@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=67" />
+  <link rel="stylesheet" href="css/style.css?v=68" />
 </head>
-<body data-versione="67">
+<body data-versione="68">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -912,14 +912,34 @@
         <div>
           <div class="page-title">Elenco codici</div>
           <div class="page-subtitle">
-            Il piano dei conti e i nove gruppi, come compaiono quando classifichi.
+            Il piano dei conti diviso in entrate, uscite e le altre categorie, e i gruppi.
             Da stampare e tenere sotto mano, o da copiare e incollare in Word.
           </div>
         </div>
       </div>
 
       <div class="card no-print" style="margin-bottom:16px">
-        <div class="form-actions" style="margin-top:0">
+        <!-- 68·1 — filtro e ricerca: no-print, sul foglio finisce quello che
+             si sta guardando e, se un filtro è acceso, il foglio lo dichiara. -->
+        <div class="form-row" style="align-items:flex-end">
+          <div class="form-group" style="flex:0 0 220px; margin-bottom:0">
+            <label for="cod-filtro-tipo" class="form-label">Mostra</label>
+            <select id="cod-filtro-tipo" class="form-input" onchange="onCodiciFiltro()">
+              <option value="">Tutti i conti</option>
+              <option value="ricavo">Solo entrate (ricavi)</option>
+              <option value="costo">Solo uscite (costi)</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="cod-cerca" class="form-label">Cerca per numero o nome</label>
+            <input type="search" id="cod-cerca" class="form-input" placeholder="es. 6600, oppure pubblicità"
+                   oninput="onCodiciFiltro()" />
+          </div>
+          <div class="form-group" style="flex:0 0 auto; margin-bottom:0">
+            <button type="button" class="btn-secondary" onclick="azzeraFiltroCodici()">✕ Togli il filtro</button>
+          </div>
+        </div>
+        <div class="form-actions" style="margin-top:12px">
           <button class="btn-primary" onclick="stampaElencoCodici()">🖨️ Stampa elenco</button>
           <button class="btn-secondary" onclick="initCodiciPage(true)">🔄 Rileggi dal database</button>
         </div>
@@ -3083,7 +3103,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=67"></script>
+<script src="js/app.js?v=68"></script>
 
 </body>
 </html>
