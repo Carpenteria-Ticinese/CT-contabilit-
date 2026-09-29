@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=68" />
+  <link rel="stylesheet" href="css/style.css?v=69" />
 </head>
-<body data-versione="68">
+<body data-versione="69">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -947,6 +947,123 @@
           Per incollarlo in Word: seleziona tutto il foglio qui sotto (Ctrl+A dentro la pagina
           non basta, trascina con il mouse dall&rsquo;inizio alla fine), copia e incolla.
           Le due tabelle arrivano in Word come tabelle.
+        </div>
+      </div>
+
+      <!-- 68·2 e 68·3 — i conti e i gruppi MIEI: si creano, si modificano, si
+           disattivano. no-print: il foglio da stampare resta quello sotto. -->
+      <div id="codici-serve-sql" class="card no-print" style="display:none; margin-bottom:16px">
+        <div class="fase-banner warn">
+          <span class="icon" aria-hidden="true">⚠️</span>
+          <div class="msg">
+            Per creare conti e gruppi tuoi serve <code>SQL_FASE68_gruppi_conti.sql</code>,
+            che non risulta ancora lanciato. Finché non lo è, la pagina funziona come
+            prima: l&rsquo;elenco si legge e si stampa, ma non si aggiunge niente.
+          </div>
+        </div>
+      </div>
+
+      <div id="codici-gestione" class="card no-print" style="margin-bottom:16px">
+        <div id="codici-banner" role="status" aria-live="polite"></div>
+
+        <div class="gest-titolo">I miei conti</div>
+        <div id="gest-conti"></div>
+        <div class="form-actions" style="margin-top:10px">
+          <button type="button" class="btn-primary" id="conto-nuovo-btn" onclick="apriNuovoConto()">➕ Nuovo conto</button>
+        </div>
+
+        <div id="conto-form" style="display:none">
+          <div class="card-title" id="conto-form-titolo">Nuovo conto</div>
+          <div class="form-row">
+            <div class="form-group" style="flex:0 0 130px">
+              <label for="nc-numero" class="form-label">Numero</label>
+              <input type="text" id="nc-numero" class="form-input" maxlength="10"
+                     placeholder="es. 4500" oninput="controllaConto()" />
+            </div>
+            <div class="form-group" style="flex:2">
+              <label for="nc-nome" class="form-label">Nome del conto</label>
+              <input type="text" id="nc-nome" class="form-input" maxlength="120"
+                     placeholder="es. Noleggio ponteggi" />
+            </div>
+            <div class="form-group" style="flex:0 0 170px">
+              <label for="nc-tipo" class="form-label">Tipo</label>
+              <select id="nc-tipo" class="form-input" onchange="controllaConto()">
+                <option value="costo">Costo (4000–6999)</option>
+                <option value="ricavo">Ricavo (3000–3999)</option>
+                <option value="attivo">Attivo (1000–1999)</option>
+                <option value="passivo">Passivo (2000–2799)</option>
+                <option value="patrimonio">Patrimonio (2800–2999)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="nc-gruppo" class="form-label">Gruppo di spesa o ricavo</label>
+              <select id="nc-gruppo" class="form-input"></select>
+              <div class="form-hint">
+                Serve al cruscotto e all&rsquo;export. Ricavi, attivi, passivi e patrimonio
+                di solito non ne hanno uno: non sono spese da raggruppare.
+              </div>
+            </div>
+            <div class="form-group" style="flex:1" id="nc-iva-box">
+              <label for="nc-iva" class="form-label">Codice IVA proposto <span class="dim">(facoltativo)</span></label>
+              <select id="nc-iva" class="form-input"></select>
+              <div class="form-hint">Solo una proposta: classificando si può sempre scegliere un altro codice.</div>
+            </div>
+          </div>
+          <div id="nc-avvisi"></div>
+          <div class="form-actions">
+            <button type="button" class="btn-primary" onclick="salvaConto()">💾 Salva il conto</button>
+            <button type="button" class="btn-secondary" onclick="chiudiFormConto()">Annulla</button>
+          </div>
+        </div>
+
+        <div class="gest-titolo" style="margin-top:20px">I miei gruppi</div>
+        <div id="gest-gruppi"></div>
+        <div class="form-actions" style="margin-top:10px">
+          <button type="button" class="btn-primary" id="gruppo-nuovo-btn" onclick="apriNuovoGruppo()">➕ Nuovo gruppo</button>
+        </div>
+
+        <div id="gruppo-form" style="display:none">
+          <div class="card-title" id="gruppo-form-titolo">Nuovo gruppo</div>
+          <div class="form-row">
+            <div class="form-group" style="flex:0 0 110px">
+              <label for="ng-codice" class="form-label">Codice</label>
+              <input type="text" id="ng-codice" class="form-input" maxlength="3"
+                     placeholder="es. NOL" oninput="controllaGruppo()" style="text-transform:uppercase" />
+            </div>
+            <div class="form-group" style="flex:2">
+              <label for="ng-nome" class="form-label">Nome del gruppo</label>
+              <input type="text" id="ng-nome" class="form-input" maxlength="60" placeholder="es. Noleggi" />
+            </div>
+            <div class="form-group" style="flex:0 0 150px">
+              <label for="ng-tipo" class="form-label">Tipo</label>
+              <select id="ng-tipo" class="form-input">
+                <option value="costo">Di costo</option>
+                <option value="ricavo">Di ricavo</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="ng-esempi" class="form-label">Esempi <span class="dim">(facoltativo)</span></label>
+            <input type="text" id="ng-esempi" class="form-input" maxlength="200"
+                   placeholder="es. ponteggi, gru, casseri" />
+            <div class="form-hint">
+              Il codice è di <strong>tre lettere</strong> e non si cambia più: è la colonna che
+              l&rsquo;export usa per raggruppare, e finisce scritta sui conti.
+            </div>
+          </div>
+          <div id="ng-avvisi"></div>
+          <div class="form-actions">
+            <button type="button" class="btn-primary" onclick="salvaGruppo()">💾 Salva il gruppo</button>
+            <button type="button" class="btn-secondary" onclick="chiudiFormGruppo()">Annulla</button>
+          </div>
+        </div>
+
+        <div class="form-hint" style="margin-top:14px">
+          I conti del <strong>pacchetto svizzero</strong> e i <strong>9 gruppi di sistema</strong> sono
+          condivisi con le altre app e non si toccano: non è una regola scritta qui, è il database
+          che li protegge. Quello che crei tu è solo tuo, e nessun altro lo vede.
         </div>
       </div>
 
@@ -3103,7 +3220,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=68"></script>
+<script src="js/app.js?v=69"></script>
 
 </body>
 </html>
