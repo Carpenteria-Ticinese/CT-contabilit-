@@ -3371,3 +3371,27 @@ tr.off-vecchia td { color: var(--text2); }
   padding: 3px 0;
 }
 .manca-cant-riga .btn-secondary { padding: 4px 10px; font-size: 12.5px; }
+
+/* ── 68·1 · l'elenco codici diviso ────────────────────────────────────────── */
+/* Un conto scritto da noi si distingue da quelli del pacchetto svizzero:
+   è l'unico che si può correggere. */
+.cod-mio {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--primary);
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--primary);
+  vertical-align: 1px;
+}
+/* Quando un filtro è acceso il foglio lo dice, anche stampato. */
+.cod-filtro-nota {
+  margin: 0 0 14px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-bg);
+  font-size: 12.5px;
+  color: var(--text);
+}
