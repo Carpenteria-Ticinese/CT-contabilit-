@@ -9893,6 +9893,12 @@ async function initCodiciPage(force) {
   try {
     await ensureContiIva(force)
     await loadGruppi(force)
+    // 68·1 — si entra sempre dall'elenco intero: un filtro rimasto acceso da
+    // ieri farebbe credere che dei conti siano spariti.
+    codiciFiltroTipo = ''
+    codiciRicerca = ''
+    setVal('cod-filtro-tipo', '')
+    setVal('cod-cerca', '')
     html('codici-foglio', foglioCodiciHtml())
   } catch (e) {
     html('codici-foglio',
@@ -9904,38 +9910,153 @@ async function initCodiciPage(force) {
   }
 }
 
-function foglioCodiciHtml() {
-  var conti  = contiCache || []
-  var gruppi = gruppiCache || []
+// ══════════════════════════════════════════════════════════════════════════════
+// 68·1 — L'ELENCO CODICI, DIVISO
+//
+// Era un elenco unico diviso solo fra «I miei conti» e «Pacchetto CH»: per
+// trovare un conto bisognava leggerlo tutto. Adesso e' diviso per quello che
+// un conto E', e dentro per gruppo di spesa o di ricavo.
+//
+// LE CINQUE CATEGORIE sono quelle che il piano dei conti ha gia' nel campo
+// `tipo` (CHECK in migrations/001_fondamenta.sql): ricavo · costo · attivo ·
+// passivo · patrimonio. Non se ne inventano altre, e l'ordine e' quello con cui
+// si usano: prima quello che entra, poi quello che esce, poi il resto.
+//
+// IL FOGLIO RESTA STAMPABILE. Il filtro e la ricerca sono `no-print`: sulla
+// carta finisce quello che si sta guardando, e se un filtro e' acceso il foglio
+// lo dichiara — un elenco stampato incompleto senza dirlo e' peggio di nessun
+// elenco.
+// ══════════════════════════════════════════════════════════════════════════════
 
-  // Lo stesso ordine che si vede classificando: prima i conti propri, poi il
-  // pacchetto CH, e dentro ciascun blocco per numero di conto. Un foglio che
-  // ordina in un altro modo costringe a cercare due volte.
-  var propri    = conti.filter(function (c) { return c.azienda_id != null })
-  var pacchetto = conti.filter(function (c) { return c.azienda_id == null })
+var CATEGORIE_CONTI = [
+  { tipo: 'ricavo',     titolo: 'ENTRATE',  sotto: 'ricavi' },
+  { tipo: 'costo',      titolo: 'USCITE',   sotto: 'costi' },
+  { tipo: 'attivo',     titolo: 'ATTIVI',   sotto: 'cassa, banca, crediti, magazzino, attrezzature' },
+  { tipo: 'passivo',    titolo: 'PASSIVI',  sotto: 'debiti verso fornitori, banca, imposte' },
+  { tipo: 'patrimonio', titolo: 'PATRIMONIO', sotto: 'capitale e riserve' }
+]
+
+// Cosa si sta guardando. Vive solo finche' la pagina e' aperta: un filtro che
+// si ricorda da una volta all'altra fa credere che manchino dei conti.
+var codiciFiltroTipo = ''      // '' = tutti · 'ricavo' · 'costo'
+var codiciRicerca    = ''
+
+function onCodiciFiltro() {
+  codiciFiltroTipo = getVal('cod-filtro-tipo')
+  codiciRicerca    = getVal('cod-cerca')
+  html('codici-foglio', foglioCodiciHtml())
+}
+
+function azzeraFiltroCodici() {
+  codiciFiltroTipo = ''
+  codiciRicerca = ''
+  setVal('cod-filtro-tipo', '')
+  setVal('cod-cerca', '')
+  html('codici-foglio', foglioCodiciHtml())
+}
+
+// I conti che passano il filtro e la ricerca. La ricerca guarda numero E nome,
+// come la tendina della classificazione: chi cerca «6600» e chi cerca
+// «pubblicita» devono trovare la stessa riga.
+function contiFiltrati() {
+  var conti = (contiCache || []).slice()
+  if (codiciFiltroTipo) {
+    conti = conti.filter(function (c) { return c.tipo === codiciFiltroTipo })
+  }
+  var q = String(codiciRicerca || '').toLowerCase().trim()
+  if (q) {
+    var termini = q.split(/\s+/)
+    conti = conti.filter(function (c) {
+      var fieno = (String(c.codice_conto) + ' ' + String(c.descrizione || '')).toLowerCase()
+      return termini.every(function (t) { return fieno.indexOf(t) !== -1 })
+    })
+  }
+  return conti
+}
+
+// I gruppi nell'ordine del documento, piu' in fondo i conti che un gruppo non
+// ce l'hanno: ricavi, attivi, passivi e patrimonio non sono spese da
+// raggruppare e restano NULL apposta (vedi SQL_FASE3).
+function raggruppaPerGruppo(list) {
+  var ordine = (gruppiCache || []).map(function (g) { return g.codice })
+  var mappa = {}
+  list.forEach(function (c) {
+    var k = c.gruppo_codice || ''
+    ;(mappa[k] = mappa[k] || []).push(c)
+  })
+  var out = []
+  ordine.forEach(function (cod) {
+    if (mappa[cod] && mappa[cod].length) out.push({ codice: cod, conti: mappa[cod] })
+  })
+  // Un gruppo che sta sui conti ma non nell'elenco dei gruppi (cancellato,
+  // o non letto): si mostra lo stesso, col suo codice, invece di sparire.
+  Object.keys(mappa).forEach(function (k) {
+    if (k && ordine.indexOf(k) === -1) out.push({ codice: k, conti: mappa[k] })
+  })
+  if (mappa['']) out.push({ codice: '', conti: mappa[''] })
+  return out
+}
+
+function nomeGruppoElenco(codice) {
+  if (!codice) return 'Non assegnati a un gruppo'
+  var g = (gruppiCache || []).filter(function (x) { return x.codice === codice })[0]
+  return g ? (codice + ' · ' + g.nome) : (codice + ' · ⚠️ gruppo non trovato')
+}
+
+function foglioCodiciHtml() {
+  var conti  = contiFiltrati()
+  var gruppi = gruppiCache || []
+  var tuttiConti = contiCache || []
 
   function righeConti(list) {
     return list.map(function (c) {
       return '<tr>' +
                '<td class="cod-num">' + esc(String(c.codice_conto)) + '</td>' +
-               '<td>' + esc(c.descrizione || '') + '</td>' +
+               '<td>' + esc(c.descrizione || '') +
+                 // Un conto scritto da noi si distingue da quelli del pacchetto
+                 // svizzero: e' l'unico che si puo' correggere.
+                 (c.azienda_id != null ? ' <span class="cod-mio">mio</span>' : '') +
+               '</td>' +
              '</tr>'
     }).join('')
   }
 
-  function blocco(titolo, list) {
-    if (!list.length) return ''
-    return '<h3 class="cod-sottotitolo">' + esc(titolo) +
-             ' <span class="cod-quanti">(' + list.length + ')</span></h3>' +
-           '<table class="cod-tabella">' +
-             '<thead><tr><th class="cod-num">Conto</th><th>Descrizione</th></tr></thead>' +
-             '<tbody>' + righeConti(list) + '</tbody>' +
-           '</table>'
+  function sezione(cat) {
+    var dentro = conti.filter(function (c) { return c.tipo === cat.tipo })
+    if (!dentro.length) return ''
+    var blocchi = raggruppaPerGruppo(dentro).map(function (b) {
+      return '<h3 class="cod-sottotitolo">' + esc(nomeGruppoElenco(b.codice)) +
+               ' <span class="cod-quanti">(' + b.conti.length + ')</span></h3>' +
+             '<table class="cod-tabella">' +
+               '<thead><tr><th class="cod-num">Conto</th><th>Descrizione</th></tr></thead>' +
+               '<tbody>' + righeConti(b.conti) + '</tbody>' +
+             '</table>'
+    }).join('')
+    return '<h2 class="cod-sezione">' + esc(cat.titolo) +
+             ' <span class="cod-quanti">(' + dentro.length + ' — ' + esc(cat.sotto) + ')</span></h2>' +
+           blocchi
   }
 
-  var contiHtml = (propri.length || pacchetto.length)
-    ? blocco('I miei conti', propri) + blocco('Pacchetto CH', pacchetto)
-    : '<div class="dim">Piano dei conti non disponibile: rientra e riprova.</div>'
+  var corpo = CATEGORIE_CONTI.map(sezione).join('')
+
+  // Un conto con un `tipo` che non e' fra i cinque non deve sparire dal foglio:
+  // si vedrebbe un elenco piu' corto senza nessuna spiegazione.
+  var noti = CATEGORIE_CONTI.map(function (c) { return c.tipo })
+  var fuori = conti.filter(function (c) { return noti.indexOf(c.tipo) === -1 })
+  if (fuori.length) {
+    corpo += '<h2 class="cod-sezione">ALTRO <span class="cod-quanti">(' + fuori.length +
+               ' — tipo non riconosciuto)</span></h2>' +
+             '<table class="cod-tabella">' +
+               '<thead><tr><th class="cod-num">Conto</th><th>Descrizione</th></tr></thead>' +
+               '<tbody>' + righeConti(fuori) + '</tbody></table>'
+  }
+
+  if (!tuttiConti.length) {
+    corpo = '<div class="dim">Piano dei conti non disponibile: rientra e riprova.</div>'
+  } else if (!conti.length) {
+    corpo = '<div class="cru-vuoto">Nessun conto trovato con questo filtro. ' +
+            '<button type="button" class="link-btn no-print" onclick="azzeraFiltroCodici()">Togli il filtro</button></div>'
+  }
 
   var gruppiHtml = gruppi.length
     ? '<table class="cod-tabella">' +
@@ -9951,8 +10072,15 @@ function foglioCodiciHtml() {
       '</table>'
     : '<div class="dim">Gruppi non disponibili: rientra e riprova.</div>'
 
-  // Intestazione: chi e quando. Su un foglio stampato senza data non si sa se
-  // e' quello di oggi o quello dell'anno scorso.
+  // Se un filtro e' acceso, il foglio lo dice: stampato senza, sembrerebbe
+  // l'elenco completo.
+  var filtroAttivo = (codiciFiltroTipo || codiciRicerca)
+    ? '<div class="cod-filtro-nota">Elenco filtrato: ' +
+        (codiciFiltroTipo ? 'solo ' + esc(codiciFiltroTipo === 'ricavo' ? 'entrate' : 'uscite') : 'tutte le categorie') +
+        (codiciRicerca ? ' · ricerca «' + esc(codiciRicerca) + '»' : '') +
+        ' — ' + conti.length + ' conti su ' + tuttiConti.length + '.</div>'
+    : ''
+
   var a = aziendaInfo || {}
   return '<div class="cod-foglio">' +
            '<div class="cod-testata">' +
@@ -9960,9 +10088,11 @@ function foglioCodiciHtml() {
              '<div class="cod-titolo">Elenco dei codici</div>' +
              '<div class="cod-data">Stampato il ' + esc(fmtDate(oggiISO())) + '</div>' +
            '</div>' +
+           filtroAttivo +
            '<h2 class="cod-sezione">Piano dei conti</h2>' +
-           contiHtml +
-           '<h2 class="cod-sezione">I nove gruppi di costo e ricavo</h2>' +
+           corpo +
+           '<h2 class="cod-sezione">I gruppi di costo e ricavo ' +
+             '<span class="cod-quanti">(' + gruppi.length + ')</span></h2>' +
            gruppiHtml +
          '</div>'
 }
@@ -18961,7 +19091,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '67'
+var VERSIONE = '68'
 
 function controllaVersionePagina() {
   try {
