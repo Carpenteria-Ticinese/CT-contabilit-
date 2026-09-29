@@ -3395,3 +3395,21 @@ tr.off-vecchia td { color: var(--text2); }
   font-size: 12.5px;
   color: var(--text);
 }
+
+/* ── 68·2 e 68·3 · i miei conti e i miei gruppi ───────────────────────────── */
+.gest-riga {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+.gest-riga .cod-num { flex: 0 0 70px; font-family: monospace; font-weight: 700; }
+.gest-riga > span:nth-child(2) { flex: 1; }
+.gest-azioni { flex: 0 0 auto; display: flex; gap: 6px; }
+.gest-titolo {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text2); font-weight: 700; margin: 14px 0 6px;
+}
+#conto-form, #gruppo-form {
+  border: 1px solid var(--primary); border-radius: 6px;
+  padding: 12px 14px; margin: 12px 0; background: var(--bg);
+}
