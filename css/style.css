@@ -3413,3 +3413,27 @@ tr.off-vecchia td { color: var(--text2); }
   border: 1px solid var(--primary); border-radius: 6px;
   padding: 12px 14px; margin: 12px 0; background: var(--bg);
 }
+
+/* ── 70·3 · niente pagine bianche in stampa ───────────────────────────────
+   I quattro fogli stanno fuori da #app (67·1) e in stampa si mettono in
+   `position: absolute`, fuori dal flusso. Ma #app resta nel flusso: è solo
+   INVISIBILE (`visibility: hidden`), e un elemento invisibile occupa lo
+   spazio che occupava — l'altezza intera della pagina Cantieri, che diventa
+   due o tre fogli bianchi stampati dopo quello buono.
+   `display: none` invece toglie il riquadro: niente spazio, niente pagine.
+   Solo quando si stampa uno dei quattro fogli esterni: la fattura, la busta e
+   l'elenco codici vivono DENTRO #app e hanno bisogno che resti. */
+@media print {
+  body.stampa-ricevuta  #app,
+  body.stampa-sollecito #app,
+  body.stampa-piano     #app,
+  body.stampa-cartella  #app { display: none !important; }
+
+  /* E l'ultimo elemento del foglio non si porta dietro un margine che sfonda
+     nella pagina dopo: è l'altro modo in cui nasce un foglio bianco. */
+  #ricevuta-print  > *:last-child,
+  #sollecito-print > *:last-child,
+  #piano-print     > *:last-child,
+  #cartella-print  > *:last-child,
+  #fatture-print   > *:last-child { margin-bottom: 0; }
+}
