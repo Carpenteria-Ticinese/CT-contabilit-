@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=81" />
+  <link rel="stylesheet" href="css/style.css?v=82" />
 </head>
-<body data-versione="81">
+<body data-versione="82">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 81</span>
+      <span id="sidebar-versione">Versione 82</span>
     </div>
 
   </aside>
@@ -1872,7 +1872,7 @@
         <div class="no-print" id="fatture-polizza"></div>
         <div class="no-print" id="fatture-allegati"></div>
 
-        <div class="card">
+        <div class="card" id="fatture-print-card">   <!-- 82·1: in stampa si annulla -->
           <div id="fatture-print"></div>
         </div>
         <!-- FASE 28 — il formato pagina della fattura, scritto dal JS: con la
@@ -3343,7 +3343,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=81"></script>
+<script src="js/app.js?v=82"></script>
 
 </body>
 </html>
