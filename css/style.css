@@ -582,6 +582,13 @@ tbody td {
 
 /* ── FASE 21 — Il foglio dei codici ─────────────────────────────────────── */
 .cod-foglio {
+  /* 74·3 — i colori «carta» della fattura. Il foglio non sta dentro .inv, e
+     senza queste righe var(--accent), --ink, --beige e --line qui non
+     valevano niente: titolo e filetti uscivano neri. */
+  --ink:    #4A1B0C;
+  --accent: #8B2500;
+  --beige:  #F1EFE8;
+  --line:   #E4DACE;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -602,6 +609,10 @@ tbody td {
   margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line);
 }
 .cod-sottotitolo { font-size: 13px; font-weight: 700; color: #444; margin: 14px 0 6px; }
+/* 74·3 — ricavi, costi e i loro gruppi nel rosso dei titoli delle fatture. */
+.cod-sezione.cod-evidenza,
+.cod-sottotitolo.cod-evidenza { color: var(--accent); }
+.cod-evidenza .cod-quanti { color: #777; }
 .cod-quanti { font-weight: 400; color: #777; }
 .cod-tabella { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .cod-tabella th {
@@ -3224,6 +3235,18 @@ tr.off-vecchia td { color: var(--text2); }
 .piano-cantiere { font-size: 13px; color: #444; margin: 0 0 18px; }
 .piano-conto { max-width: 420px; margin-bottom: 16px; }
 .inv.piano .ro-section { margin-top: 20px; }
+
+/* ── 74·2 · piano pagamenti e riassunto cantiere: non sono fatture ─────────
+   Il titolo in blu petrolio invece del rosso delle fatture, e sotto una riga
+   che lo dice in parole: vale anche stampato in bianco e nero. */
+.inv.piano, .inv.cartella { --petrolio: #1B5E6B; }
+.inv.piano .inv-title, .inv.cartella .inv-title { color: var(--petrolio); }
+.inv-informativo {
+  /* 10px: a 11px nell'intestazione del riassunto andava a capo, e con
+     `nowrap` usciva dal margine. Così sta su una riga su tutti e due i fogli. */
+  font-size: 10px; font-weight: 700; color: var(--petrolio, #1B5E6B);
+  margin: -4px 0 8px;
+}
 
 @media print {
   body.stampa-piano #piano-print { display: block; }
