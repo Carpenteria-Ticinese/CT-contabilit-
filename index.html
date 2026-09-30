@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=74" />
+  <link rel="stylesheet" href="css/style.css?v=76" />
 </head>
-<body data-versione="74">
+<body data-versione="76">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -533,7 +533,7 @@
             </div>
 
             <div class="form-group">
-              <label for="f-gruppo" class="form-label">Gruppo di costo</label>
+              <label for="f-gruppo" class="form-label">Gruppo</label>
               <select id="f-gruppo" class="form-input"></select>
               <div class="form-hint" id="f-gruppo-hint">
                 Serve a raggruppare le spese nel cruscotto. Se il contatto ha un gruppo
@@ -563,8 +563,9 @@
               <div id="cant-m-scelto"></div>
               <div id="cant-m-nota"></div>
               <div class="form-hint">
-                Vuoto vale <strong>Magazzino / nessun cantiere</strong>, ed &egrave; una risposta
-                valida: non tutto quello che si compra va su un cantiere.
+                Vuoto vale <strong>Nessun cantiere (da assegnare)</strong>: il documento resta da
+                attribuire. Il magazzino e le spese generali hanno i loro cantieri,
+                &laquo;Magazzino&raquo; e &laquo;Spese ditta&raquo;.
               </div>
             </div>
 
@@ -1754,8 +1755,8 @@
             <div id="cant-v-scelto"></div>
             <div id="cant-v-nota"></div>
             <div class="form-hint">
-              Vuoto vale <strong>Magazzino / nessun cantiere</strong>, ed &egrave; una risposta
-              valida: non tutto quello che si compra va su un cantiere. Sui ricavi serve per il margine del cantiere.
+              Vuoto vale <strong>Nessun cantiere (da assegnare)</strong>: il documento resta da
+              attribuire. Sui ricavi serve per il margine del cantiere.
             </div>
           </div>
 
@@ -1894,6 +1895,29 @@
         </div>
 
         <div id="offerte-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
+
+        <!-- 75·11 — lettura della conferma dal PDF: solo i dati principali -->
+        <div class="card" id="conf-lettura" style="display:none"
+             ondragover="onTrascinaSopra(event)" ondragleave="onTrascinaVia(event)"
+             ondrop="onRilascioLettura(event, 'conferma')">
+          <div class="card-title">📄 Lettura della conferma</div>
+          <div class="form-hint" style="margin-bottom:12px">
+            Scegli il PDF o la foto, oppure <strong>trascinalo su questo riquadro</strong>: si compilano
+            fornitore, numero, data, totale e consegna prevista (nelle Note). Gli articoli no:
+            le righe si scrivono a mano.
+          </div>
+          <div class="form-actions" style="margin-top:0">
+            <button type="button" class="btn-primary" id="btn-lettura-conf" onclick="apriSceltaFileConferma()">
+              📄 Leggi da PDF o foto
+            </button>
+            <input type="file" id="lettura-conf-file" style="display:none"
+                   accept=".pdf,.jpg,.jpeg,.png,.webp,image/*" capture="environment"
+                   onchange="leggiConfermaDaFile(this)" />
+          </div>
+          <div id="conf-lettura-banner" role="status" aria-live="polite" style="margin-top:12px"></div>
+          <div id="conf-lettura-note" style="margin-top:12px"></div>
+          <div id="conf-lettura-costo"></div>
+        </div>
 
         <div class="card">
           <div class="card-title">🏢 Fornitore e riferimenti</div>
@@ -2124,11 +2148,14 @@
         <div id="acquisti-edit-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
 
         <!-- ══ FASE 5A — Ponte copia/incolla verso Claude ═══════════════════ -->
-        <div class="card" id="ponte-ai">
+        <div class="card" id="ponte-ai"
+             ondragover="onTrascinaSopra(event)" ondragleave="onTrascinaVia(event)"
+             ondrop="onRilascioLettura(event, 'fattura')">
           <div class="card-title">📋 Lettura della fattura</div>
           <div class="form-hint" style="margin-bottom:12px">
             Invece di copiare i dati a mano: copia il prompt, aprilo in Claude allegando
             la foto o il PDF, e riporta qui la risposta. I campi si compilano da soli.
+            Con la lettura automatica puoi anche <strong>trascinare il file su questo riquadro</strong>.
           </div>
 
           <div class="form-actions" style="margin-top:0">
@@ -2247,11 +2274,11 @@
 
           <div class="form-row">
             <div class="form-group" style="flex:1">
-              <label for="a-gruppo" class="form-label">Gruppo di costo</label>
+              <label for="a-gruppo" class="form-label">Gruppo</label>
               <select id="a-gruppo" class="form-input"></select>
             </div>
             <div class="form-group" style="flex:1">
-              <label for="a-scadenza" class="form-label">Scadenza <span class="dim">(opzionale)</span></label>
+              <label for="a-scadenza" class="form-label">Scadenza</label>
               <input type="date" id="a-scadenza" class="form-input" />
             </div>
             <div class="form-group" style="flex:1">
@@ -2295,8 +2322,9 @@
             <div id="cant-a-scelto"></div>
             <div id="cant-a-nota"></div>
             <div class="form-hint">
-              Vuoto vale <strong>Magazzino / nessun cantiere</strong>, ed &egrave; una risposta
-              valida: non tutto quello che si compra va su un cantiere. Il cantiere scelto qui arriva gi&agrave; compilato nella classificazione.
+              Vuoto vale <strong>Nessun cantiere (da assegnare)</strong>: il documento resta da
+              attribuire. Il magazzino e le spese generali hanno i loro cantieri, &laquo;Magazzino&raquo; e
+              &laquo;Spese ditta&raquo;. Il cantiere scelto qui arriva gi&agrave; compilato nella classificazione.
             </div>
           </div>
 
@@ -2564,7 +2592,7 @@
 
       <!-- FASE 24 — le due aliquote della differenza IVA. Impostazioni, non
            numeri scritti nel codice: le aliquote cambiano, ed è già successo. -->
-      <div class="card">
+      <div class="card" data-salva-a-parte>
         <div class="card-title">🧾 Aliquote IVA <span class="dim">(per l&rsquo;indicatore in Situazione)</span></div>
         <div class="form-hint" style="margin-top:0; margin-bottom:12px">
           Servono solo al riquadro <strong>Differenza IVA</strong> della pagina Situazione, che
@@ -2760,7 +2788,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" data-salva-a-parte>
         <div class="card-title">
           🏦 IBAN per cantiere
           <button type="button" class="link-btn" onclick="openIbanForm()">+ Nuovo IBAN</button>
@@ -3235,7 +3263,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=74"></script>
+<script src="js/app.js?v=76"></script>
 
 </body>
 </html>
