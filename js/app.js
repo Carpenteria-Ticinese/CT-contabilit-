@@ -227,7 +227,9 @@ function etichettaPagamento(verso, stato) {
   if (verso === 'entrata') {
     if (stato === 'pagato')   return { icona: '✅', testo: 'Incassato',          cls: 'ok'   }
     if (stato === 'parziale') return { icona: '🟠', testo: 'Incassato in parte', cls: 'warn' }
-    return { icona: '🔵', testo: 'Non incassato', cls: 'warn' }
+    // 75·3 — blu, come il 🔵: il lato clienti ha il suo colore, e l'arancio e il
+    // rosso restano agli avvisi delle fatture fornitori.
+    return { icona: '🔵', testo: 'Non incassato', cls: 'info' }
   }
   if (stato === 'pagato')   return { icona: '✅', testo: 'Pagato',          cls: 'ok'   }
   if (stato === 'parziale') return { icona: '🟠', testo: 'Pagato in parte', cls: 'warn' }
@@ -253,6 +255,15 @@ function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
   // 61b — lo stato che si LEGGE tiene conto anche delle note di credito; quello
   // nel database resta del trigger, che conta solo i pagamenti.
   var statoVero = statoConStorno(tabella, id, totale, stato)
+  // 75·4 — pagato con una data che deve ancora venire: è un pagamento
+  // programmato. Nessun avviso di scadenza (per il trigger è pagato), e la
+  // scritta dice quando parte.
+  if (verso === 'uscita' && statoVero === 'pagato' && cacheOk('pagamenti')) {
+    var ultimo = ultimoPagamentoDi(tabella, id)
+    if (ultimo && ultimo.data && ultimo.data > oggiISO()) {
+      return badge('info', '🗓️ Pagamento programmato il ' + fmtDate(ultimo.data))
+    }
+  }
   var e = etichettaPagamento(verso, statoVero)
   var cifra = ''
   // La cifra solo se i pagamenti sono stati letti davvero: senza, si omette.
@@ -1299,7 +1310,8 @@ function notaCantieriVuoti() {
 function buildCantiereOptions(selectedId, includeGenerale) {
   // FASE 6A — «nessun cantiere» e' una risposta valida, non un campo lasciato
   // vuoto per distrazione: il testo lo dice.
-  var out = includeGenerale ? '<option value="">— nessun cantiere: magazzino / generale —</option>' : ''
+  // 76 — stessa voce del menu di registrazione: vuoto = non ancora assegnato.
+  var out = includeGenerale ? '<option value="">— Nessun cantiere (da assegnare) —</option>' : ''
   var list = cantieriOrdinati()
   var found = false
   for (var i = 0; i < list.length; i++) {
@@ -2308,6 +2320,7 @@ async function startEditMovimento(id) {
     var ct = el('inserimento-card-title'); if (ct) ct.textContent = '✏️ Modifica movimento'
     var sbtn = el('inserimento-submit-btn'); if (sbtn) sbtn.textContent = '💾 Salva modifiche'
     html('inserimento-banner', '')
+    moduloPulito('movimento')   // 75·5 — aperto in modifica, niente ancora cambiato
   } catch (e) {
     showPage('inserimento')
     showInserimentoBanner('err', 'Impossibile aprire il movimento', e.message)
@@ -2318,6 +2331,7 @@ function onAnnullaClick() {
   if (editingMovimentoId && originalEditValues) {
     fillFormFromValues(originalEditValues)   // ripristina i valori originali (finché non salvi)
     html('inserimento-banner', '')
+    moduloPulito('movimento')   // 75·5 — di nuovo come sul database
   } else {
     resetInserimentoForm()
   }
@@ -3470,8 +3484,153 @@ async function unlockPeriod() {
 // (forzato anche da trigger DB): si corregge con una nota di credito.
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ══ 75·5 — SALVATO ALLE …, E IL BOTTONE SALVA SPENTO FINCHÉ NON CAMBIA NIENTE ══
+// Sei moduli. Un modulo appena aperto, o appena salvato, è «intatto»: il suo
+// Salva è spento e dice perché. Il primo campo toccato lo riaccende.
+// Chi ascolta è il documento, una volta sola: input, change, drop, e i clic su
+// un bottone dentro il modulo (aggiungi riga, scegli dalla rubrica, cantiere…)
+// perché anche quelli cambiano il documento. Meglio un Salva acceso per niente
+// che uno spento su una modifica vera.
+// Quello che il PROGRAMMA scrive nei campi (lettura da PDF, un contatto creato
+// al volo, la fattura d'acconto già compilata) non fa eventi: chi lo scrive
+// chiama moduloModificato() da sé.
+// I salvataggi, nel loro finally, non riaccendono più a mano: lasciano il
+// bottone come dice moduloIntatto(). Se il salvataggio è fallito il modulo non
+// è mai stato segnato intatto, e il bottone resta acceso per riprovare.
+var MODULI_SALVA = {
+  fattura:      { contenitore: 'fatture-edit-view',  bottone: 'btn-salva-bozza' },
+  acquisto:     { contenitore: 'acquisti-edit-view', bottone: 'acq-save-btn' },
+  movimento:    { contenitore: 'form-inserimento',   bottone: 'inserimento-submit-btn' },
+  contatto:     { contenitore: 'form-contatto',      bottone: 'contatto-submit-btn' },
+  conferma:     { contenitore: 'offerte-edit-view',  bottone: 'btn-salva-offerta' },
+  // Le schede con un Salva loro (solleciti e aliquote, IBAN) portano
+  // data-salva-a-parte e qui non contano.
+  impostazioni: { contenitore: 'page-impostazioni',  bottone: 'imp-save-btn' }
+}
+var moduliIntatti = {}
+
+function moduloIntatto(k) { return moduliIntatti[k] === true }
+
+function moduloPulito(k) {
+  var m = MODULI_SALVA[k]
+  if (!m) return
+  moduliIntatti[k] = true
+  var b = el(m.bottone)
+  if (b) { b.disabled = true; b.title = 'Niente da salvare: cambia un campo e il bottone si riaccende.' }
+}
+
+function moduloModificato(k) {
+  var m = MODULI_SALVA[k]
+  if (!m) return
+  moduliIntatti[k] = false
+  var b = el(m.bottone)
+  // Durante un salvataggio il bottone dice «⏳»: lì non si riaccende, o un
+  // secondo clic farebbe un secondo salvataggio.
+  if (b && String(b.textContent || '').indexOf('⏳') === -1) { b.disabled = false; b.title = '' }
+}
+
+function moduloDiElemento(t) {
+  if (!t || !t.closest) return null
+  if (t.closest('[data-salva-a-parte]')) return null
+  for (var k in MODULI_SALVA) {
+    if (!Object.prototype.hasOwnProperty.call(MODULI_SALVA, k)) continue
+    var c = el(MODULI_SALVA[k].contenitore)
+    if (c && c.contains(t)) return k
+  }
+  return null
+}
+
+function segnaModificaDaEvento(e) {
+  var t = e.target
+  if (e.type === 'click') {
+    var b = t && t.closest ? t.closest('button, [role="option"]') : null
+    if (!b) return
+    var k0 = moduloDiElemento(b)
+    if (k0 && b.id !== MODULI_SALVA[k0].bottone) moduloModificato(k0)
+    return
+  }
+  var k = moduloDiElemento(t)
+  if (k) moduloModificato(k)
+}
+;['input', 'change', 'drop', 'click'].forEach(function (tipo) {
+  document.addEventListener(tipo, segnaModificaDaEvento, true)
+})
+
+// ── 75·6 — una domanda con due risposte scritte ─────────────────────────────
+// window.confirm dice «OK / Annulla», che qui non vuol dire niente. Questa
+// finestrella scrive le due risposte vere. Esc = la seconda (la più prudente).
+function chiediDueScelte(titolo, testo, si, no) {
+  return new Promise(function (risolvi) {
+    var ov = document.createElement('div')
+    ov.className = 'modal-overlay'
+    ov.style.display = 'flex'
+    ov.setAttribute('role', 'dialog')
+    ov.setAttribute('aria-modal', 'true')
+    ov.innerHTML = '<div class="modal-card" style="max-width:440px">' +
+        '<div class="modal-header"><div class="modal-title">' + esc(titolo) + '</div></div>' +
+        '<div class="modal-body"><p style="margin:0">' + esc(testo) + '</p></div>' +
+        '<div class="modal-footer"><div class="modal-footer-actions">' +
+          '<button type="button" class="btn-primary" data-risposta="si">' + esc(si) + '</button>' +
+          '<button type="button" class="btn-secondary" data-risposta="no">' + esc(no) + '</button>' +
+        '</div></div>' +
+      '</div>'
+    function chiudi(r) {
+      document.removeEventListener('keydown', tasti, true)
+      if (ov.parentNode) ov.parentNode.removeChild(ov)
+      risolvi(r)
+    }
+    function tasti(e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); chiudi(false) }
+    }
+    ov.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('button[data-risposta]') : null
+      if (b) chiudi(b.getAttribute('data-risposta') === 'si')
+    })
+    document.addEventListener('keydown', tasti, true)
+    document.body.appendChild(ov)
+    var primo = ov.querySelector('button[data-risposta="si"]')
+    if (primo) primo.focus()
+  })
+}
+
+// ── 75·8 — il file trascinato sul riquadro di lettura ───────────────────────
+// Stessa strada del bottone: stesso limite, stessa lettura. Il riquadro deve
+// fermare il comportamento normale del browser, che aprirebbe il PDF al posto
+// del programma.
+var TIPI_LETTURA = /^(application\/pdf|image\/)/
+
+function onTrascinaSopra(e) {
+  e.preventDefault()
+  if (e.currentTarget && e.currentTarget.classList) e.currentTarget.classList.add('drop-attivo')
+}
+function onTrascinaVia(e) {
+  if (e.currentTarget && e.currentTarget.classList) e.currentTarget.classList.remove('drop-attivo')
+}
+function onRilascioLettura(e, quale) {
+  e.preventDefault()
+  if (e.currentTarget && e.currentTarget.classList) e.currentTarget.classList.remove('drop-attivo')
+  var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]
+  if (!f) return
+  var conferma = quale === 'conferma'
+  var avvisa = conferma
+    ? function (t, m) { showBannerLetturaConferma(t, m) }
+    : function (t, m) { showPonteBanner(t, m) }
+  var btn = el(conferma ? 'btn-lettura-conf' : 'btn-lettura-ai')
+  if (!btn || btn.style.display === 'none') {
+    avvisa('warn', 'La lettura automatica c\'è solo su un documento nuovo, e con l\'indirizzo del Worker impostato in «Impostazioni ditta».')
+    return
+  }
+  if (f.type && !TIPI_LETTURA.test(f.type)) {
+    avvisa('err', '«' + f.name + '» non è un PDF né una foto: trascina il documento del fornitore.')
+    return
+  }
+  if (conferma) leggiConfermaDaFile({ files: [f] })
+  else leggiFatturaDaFile({ files: [f] })
+}
+
 function showFattureView(which) {
   registraVista('fatture', which)
+  if (which === 'edit') moduloPulito('fattura')   // 75·5
   var views = ['list', 'edit', 'detail']
   for (var i = 0; i < views.length; i++) {
     var v = el('fatture-' + views[i] + '-view')
@@ -4309,7 +4468,14 @@ function segnaTerminiToccati() { terminiFatturaToccati = true }
 // I giorni proposti per una fattura nuova: prima il cliente collegato, poi il
 // predefinito aziendale, in ultimo trenta. E' la stessa precedenza di
 // giorniPagamentoFattura, e le due devono restare identiche.
+// 75·2 — i giorni quando non c'è altro: 30 per una vendita, 10 per un acconto.
+var GIORNI_SCADENZA_VENDITA = 30
+var GIORNI_SCADENZA_ACCONTO = 10
+
 function giorniPropostiFattura() {
+  // 75·2 (A) — una fattura d'acconto propone 10 giorni, non quelli del
+  // cliente: i giorni in rubrica sono per le fatture normali.
+  if (editorAccontoId) return GIORNI_SCADENZA_ACCONTO
   var idContatto = el('f-cli-contatto-id') ? el('f-cli-contatto-id').value : ''
   if (idContatto) {
     var c = (contattiCache || []).filter(function (x) { return x.id === idContatto })[0]
@@ -4452,7 +4618,12 @@ function collectFatturaHeader() {
     data_emissione:    dataVal || null,
     // FASE 27 — la scadenza scelta su QUESTA fattura. E' l'unico dato che si
     // salva: i giorni si ricavano da qui e dalla data di emissione.
-    data_scadenza:     (el('f-fat-scadenza') && el('f-fat-scadenza').value) || null,
+    // 75·2 — vuota non resta: 30 giorni dalla data (10 su un acconto). Senza
+    // data di emissione ci pensa completaScadenzaEmessa() dopo l'emissione.
+    data_scadenza:     (el('f-fat-scadenza') && el('f-fat-scadenza').value) ||
+                       (editorTipo !== 'nota_credito' && dataVal
+                          ? addDays(dataVal, editorAccontoId ? GIORNI_SCADENZA_ACCONTO : GIORNI_SCADENZA_VENDITA)
+                          : null),
     anno:              anno,
     tipo:              editorTipo,
     rif_fattura_id:    editorRifId,
@@ -4554,6 +4725,7 @@ async function saveBozza() {
     } else {
       showFattureBanner('fatture-edit-banner', 'ok', 'Bozza salvata alle ' + oraAdesso() + '.')
     }
+    moduloPulito('fattura')   // 75·5
     // FASE 27 — il termine di QUESTA fattura non tocca la rubrica. Se pero'
     // e' diverso da quello del cliente, val la pena chiederlo: e' una domanda,
     // mai un automatismo. La scheda si cambia solo se risponde di si'.
@@ -4565,7 +4737,7 @@ async function saveBozza() {
     showFattureBanner('fatture-edit-banner', 'err',
       'Bozza NON salvata: ' + (e.message || e) + ' — riprova, o controlla la connessione.')
   } finally {
-    if (btn) btn.disabled = false
+    if (btn) btn.disabled = moduloIntatto('fattura')   // 75·5
   }
 }
 
@@ -4584,6 +4756,33 @@ async function saveBozza() {
 //  · stato: 'bozza' resta 'bozza', il resto diventa 'confermato'. Una riga nuova
 //    non nasce mai 'esportato' né 'bloccato'.
 // righeRicaviDi resta come paracadute per le note emesse prima della 73.
+// 75·2 — dopo l'emissione: una fattura ancora senza scadenza la prende dalla
+// data di emissione vera (quella che la RPC ha appena scritto se era vuota).
+// data_scadenza non è fra i campi congelati (SQL_PASSO1): si scrive anche su un
+// documento emesso. Non fa mai fallire l'emissione.
+async function completaScadenzaEmessa(idFattura) {
+  try {
+    const { data: f, error } = await sb.from('tm_conta_fatture')
+      .select('id, tipo, data_emissione, data_scadenza')
+      .eq('id', idFattura).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    if (!f || f.tipo === 'nota_credito' || f.data_scadenza || !f.data_emissione) return ''
+    const { data: rate, error: eR } = await sb.from('tm_conta_cantiere_acconti')
+      .select('id').eq('fattura_id', idFattura)
+    if (eR) throw eR
+    var giorni = (rate || []).length ? GIORNI_SCADENZA_ACCONTO : GIORNI_SCADENZA_VENDITA
+    var scad = addDays(f.data_emissione, giorni)
+    const { error: eU } = await sb.from('tm_conta_fatture')
+      .update({ data_scadenza: scad })
+      .eq('id', idFattura).eq('azienda_id', currentAziendaId).select('id')
+    if (eU) throw eU
+    return 'Scadenza messa al ' + fmtDate(scad) + ' (' + giorni + ' giorni).'
+  } catch (e) {
+    console.warn('Scadenza dopo l\'emissione:', e.message || e)
+    return ''
+  }
+}
+
 async function copiaClassificazioneDaFattura(idNota) {
   const { data: nota, error: eN } = await sb.from('tm_conta_fatture')
     .select('id, tipo, stato, rif_fattura_id, totale_imponibile, totale_iva, gruppo_codice')
@@ -4727,6 +4926,7 @@ async function doEmitCorrente() {
     // 72·3 — prima di rileggere: il contatore e la scheda la trovano già classificata.
     var cls = (emessa && emessa.tipo === 'nota_credito')
       ? await classificaNotaEmessa(emessa.id) : { testo: '', avviso: false }
+    if (emessa && emessa.id) await completaScadenzaEmessa(emessa.id)   // 75·2
     await loadFattureList()
     try { await refreshDaClassificareCount() } catch (_) {}
     if (emessa && emessa.id) {
@@ -4779,6 +4979,7 @@ async function doEmitById(id) {
     if (error) throw error
     // 72·3 — su una fattura normale torna vuoto dopo una lettura.
     var cls = await classificaNotaEmessa(id)
+    await completaScadenzaEmessa(id)   // 75·2
     await loadFattureList()
     try { await refreshDaClassificareCount() } catch (_) {}
     await viewFattura(id)
@@ -5067,7 +5268,7 @@ async function saveIbanEntry() {
     closeIbanForm()
     await loadIbanRubrica(true)
     renderIbanRubrica()
-    showFattureBanner('iban-banner', 'ok', 'IBAN salvato in rubrica.')
+    showFattureBanner('iban-banner', 'ok', 'IBAN salvato in rubrica alle ' + oraAdesso() + '.')
   } catch (e) {
     showFattureBanner('iban-banner', 'err', 'Salvataggio IBAN: ' + (e.message || e))
   } finally {
@@ -5828,6 +6029,7 @@ function confirmEmitNow() {
 // Registratore come origine_tipo='acquisto' (lato costo).
 // ══════════════════════════════════════════════════════════════════════════════
 function showAcquistiView(which) {
+  if (which === 'edit') moduloPulito('acquisto')   // 75·5
   registraVista('acquisti', which)
   var views = ['list', 'detail', 'edit']
   for (var i = 0; i < views.length; i++) {
@@ -5880,7 +6082,7 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
     (isSoggettoIva() ? '' : '<div class="ro-lbl"></div><div class="ro-val" style="font-weight:400;color:var(--text3)">ℹ️ IVA non recuperabile (non soggetto IVA)</div>') +
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Pagamento</div>' +
-    riga('Stato', statoAcquistoBadge(a.stato_pagamento)) +
+    riga('Stato', statoEAvvisoAcquisto(a)) +   // 75·3
     // Data pagamento resta: la scrive il trigger dai pagamenti, e' il dato vero.
     (pagato || a.data_pagamento ? riga('Data pagamento', a.data_pagamento ? esc(fmtDate(a.data_pagamento)) : '—') : '') +
     // Metodo e Riferimento NON stanno piu' qui: dalla FASE 8 ogni versamento ha
@@ -6001,6 +6203,27 @@ async function loadAcquistiList() {
   } catch (e) {
     html('acquisti-table', '<p style="color:var(--err)">❌ Elenco non caricato: ' + esc(e.message || e) + '</p>')
   }
+}
+
+// 75·3 — l'avviso accanto allo stato di una fattura fornitore non pagata.
+// Arancio fino alla scadenza (entro i giorni di preavviso), rosso dopo.
+function avvisoScadenzaFornitore(scadenza, statoVero) {
+  if (!scadenza || statoVero === 'pagato') return ''
+  var d = diffGiorni(scadenza, oggiISO())
+  if (d == null) return ''
+  if (d < 0)   return badge('err',  '🔴 Scaduta e non pagata')
+  if (d === 0) return badge('warn', '🟠 Scade oggi')
+  if (d === 1) return badge('warn', '🟠 Scade domani')
+  if (d <= giorniPreavviso()) return badge('warn', '🟠 Scade tra ' + d + ' giorni')
+  return ''
+}
+
+// Stato + avviso di un acquisto: una funzione sola per elenco e scheda.
+function statoEAvvisoAcquisto(a) {
+  var statoVero = statoConStorno('tm_conta_fatture_acquisto', a.id, a.importo, a.stato_pagamento)
+  var av = avvisoScadenzaFornitore(a.scadenza, statoVero)
+  return badgePagamentoConResiduo('uscita', a.stato_pagamento, 'tm_conta_fatture_acquisto', a.id, a.importo) +
+    (av ? ' ' + av : '')
 }
 
 function statoAcquistoBadge(stato) {
@@ -6167,7 +6390,7 @@ function renderAcquistiTable() {
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
-      '<td>' + badgePagamentoConResiduo('uscita', a.stato_pagamento, 'tm_conta_fatture_acquisto', a.id, a.importo) + paySub + '</td>' +
+      '<td>' + statoEAvvisoAcquisto(a) + paySub + '</td>' +   // 75·3
       '<td>' + etichettaCantiereRiga(cantiereDiAcquisto(a.id), a.id) + '</td>' +
       '<td class="row-actions">' + acquistiRowActions(a) + '</td>' +
     '</tr>'
@@ -6259,11 +6482,24 @@ function onAcquistoStatoChange() {
 // risolto: data e metodo si scelgono qui. Resta una sola strada di scrittura —
 // si crea una riga in tm_conta_pagamenti, esattamente come farebbe
 // «+ Registra pagamento», e lo stato lo ricalcola il trigger.
+// 75·4 — il rimando «Pagamenti parziali… + Registra pagamento» ha senso solo
+// finché un pagamento non c'è: sparisce con la spunta «Già pagata» accesa e
+// quando la fattura ha già dei pagamenti.
+function aggiornaRimandoPagamento() {
+  var rim = el('a-pagamento-rimando')
+  if (!rim) return
+  var box = el('a-gia-pagata-box')
+  var spunta = el('a-gia-pagata')
+  var visibile = !!(box && box.style.display !== 'none') && !(spunta && spunta.checked)
+  rim.style.display = visibile ? '' : 'none'
+}
+
 function onAcquistoGiaPagata() {
   var spunta = el('a-gia-pagata')
   var campi = el('a-gia-pagata-campi')
   var acceso = !!(spunta && spunta.checked)
   if (campi) campi.style.display = acceso ? 'flex' : 'none'
+  aggiornaRimandoPagamento()   // 75·4
   // La data si propone dalla fattura, ma resta modificabile: pagare il giorno
   // stesso e' il caso comune, non una regola.
   if (acceso && !getVal('a-pag-data')) setVal('a-pag-data', getVal('a-data') || oggiISO())
@@ -6279,6 +6515,7 @@ async function aggiornaGiaPagata(idAcquisto, importoDoc) {
     box.style.display = ''
     avviso.style.display = 'none'
     avviso.innerHTML = ''
+    aggiornaRimandoPagamento()   // 75·4
   }
 
   if (!idAcquisto) { soloSpunta(); return }   // documento nuovo: non ha pagamenti
@@ -6298,6 +6535,7 @@ async function aggiornaGiaPagata(idAcquisto, importoDoc) {
     avviso.style.display = ''
     avviso.innerHTML = '💳 Pagato <strong>' + esc(fmtNumIt(gia)) + '</strong> di <strong>' +
       esc(fmtNumIt(safeNum(importoDoc) || 0)) + '</strong> — gestisci i pagamenti dalla scheda.'
+    aggiornaRimandoPagamento()   // 75·4 — il pagamento c'è già: il rimando non serve
   } catch (e) {
     // Se i pagamenti non si leggono si mostra la spunta: il salvataggio la
     // ricontrolla comunque prima di creare qualcosa.
@@ -6645,6 +6883,8 @@ function fillAcquistoForm(v) {
   onAcquistoGiaPagata()
   // FASE 27 — il cantiere scelto alla registrazione.
   impostaCantierePicker('a', v.cantiere_id || null)
+  // 75·6 — un acquisto gia' salvato senza cantiere e' gia' «a magazzino».
+  if (editingAcquistoId && !v.cantiere_id) cantiereMagazzinoScelto.a = true
   // FASE 29 — l'offerta collegata: la tendina si riempie appena le offerte
   // sono lette, e si aggiorna quando cambia il fornitore.
   riempiTendinaOfferte(v.offerta_id || null)
@@ -6827,6 +7067,9 @@ async function saveAcquisto() {
   // 59·A — i file stanno nella coda del campo, non nell'input.
   var fileDaCaricare = fileScelti('a-allegato')
 
+  // 75·6 — senza cantiere si chiede, una volta: il vuoto dev'essere una scelta.
+  if (!(await confermaCantiereAcquisto())) return
+
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
     var payload = collectAcquisto()
@@ -6960,7 +7203,8 @@ async function saveAcquisto() {
       tipoBanner = 'warn'
       msgBanner += '\n⚠️ Attenzione: ' + differenzaRighe
     }
-    showFattureBanner('acquisti-list-banner', tipoBanner, msgBanner)
+    // 75·5 — l'ora, sempre: un «salvata» senza ora non si distingue da uno vecchio.
+    showFattureBanner('acquisti-list-banner', tipoBanner, 'Salvata alle ' + oraAdesso() + '. ' + msgBanner)
   } catch (e) {
     showFattureBanner('acquisti-edit-banner', 'err', 'Salvataggio: ' + (e.message || e))
   } finally {
@@ -7102,6 +7346,7 @@ async function initImpostazioniPage() {
     if (missing.length) {
       showFattureBanner('impostazioni-banner', 'warn', 'Per fatture complete mancano: ' + missing.join(', ') + '. Puoi compilarli e salvare.')
     }
+    moduloPulito('impostazioni')   // 75·5 — i campi sono quelli del database
   } catch (e) {
     showFattureBanner('impostazioni-banner', 'err', 'Caricamento impostazioni: ' + e.message)
   }
@@ -7265,15 +7510,16 @@ async function saveImpostazioni() {
     catch (eAvv) {
       avvisiOk = false
       showFattureBanner('impostazioni-banner', 'warn',
-        'Dati della ditta salvati. Avvisi scadenze o costo orario NO: ' + (eAvv.message || eAvv))
+        'Dati della ditta salvati alle ' + oraAdesso() + '. Avvisi scadenze o costo orario NO: ' + (eAvv.message || eAvv))
     }
 
     var missing = impostazioniMancanti(aziendaInfo)
     if (missing.length) {
-      showFattureBanner('impostazioni-banner', 'warn', 'Salvato. ⚠️ Per fatture complete mancano ancora: ' + missing.join(', ') + '.')
+      showFattureBanner('impostazioni-banner', 'warn', 'Salvato alle ' + oraAdesso() + '. ⚠️ Per fatture complete mancano ancora: ' + missing.join(', ') + '.')
     } else if (avvisiOk) {
-      showFattureBanner('impostazioni-banner', 'ok', 'Impostazioni salvate, avvisi scadenze compresi.')
+      showFattureBanner('impostazioni-banner', 'ok', 'Impostazioni salvate alle ' + oraAdesso() + ', avvisi scadenze compresi.')
     }
+    moduloPulito('impostazioni')   // 75·5
   } catch (e) {
     var m = e && e.message ? e.message : String(e)
     var low = m.toLowerCase()
@@ -7282,7 +7528,7 @@ async function saveImpostazioni() {
     }
     showFattureBanner('impostazioni-banner', 'err', 'Salvataggio impostazioni: ' + m)
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '💾 Salva impostazioni' }
+    if (btn) { btn.textContent = '💾 Salva impostazioni'; btn.disabled = moduloIntatto('impostazioni') }   // 75·5
   }
 }
 
@@ -7316,6 +7562,7 @@ async function initInserimentoPage() {
 function resetInserimentoForm() {
   var form = el('form-inserimento')
   if (form) form.reset()
+  moduloPulito('movimento')   // 75·5
   togglePeriodicita(false)
   if (el('f-data')) el('f-data').value = oggiISO()
   html('inserimento-banner', '')
@@ -7417,9 +7664,9 @@ async function handleInserimentoSubmit(event) {
       var allegatiMod = riassuntoEsitiAllegati(esitiAllegati)
       exitEditMode()
       if (allegatiMod.ko) {
-        showInserimentoBanner('warn', 'Modifiche salvate, ma non tutti gli allegati', allegatiMod.testo + '. Riapri il movimento con «Modifica» e riprova con quelli.')
+        showInserimentoBanner('warn', 'Modifiche salvate alle ' + oraAdesso() + ', ma non tutti gli allegati', allegatiMod.testo + '. Riapri il movimento con «Modifica» e riprova con quelli.')
       } else {
-        showInserimentoBanner('ok', 'Modifiche salvate', 'Il movimento è stato aggiornato.' + (allegatiMod.ok ? ' ' + allegatiMod.testo + '.' : ''))
+        showInserimentoBanner('ok', 'Modifiche salvate alle ' + oraAdesso(), 'Il movimento è stato aggiornato.' + (allegatiMod.ok ? ' ' + allegatiMod.testo + '.' : ''))
       }
     } else {
       payload.created_by = currentUser.id
@@ -7445,16 +7692,16 @@ async function handleInserimentoSubmit(event) {
             null, { confermaEccedenza: true })
           invalidaCachePagamenti()
         } catch (ePg) {
-          showInserimentoBanner('warn', 'Movimento salvato, pagamento NO',
+          showInserimentoBanner('warn', 'Movimento salvato alle ' + oraAdesso() + ', pagamento NO',
             'Il movimento c e, ma il pagamento non e stato registrato: ' + (ePg.message || ePg) +
             ' — puoi aggiungerlo dalla scheda del documento.')
         }
       }
       resetInserimentoForm()
       if (allegatiNuovo.ko) {
-        showInserimentoBanner('warn', 'Movimento salvato, ma non tutti gli allegati', allegatiNuovo.testo + ' — Il movimento è comunque in «Da classificare»: riaprilo con «Modifica» e riprova con quelli.')
+        showInserimentoBanner('warn', 'Movimento salvato alle ' + oraAdesso() + ', ma non tutti gli allegati', allegatiNuovo.testo + ' — Il movimento è comunque in «Da classificare»: riaprilo con «Modifica» e riprova con quelli.')
       } else {
-        showInserimentoBanner('ok', 'Movimento salvato', 'Ora compare nella lista «Da classificare».' + (allegatiNuovo.ok ? ' ' + allegatiNuovo.testo + '.' : ''))
+        showInserimentoBanner('ok', 'Movimento salvato alle ' + oraAdesso(), 'Ora compare nella lista «Da classificare».' + (allegatiNuovo.ok ? ' ' + allegatiNuovo.testo + '.' : ''))
       }
     }
 
@@ -7469,7 +7716,7 @@ async function handleInserimentoSubmit(event) {
   } catch (e) {
     showInserimentoBanner('err', 'Errore', e.message)
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = editingMovimentoId ? '💾 Salva modifiche' : '💾 Salva movimento' }
+    if (btn) { btn.textContent = editingMovimentoId ? '💾 Salva modifiche' : '💾 Salva movimento'; btn.disabled = moduloIntatto('movimento') }   // 75·5
   }
 }
 
@@ -8018,7 +8265,7 @@ async function loadGruppi(force) {
 
 // Opzioni per un menu «gruppo». La voce vuota è esplicita: «nessun gruppo» è
 // una scelta legittima, non un campo dimenticato.
-function buildGruppoOptions(selected) {
+function buildGruppoOptions(selected, tipo) {
   // Protetto alla fonte, non solo in riempiSelectGruppi: chiunque la chiami
   // deve ottenere un menu che dice la verita', non uno muto.
   if (!gruppiCache || !gruppiCache.length) return opzioneGruppiMancanti()
@@ -8026,15 +8273,25 @@ function buildGruppoOptions(selected) {
   // 68·3 — un gruppo disattivato non si sceglie piu'. Resta pero' selezionabile
   // se e' gia' quello del documento aperto: togliergli l'opzione lo
   // cancellerebbe in silenzio al primo salvataggio.
+  // 75·1 — `tipo` ('costo' / 'ricavo') filtra come nella classificazione
+  // (74·1), con la stessa eccezione per il valore gia' scritto.
   ;(gruppiCache || []).forEach(function (g) {
-    if (g.attivo === false && g.codice !== selected) return
+    var giaScritto = g.codice === selected
+    if (g.attivo === false && !giaScritto) return
+    if (!gruppoDelTipo(g, tipo) && !giaScritto) return
     out += '<option value="' + esc(g.codice) + '"' +
-           (g.codice === selected ? ' selected' : '') + '>' +
+           (giaScritto ? ' selected' : '') + '>' +
            esc(g.codice + ' · ' + g.nome) +
-           (g.attivo === false ? ' (disattivato)' : '') + '</option>'
+           (g.attivo === false ? ' (disattivato)' : '') +
+           (!gruppoDelTipo(g, tipo) ? (g.tipo === 'ricavo' ? ' (di ricavo)' : ' (di costo)') : '') +
+           '</option>'
   })
   return out
 }
+
+// 75·1 — i menu che portano solo gruppi di costo: la fattura d'acquisto e il
+// movimento manuale, che registra solo uscite (Canale B).
+var MENU_GRUPPI_COSTO = ['a-gruppo', 'f-gruppo']
 
 // Se i gruppi non ci sono, il menu lo DICE. Prima restava con la sola voce
 // «— nessun gruppo —»: indistinguibile da un elenco che non si e' caricato,
@@ -8052,7 +8309,7 @@ async function riempiSelectGruppi(id, selected) {
     sel.innerHTML = opzioneGruppiMancanti()
     return
   }
-  sel.innerHTML = buildGruppoOptions(selected || '')
+  sel.innerHTML = buildGruppoOptions(selected || '', MENU_GRUPPI_COSTO.indexOf(id) !== -1 ? 'costo' : null)
 }
 
 async function loadContatti(force) {
@@ -9348,6 +9605,7 @@ async function loadOfferte(force) {
 
 function showOfferteView(which) {
   registraVista('offerte', which)
+  if (which === 'edit') moduloPulito('conferma')   // 75·5
   ;['list', 'detail', 'edit'].forEach(function (v) {
     var e = el('offerte-' + v + '-view')
     if (e) e.style.display = (v === which) ? 'block' : 'none'
@@ -9681,6 +9939,160 @@ function impostaModuloPerTipo(tipo) {
   if (el('off-data-label')) el('off-data-label').textContent = 'Data del' + (tipo === 'offerta' ? 'l’offerta' : 'la conferma')
 }
 
+// ══ 75·11 — LA CONFERMA D'ORDINE LETTA DAL PDF: SOLO I DATI PRINCIPALI ══════
+// Stesso Worker delle fatture: il prompt lo manda il programma, il Worker non
+// cambia. Si leggono fornitore, numero, data, totale e consegna prevista; gli
+// articoli no (STATO §4: le righe si scrivono a mano).
+// La consegna prevista non ha una colonna: va nelle Note (decisione D).
+// Il fornitore NON si collega da solo, come sugli acquisti: si scrive il nome
+// e si apre l'elenco della rubrica, la scelta la fa Umberto.
+var letturaConfermaInCorso = false
+
+function mostraLetturaConferma(nuovo) {
+  var card = el('conf-lettura')
+  if (card) card.style.display = (nuovo && letturaAutomaticaAttiva()) ? '' : 'none'
+  html('conf-lettura-banner', '')
+  html('conf-lettura-note', '')
+  html('conf-lettura-costo', '')
+}
+
+function showBannerLetturaConferma(tipo, msg) {
+  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : tipo === 'info' ? '⏳' : '❌'
+  html('conf-lettura-banner',
+    '<div class="fase-banner ' + tipo + '" role="' + (tipo === 'ok' ? 'status' : 'alert') + '">' +
+      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
+      '<div class="msg">' + escRighe(msg) + '</div>' +
+    '</div>')
+}
+
+function apriSceltaFileConferma() {
+  if (letturaConfermaInCorso) return
+  var inp = el('lettura-conf-file')
+  if (inp) { inp.value = ''; inp.click() }
+}
+
+function testoPromptConferma() {
+  return 'Leggi questa conferma d\'ordine di un fornitore e rispondi SOLO con un\n' +
+    'oggetto JSON, senza testo prima o dopo, senza backtick.\n\n' +
+    'Campi richiesti:\n' +
+    '{\n' +
+    '  "fornitore": "ragione sociale esatta",\n' +
+    '  "numero": "numero della conferma o dell\'ordine, o null",\n' +
+    '  "data": "AAAA-MM-GG",\n' +
+    '  "totale": 0.00,\n' +
+    '  "totale_iva_inclusa": true,\n' +
+    '  "aliquota_iva": 8.1,\n' +
+    '  "consegna_prevista": "AAAA-MM-GG o null",\n' +
+    '  "note_lettura": "cosa non si legge bene, o null"\n' +
+    '}\n\n' +
+    'REGOLE:\n' +
+    '- NON elencare gli articoli: servono solo questi dati.\n' +
+    '- totale: il totale finale stampato, cosi\' come e\'. NON ricalcolarlo.\n' +
+    '- totale_iva_inclusa: true se quel totale comprende l\'IVA, false se\n' +
+    '  e\' al netto, null se non si capisce.\n' +
+    '- aliquota_iva: solo se il totale e\' IVA inclusa, altrimenti null.\n' +
+    '- consegna_prevista: la data di consegna o fornitura indicata. Se c\'e\'\n' +
+    '  solo una settimana o un periodo (es. KW 43), metti null e scrivilo in\n' +
+    '  note_lettura.\n' +
+    '- Se un dato non c\'e\' o non si legge: null. Non inventare mai un valore.\n' +
+    '- Le date in formato AAAA-MM-GG. Gli importi con il punto decimale (1234.50).\n'
+}
+
+async function leggiConfermaDaFile(input) {
+  if (!input || !input.files || !input.files.length) return
+  if (letturaConfermaInCorso) return
+  var file = input.files[0]
+  var btn = el('btn-lettura-conf')
+  html('conf-lettura-note', '')
+  html('conf-lettura-costo', '')
+  try {
+    var mb = file.size / (1024 * 1024)
+    if (mb > LIMITE_LETTURA_MB) {
+      throw new Error('Il file pesa ' + fmtNumIt(mb) + ' MB, oltre il limite di ' +
+        LIMITE_LETTURA_MB + ' MB. Rifallo con una risoluzione più bassa.')
+    }
+    letturaConfermaInCorso = true
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Lettura in corso…' }
+    showBannerLetturaConferma('info', 'Lettura di «' + file.name + '» in corso… può volerci qualche secondo.')
+    var risposta = await chiediLetturaAlWorker(file, testoPromptConferma())
+    var esito = applicaLetturaConferma(risposta.testo)
+    if (esito.ok) {
+      mostraCostoLettura(risposta.input_tokens, risposta.output_tokens, 'conf-lettura-costo')
+      showBannerLetturaConferma('ok', 'Conferma letta. Controlla i campi, scegli il fornitore dalla rubrica e scrivi le righe: poi salva.')
+    }
+  } catch (e) {
+    showBannerLetturaConferma('err', e.message || String(e))
+  } finally {
+    letturaConfermaInCorso = false
+    if (btn) { btn.disabled = false; btn.textContent = '📄 Leggi da PDF o foto' }
+    if (input && 'value' in input) input.value = ''
+  }
+}
+
+// Valida tutto prima di scrivere, come applicaTestoLettura: o un modulo
+// coerente, o niente.
+function applicaLetturaConferma(testo) {
+  var dati
+  try { dati = estraiJson(testo) }
+  catch (e) { showBannerLetturaConferma('err', e.message); return { ok: false } }
+
+  var scartati = []
+  var fornitore = (dati.fornitore == null) ? null : String(dati.fornitore).trim() || null
+  var numero = (dati.numero == null) ? null : String(dati.numero).trim() || null
+  var data = validaData(dati.data)
+  if (dati.data && !data) scartati.push('la data «' + dati.data + '» non è una data valida')
+  var totale = validaImporto(dati.totale)
+  if (dati.totale != null && totale == null) scartati.push('il totale «' + dati.totale + '» non è un numero valido')
+  var consegna = validaData(dati.consegna_prevista)
+  if (dati.consegna_prevista && !consegna) scartati.push('la consegna prevista «' + dati.consegna_prevista + '» non è una data valida')
+  var inclusa = dati.totale_iva_inclusa === true ? true : (dati.totale_iva_inclusa === false ? false : null)
+  var aliq = safeNum(dati.aliquota_iva)
+  if (aliq != null && (aliq < 0 || aliq > 30)) { scartati.push('l\'aliquota «' + dati.aliquota_iva + '» non è plausibile'); aliq = null }
+
+  if (fornitore) {
+    setVal('off-fornitore', fornitore)
+    setVal('off-contatto-id', ''); html('off-contatto-legato', '')
+    try { rubricaSuggerisci('o') } catch (_) { /* l'elenco e' un aiuto */ }
+  }
+  if (numero) setVal('off-riferimento', numero)
+  if (data) setVal('off-data', data)
+  if (totale != null) {
+    setVal('off-tot-stampato', totale)
+    if (inclusa != null) setVal('off-tot-stampato-iva', inclusa ? 'iva_inclusa' : 'netto')
+    if (inclusa && aliq != null) setVal('off-tot-stampato-aliquota', aliq)
+    onTotaleStampatoChange()
+  }
+  if (consegna) {
+    var riga = 'Consegna prevista: ' + fmtDate(consegna)
+    var note = String(getVal('off-note') || '')
+    if (note.indexOf(riga) === -1) setVal('off-note', note ? note + '\n' + riga : riga)
+  }
+
+  var pezzi = ''
+  if (dati.note_lettura) {
+    pezzi += '<div class="lettura-nota"><span aria-hidden="true">🔎</span>' +
+      '<span><strong>La lettura segnala:</strong> ' + esc(String(dati.note_lettura)) + '</span></div>'
+  }
+  if (totale != null && inclusa == null) {
+    pezzi += '<div class="lettura-nota avviso"><span aria-hidden="true">⚠️</span>' +
+      '<span>Dal documento non si capisce se il totale comprende l\'IVA: scegli tu «Quel totale è».</span></div>'
+  }
+  if (consegna) {
+    pezzi += '<div class="lettura-nota"><span aria-hidden="true">🚚</span>' +
+      '<span>Consegna prevista il ' + esc(fmtDate(consegna)) + ': scritta nelle Note.</span></div>'
+  }
+  if (scartati.length) {
+    pezzi += '<div class="lettura-nota avviso"><span aria-hidden="true">🚫</span>' +
+      '<span><strong>Non ' + (scartati.length === 1 ? 'è stato scritto' : 'sono stati scritti') +
+      ' nel modulo:</strong><ul style="margin:5px 0 0 18px">' +
+      scartati.map(function (x) { return '<li>' + esc(x) + '</li>' }).join('') +
+      '</ul>Compilali a mano guardando il documento.</span></div>'
+  }
+  html('conf-lettura-note', pezzi)
+  moduloModificato('conferma')   // 75·5
+  return { ok: true }
+}
+
 async function newOfferta() {
   editingOffertaId = null
   editingOffertaTipo = 'conferma_ordine'
@@ -9693,6 +10105,7 @@ async function newOfferta() {
   onTotaleStampatoChange()
   svuotaCodaFile('off-allegato')   // 59·A
   impostaModuloPerTipo('conferma_ordine')
+  mostraLetturaConferma(true)   // 75·11
   showOfferteView('edit')
   try { await loadCantieri() } catch (e) { /* non bloccante */ }
   impostaCantierePicker('o', null)
@@ -9723,6 +10136,7 @@ async function editOfferta(id) {
     onTotaleStampatoChange()
     svuotaCodaFile('off-allegato')   // 59·A
     impostaModuloPerTipo(editingOffertaTipo)
+    mostraLetturaConferma(false)   // 75·11 — in modifica no, come sugli acquisti
     showOfferteView('edit')
     try { await loadCantieri() } catch (e) { /* non bloccante */ }
     impostaCantierePicker('o', o.cantiere_id || null)
@@ -9799,7 +10213,7 @@ async function saveOfferta() {
     var allegati = riassuntoEsitiAllegati(await creaAllegatiDaForm('off-allegato', 'tm_conta_offerte', id, btn))
     await loadOfferte(true)
     offerteList = offerteCache || []
-    var nome = td.et + ' salvata: ' + fornitore + ', righe ' + fmtNum2(testa.totale) + ' CHF.' +
+    var nome = td.et + ' salvata alle ' + oraAdesso() + ': ' + fornitore + ', righe ' + fmtNum2(testa.totale) + ' CHF.' +
                (allegati.ok && !allegati.ko ? ' ' + allegati.testo + '.' : '')
     var scarto = testoConfrontoTotaleOff(testa)
     if (allegati.ko) {
@@ -9948,7 +10362,13 @@ async function cambiaStatoOfferta(id, stato) {
 function riempiTendinaOfferte(selezionata) {
   var sel = el('a-offerta')
   if (!sel) return
-  var lista = offerteCache || []
+  // 75·7 — una conferma gia' fatturata ha finito il suo giro: non si propone
+  // piu'. Resta nel suo elenco, e resta qui se e' quella gia' collegata.
+  var tutte = offerteCache || []
+  var lista = tutte.filter(function (o) {
+    if (o.id === selezionata) return true
+    return !((o.tipo_documento || 'conferma_ordine') === 'conferma_ordine' && o.stato === 'fatturato')
+  })
   var contattoId = getVal('a-contatto-id')
   var nomeForn = (getVal('a-fornitore') || '').toLowerCase().trim()
   function dello(o) {
@@ -9964,7 +10384,9 @@ function riempiTendinaOfferte(selezionata) {
   var out = '<option value="">— nessun documento collegato —</option>'
   if (sue.length)   out += '<optgroup label="Di questo fornitore">' + sue.map(voce).join('') + '</optgroup>'
   if (altre.length) out += '<optgroup label="Altri documenti">' + altre.map(voce).join('') + '</optgroup>'
-  if (!lista.length) out += '<option value="" disabled>Nessuna conferma o offerta registrata</option>'
+  if (!lista.length) out += '<option value="" disabled>' +
+    (tutte.length ? 'Nessuna conferma da collegare (quelle fatturate non si propongono)' : 'Nessuna conferma o offerta registrata') +
+    '</option>'
   sel.innerHTML = out
   if (selezionata && sel.value !== selezionata) sel.value = ''
   onOffertaCollegataChange()
@@ -10934,6 +11356,7 @@ function showRubricaBanner(tipo, msg) {
 
 function mostraRubricaVista(quale) {
   registraVista('rubrica', quale)
+  if (quale === 'scheda') moduloPulito('contatto')   // 75·5
   var lista   = el('rubrica-lista-view')
   var lettura = el('rubrica-lettura-view')   // FASE 18 — sola lettura
   var scheda  = el('rubrica-scheda-view')
@@ -11733,7 +12156,7 @@ async function salvaContatto(event) {
     }
 
     chiudiSchedaContatto()
-    showRubricaBanner('ok', 'Contatto salvato: ' + (payload.ragione_sociale || payload.cognome) + '.')
+    showRubricaBanner('ok', 'Contatto salvato alle ' + oraAdesso() + ': ' + (payload.ragione_sociale || payload.cognome) + '.')
   } catch (e) {
     showContattoBanner('err', 'Non salvato: ' + friendlyContattoError(e))
   } finally {
@@ -11982,7 +12405,7 @@ async function scegliContatto(prefix, id) {
   // fattura: e' la stessa regola dell'indirizzo, si riempie il vuoto e non si
   // corregge il pieno. Cambiare il cliente su una fattura dove il termine e'
   // stato deciso non deve cancellarlo.
-  if (prefix === 'v' && el('f-fat-giorni') && !terminiFatturaToccati) {
+  if (prefix === 'v' && el('f-fat-giorni') && !terminiFatturaToccati && !editorAccontoId) {   // 75·2
     var gCli = safeNum(x.giorni_pagamento)
     if (gCli == null) gCli = safeNum((aziendaInfo || {}).termini_pagamento_giorni)
     if (gCli != null) {
@@ -12080,6 +12503,7 @@ async function creaContattoAlVolo(prefix) {
   await initRubricaPage()
   await nuovoContatto(c.categoria)
   if (el('c-ragione')) el('c-ragione').value = testo
+  if (testo) moduloModificato('contatto')   // 75·5 — il nome l'ha scritto il programma
   showContattoBanner('warn',
     'Stai creando un contatto al volo. Appena lo salvi torni al documento, con il contatto già collegato.')
 }
@@ -13466,6 +13890,18 @@ function bloccoScadenze(blocco, colore, spiegazione) {
 function rigaScadenza(r, blocco) {
   var oggi = oggiISO()
   var q = giorniAParole(r.data_scadenza, oggi)
+  // 75·3 — per i fornitori le parole degli avvisi: «scade domani», «scade tra
+  // 5 giorni», «scaduta e non pagata».
+  if (r.verso === 'uscita' && r.data_scadenza) {
+    var dF = diffGiorni(r.data_scadenza, oggi)
+    if (dF != null) {
+      q = { cls: q.cls, testo: dF < 0
+        ? 'scaduta e non pagata (da ' + (-dF) + (dF === -1 ? ' giorno)' : ' giorni)')
+        : dF === 0 ? 'scade oggi'
+        : dF === 1 ? 'scade domani'
+        : 'scade tra ' + dF + ' giorni' }
+    }
+  }
   var e = etichettaPagamento(r.verso, 'pagato')     // «Pagato» o «Incassato»
 
   var doc = []
@@ -13582,23 +14018,30 @@ async function segnaSaldatoDaScadenze(tabella, id, verso, importoDaSaldare, idRa
 }
 
 // Porta il documento nella sua schermata.
-async function apriDocumentoScadenza(tabella, id) {
-  try {
-    if (tabella === 'tm_conta_fatture') {
-      showPage('fatture')
-      await initFatturePage()
-      await viewFattura(id)
-    } else if (tabella === 'tm_conta_fatture_acquisto') {
-      showPage('acquisti')
-      await initAcquistiPage()
-      await viewAcquisto(id)
-    } else {
-      // movimenti propri: si aprono direttamente in modifica
-      await startEditMovimento(id)
-    }
-  } catch (e) {
-    showScadenzeBanner('err', 'Impossibile aprire il documento: ' + (e.message || e))
+// 75·9 — aprire un documento da dove lo si vede: Scadenze e scheda cantiere.
+async function apriDocumentoContabile(tabella, id) {
+  if (tabella === 'tm_conta_fatture') {
+    showPage('fatture')
+    await initFatturePage()
+    await viewFattura(id)
+  } else if (tabella === 'tm_conta_fatture_acquisto') {
+    showPage('acquisti')
+    await initAcquistiPage()
+    await viewAcquisto(id)
+  } else {
+    // movimenti propri: si aprono direttamente in modifica
+    await startEditMovimento(id)
   }
+}
+
+async function apriDocumentoScadenza(tabella, id) {
+  try { await apriDocumentoContabile(tabella, id) }
+  catch (e) { showScadenzeBanner('err', 'Impossibile aprire il documento: ' + (e.message || e)) }
+}
+
+async function apriDocumentoDaCantiere(tabella, id) {
+  try { await apriDocumentoContabile(tabella, id) }
+  catch (e) { showCantieriBanner('err', 'Impossibile aprire il documento: ' + (e.message || e)) }
 }
 
 // ── FASE 4B — il badge nel menu ──────────────────────────────────────────────
@@ -13735,6 +14178,8 @@ function testoPromptFattura() {
     '  "numero_fornitore": "numero fattura o null",\n' +
     '  "data": "AAAA-MM-GG",\n' +
     '  "scadenza": "AAAA-MM-GG o null",\n' +
+    '  "condizione_pagamento": "la condizione stampata, es. Entro 30 gg netto, o null",\n' +
+    '  "giorni_pagamento": 30,\n' +
     '  "importo": 0.00,\n' +
     '  "valuta": "CHF",\n' +
     '  "imponibile": 0.00,\n' +
@@ -13751,6 +14196,9 @@ function testoPromptFattura() {
     '  Non inventare mai un valore.\n' +
     '- Le date in formato AAAA-MM-GG.\n' +
     '- Gli importi con il punto decimale (1234.50).\n' +
+    '- giorni_pagamento: i giorni della condizione di pagamento\n' +
+    '  stampata (Entro 30 gg netto = 30), o null se non c\'e\'.\n' +
+    '  Non calcolare la scadenza: scrivi solo quello che c\'e\'.\n' +
     '- conto_suggerito: scegli fra questi conti\n' +
     elencoContiPerPrompt() + '\n' +
     '- note_lettura: scrivi qui se la foto e\' sfocata,\n' +
@@ -13938,6 +14386,29 @@ async function applicaTestoLettura(testo) {
   v.scadenza = validaData(dati.scadenza)
   if (dati.scadenza && !v.scadenza) scartati.push('la scadenza «' + dati.scadenza + '» non è una data valida')
 
+  // 75·2 — la condizione di pagamento. Se sulla fattura c'e' la condizione e
+  // non la data, la scadenza si calcola: data della fattura + giorni.
+  var giorniCond = safeNum(dati.giorni_pagamento)
+  if (dati.giorni_pagamento != null &&
+      (giorniCond == null || giorniCond < 0 || giorniCond > 365 || Math.round(giorniCond) !== giorniCond)) {
+    scartati.push('i giorni di pagamento «' + dati.giorni_pagamento + '» non sono un numero di giorni valido')
+    giorniCond = null
+  }
+  var condTesto = dati.condizione_pagamento ? String(dati.condizione_pagamento).trim() : ''
+  var notaScadenza = null
+  if (!v.scadenza && giorniCond != null) {
+    var dataBase = validaData(dati.data)
+    if (dataBase) {
+      v.scadenza = addDays(dataBase, giorniCond)
+      notaScadenza = 'Scadenza calcolata: ' + fmtDate(v.scadenza) + ', cioè ' + giorniCond +
+        (giorniCond === 1 ? ' giorno' : ' giorni') + ' dalla data della fattura' +
+        (condTesto ? ' («' + condTesto + '»)' : '') + '.'
+    }
+  } else if (!v.scadenza) {
+    notaScadenza = 'Sulla fattura non c\'è né una scadenza né una condizione di pagamento: ' +
+      'scegli il fornitore dalla rubrica (propone i suoi giorni) oppure scrivi la data.'
+  }
+
   v.importo = validaImporto(dati.importo)
   if (dati.importo != null && v.importo == null) scartati.push('l\'importo «' + dati.importo + '» non è un numero valido')
 
@@ -13998,14 +14469,23 @@ async function applicaTestoLettura(testo) {
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
   html('a-contatto-legato', '')
 
-  renderNoteLettura(dati.note_lettura, scartati, avvisoScarto, conto)
+  renderNoteLettura(dati.note_lettura, scartati, avvisoScarto, conto, notaScadenza)
+  moduloModificato('acquisto')   // 75·5 — i campi li ha scritti la lettura
   return { ok: true }
 }
 
 // Riquadro sopra il modulo: cosa ha segnalato la lettura, cosa e' stato scartato
 // e cosa non torna. Tutto in parole, con l'icona sempre accompagnata dal testo.
-function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto) {
+function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto, notaScadenza) {
   var pezzi = ''
+
+  // 75·2 — da dove viene la scadenza, o perché manca.
+  if (notaScadenza) {
+    pezzi += '<div class="lettura-nota">' +
+      '<span aria-hidden="true">📅</span>' +
+      '<span>' + esc(notaScadenza) + '</span>' +
+    '</div>'
+  }
 
   if (noteLettura) {
     pezzi += '<div class="lettura-nota">' +
@@ -14201,12 +14681,15 @@ function mostraSuggerimentiCantiere(pfx, list, conChiusi, sfoglia) {
   var c = cantiereCampi(pfx)
   var chiusi = (cantieriCache || []).filter(function (x) { return !cantiereAttivo(x) }).length
 
-  // «Magazzino / nessun cantiere» in cima e SEMPRE: dev'essere una scelta che
-  // si fa, non un campo che si lascia vuoto per stanchezza.
+  // «Nessun cantiere (da assegnare)» in cima e SEMPRE: dev'essere una scelta
+  // che si fa, non un campo che si lascia vuoto per stanchezza.
+  // 76 — prima diceva «Magazzino / nessun cantiere». Il magazzino e le spese
+  // generali hanno i loro cantieri («Magazzino», «Spese ditta»): questa voce
+  // vuol dire solo «non ancora assegnato». Senza icona, per scelta.
   var out = '<button type="button" class="suggest-item suggest-magazzino" role="option"' +
             ' onclick="scegliCantiere(\'' + pfx + '\', \'\')">' +
-            '\ud83c\udfe0 Magazzino / nessun cantiere' +
-            '<span class="s-sub">per quello che non va su un cantiere preciso</span>' +
+            'Nessun cantiere (da assegnare)' +
+            '<span class="s-sub">non ancora assegnato: il magazzino e le spese generali hanno il loro cantiere</span>' +
             '</button>'
 
   out += list.map(function (x) {
@@ -14301,15 +14784,23 @@ function cantiereTasti(event, pfx) {
   }
 }
 
+// 75·6 / 76 — «Nessun cantiere (da assegnare)» scelto apposta, per prefisso.
+// Il nome della variabile e' della 75, quando quella voce voleva dire
+// magazzino: oggi vuol dire solo «non ancora assegnato». Lo rimette a false
+// ogni impostaCantierePicker(); lo accende la scelta dal menu, o un documento
+// gia' salvato senza cantiere (la decisione c'e' gia' stata).
+var cantiereMagazzinoScelto = {}
+
 // id vuoto = magazzino. E' una scelta esplicita, e si vede scritta.
 function scegliCantiere(pfx, id) {
   var c = cantiereCampi(pfx)
   chiudiSuggerimentiCantiere(pfx)
+  cantiereMagazzinoScelto[pfx] = !id   // 75·6
   if (!id) {
     if (el(c.testo))  el(c.testo).value = ''
     if (el(c.hidden)) el(c.hidden).value = ''
     html(c.scelto,
-      '<div class="cantiere-scelto magazzino">\ud83c\udfe0 <strong>Magazzino / nessun cantiere</strong>' +
+      '<div class="cantiere-scelto magazzino"><strong>Nessun cantiere (da assegnare)</strong>' +   // 76
       ' <span class="dim">— scelta esplicita</span></div>')
     return
   }
@@ -14330,6 +14821,7 @@ function scegliCantiere(pfx, id) {
 // Da un id salvato al campo: si usa riaprendo un documento.
 function impostaCantierePicker(pfx, id) {
   var c = cantiereCampi(pfx)
+  cantiereMagazzinoScelto[pfx] = false   // 75·6
   html(c.suggest, '')
   html(c.nota, '')
   if (el(c.testo)) el(c.testo).disabled = false
@@ -14357,6 +14849,40 @@ function impostaCantierePicker(pfx, id) {
   }
 }
 
+// 76 — «Magazzino» è un CANTIERE, come «Spese ditta»: si usa per i costi di
+// magazzino e resta Attivo. «Nessun cantiere (da assegnare)» vuol dire solo che
+// il documento non è ancora stato attribuito.
+// Nell'App Cantieri il «Magazzino» non è un posto con dei costi: è la lista dei
+// materiali da portare in cantiere (materiali_cantiere). Non c'è niente a cui
+// puntare, quindi si usa il cantiere.
+
+// Il cantiere «Magazzino», se ce n'è UNO e non è chiuso. Il nome si confronta
+// senza maiuscole e spazi ai lati. «Chiuso» = Completato: In pausa conta come
+// aperto, come nell'App Cantieri. Nessuno, o più di uno: null, e la domanda
+// non si fa (con due «Magazzino» non si sceglie a caso).
+function cantiereMagazzino() {
+  var trovati = (cantieriCache || []).filter(function (k) {
+    return String(k.nome || '').trim().toLowerCase() === 'magazzino' &&
+           ordineStatoCantiere(k.stato) !== 2
+  })
+  return trovati.length === 1 ? trovati[0] : null
+}
+
+async function confermaCantiereAcquisto() {
+  if (valoreCantiere('a')) return true
+  var c = cantiereCampi('a')
+  if (el(c.testo) && el(c.testo).disabled) return true   // gia' diviso in classificazione
+  if (cantiereMagazzinoScelto.a) return true              // «nessun cantiere» scelto a mano, o gia' salvato cosi'
+  try { await loadCantieri() } catch (_) { /* senza elenco non si chiede */ }
+  var mag = cantiereMagazzino()
+  if (!mag) return true                                   // niente «Magazzino» aperto: si salva senza cantiere
+  var si = await chiediDueScelte('🏠 Nessun cantiere',
+    'Nessun cantiere: assegno a Magazzino?', 'Sì', 'Scelgo io')
+  if (si) { scegliCantiere('a', mag.id); return true }    // sul cantiere «Magazzino»
+  if (el(c.testo)) { el(c.testo).scrollIntoView({ behavior: 'smooth', block: 'center' }); el(c.testo).focus() }
+  return false
+}
+
 function valoreCantiere(pfx) {
   var v = el(cantiereCampi(pfx).hidden)
   return (v && v.value) ? v.value : null
@@ -14376,7 +14902,7 @@ function mostraDivisioneSeCe(pfx, origineTipo, origineId) {
     var x = (cantieriCache || []).filter(function (k) { return k.id === q.cantiere_id })[0]
     return x ? (x.nome || '(senza nome)') : 'cantiere non leggibile'
   })
-  if (quote.length > conCantiere.length) nomi.push('magazzino')
+  if (quote.length > conCantiere.length) nomi.push('nessun cantiere (da assegnare)')   // 76
 
   if (el(c.testo)) el(c.testo).disabled = true
   if (el(c.btn))   el(c.btn).disabled = true
@@ -15100,8 +15626,8 @@ function renderElencoCantieri() {
     // La riga del non attribuito sta SOPRA il totale, come una voce qualsiasi:
     // e' denaro vero quanto quello dei cantieri, solo senza un cantiere.
     '<tr class="riga-fuori-cantiere">' +
-      '<td>\ud83c\udfe0 <strong>Fuori cantiere</strong> ' +
-        '<span class="dim">magazzino / non ancora attribuito</span></td>' +
+      '<td><strong>Fuori cantiere</strong> ' +
+        '<span class="dim">non ancora assegnato</span></td>' +   // 76 — il magazzino ha il suo cantiere
       '<td class="num">' + esc(fmtNumIt(fuori.fatturato.importo)) + ' CHF</td>' +
       '<td class="num">' + esc(fmtNumIt(fuori.fornitori.importo)) + ' CHF</td>' +
       '<td class="num">' + esc(fmtNumIt(fuori.margine)) + ' CHF</td>' +
@@ -15296,7 +15822,10 @@ function apriElencoCantiere(chiave) {
   } else {
     html('cant-elenco', righe.map(function (r) {
       if (tipo === 'spesa') {
-        return rigaElencoCant(fmtDate(r.data), r.descrizione || '—', fmtNumIt(safeNum(r.importo) || 0) + ' CHF')
+        // 75·9 — una spesa dell'App Cantieri non e' un documento di qui: non si
+        // apre, e lo dice.
+        return rigaElencoCant(fmtDate(r.data), (r.descrizione || '—') + ' (dall\'App Cantieri)',
+                              fmtNumIt(safeNum(r.importo) || 0) + ' CHF')
       }
       if (tipo === 'regia') {
         var q = safeNum(r.quantita) || 0, pu = safeNum(r.prezzo_unitario) || 0
@@ -15309,19 +15838,25 @@ function apriElencoCantiere(chiave) {
           fmtNumIt(safeNum(r.ore_totali) || 0) + ' ore')
       }
       return rigaElencoCant(fmtDate(r.data_documento), r.controparte_nome || '—',
-        fmtNumIt(safeNum(r.importo_totale) || 0) + ' CHF')
+        fmtNumIt(safeNum(r.importo_totale) || 0) + ' CHF',
+        r.tabella_origine && r.id_origine ? { tabella: r.tabella_origine, id: r.id_origine } : null)   // 75·9
     }).join(''))
   }
   var card = el('cant-elenco-card')
   if (card) { card.style.display = 'block'; card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }
 }
 
-function rigaElencoCant(data, testo, importo) {
-  return '<div class="cru-elenco-riga">' +
-    '<span class="cru-elenco-nome">' + esc(testo) + '</span>' +
+function rigaElencoCant(data, testo, importo, doc) {
+  var dentro = '<span class="cru-elenco-nome">' + esc(testo) + '</span>' +
     '<span class="cru-elenco-meta">' + esc(data) + '</span>' +
-    '<span class="cru-elenco-imp">' + esc(importo) + '</span>' +
-  '</div>'
+    '<span class="cru-elenco-imp">' + esc(importo) + '</span>'
+  // 75·9 — con un documento dietro, la riga e' un bottone che lo apre.
+  if (doc) {
+    return '<button type="button" class="cru-elenco-riga cru-elenco-apri" title="Apri il documento" ' +
+      'onclick="apriDocumentoDaCantiere(\'' + esc(doc.tabella) + '\', \'' + esc(doc.id) + '\')">' +
+      dentro + '<span class="cru-elenco-freccia" aria-hidden="true">›</span></button>'
+  }
+  return '<div class="cru-elenco-riga">' + dentro + '</div>'
 }
 
 function chiudiElencoCantiere() {
@@ -16911,6 +17446,7 @@ function elencoPagamentiHtml(tabella, id, verso) {
       '<span class="pag-meta">' +
         esc([p.metodo, p.riferimento].filter(Boolean).join(' · ') || '—') +
         (r ? ' <span class="pag-rata-tag">salda la rata ' + r.numero_rata + '</span>' : '') +
+        (p.data && p.data > oggiISO() ? ' <span class="pag-rata-tag">🗓️ programmato</span>' : '') +   // 75·4
       '</span>' +
       // 61e — la ricevuta si ristampa quando serve: chi ha risposto «no» alla
       // domanda dopo l'incasso non deve restare senza. Solo sulle vendite.
@@ -17388,10 +17924,11 @@ var CHIAVI_SOLLECITO = {
 }
 
 var TESTI_SOLLECITO_SEME = [
+  // 75·10 — il testo approvato il 30.09.2026: «forse Le è sfuggita».
   'Gentile [nome],\n' +
-  'ci permettiamo un breve promemoria: la fattura n. [numero] del [data], di CHF [importo], risulta ancora aperta nei nostri conti.\n' +
-  'Le saremmo grati se potesse provvedere entro il [nuovo termine]. Se ha già effettuato il pagamento in questi giorni, la ringraziamo e La preghiamo di considerare questo scritto non avvenuto.\n' +
-  'Per qualsiasi chiarimento siamo volentieri a disposizione.\n' +
+  'forse Le è sfuggita la nostra fattura n. [numero] del [data], di CHF [importo]: nei nostri conti risulta ancora aperta.\n' +
+  'Le saremmo grati se potesse provvedere entro il [nuovo termine]. Se nel frattempo ha già pagato, La ringraziamo e La preghiamo di non tenere conto di questo scritto.\n' +
+  'Per qualsiasi domanda siamo volentieri a disposizione.\n' +
   'Cordiali saluti',
 
   'Gentile [nome],\n' +
@@ -20186,7 +20723,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '74'
+var VERSIONE = '76'
 
 function controllaVersionePagina() {
   try {
@@ -20449,9 +20986,9 @@ function costoLeggibile(chf) {
   return (chf > 0 && chf < 0.005) ? 'meno di 0,01 CHF' : fmtNumIt(chf) + ' CHF'
 }
 
-function mostraCostoLettura(inputTokens, outputTokens) {
+function mostraCostoLettura(inputTokens, outputTokens, idBox) {
   var chf = costoStimatoChf(inputTokens, outputTokens)
-  html('lettura-costo',
+  html(idBox || 'lettura-costo',
     '<div class="lettura-costo">ℹ️ Lettura completata · costo stimato <strong>' +
       esc(costoLeggibile(chf)) + '</strong>' +
       '<span class="dim"> (' + esc(String(inputTokens || 0)) + ' token letti, ' +
@@ -22501,6 +23038,7 @@ async function fatturaDaAcconto(accontoId) {
 async function newFatturaDaAcconto(c, a) {
   await newFattura('fattura')
   editorAccontoId = a.id
+  impostaTerminiFattura(GIORNI_SCADENZA_ACCONTO, null, true)   // 75·2 (A)
   var cant = (cantieriCache || []).filter(function (k) { return k.id === c.cantiere_id })[0]
   if (cant) scegliCantiere('v', c.cantiere_id)
   else impostaCantierePicker('v', c.cantiere_id)
@@ -22529,6 +23067,7 @@ async function newFatturaDaAcconto(c, a) {
   if (el('fatture-edit-title')) el('fatture-edit-title').textContent = 'Nuova fattura d\'acconto'
   renderRigheEditor()
   mostraRifAcconto(c, a)
+  moduloModificato('fattura')   // 75·5 — compilata dal programma: si può salvare subito
 }
 
 // Il riquadro sopra l'editor: da quale rata viene questa bozza.
@@ -22629,3 +23168,6 @@ async function disegnaBoxAcconto(f) {
         : '') +
     '</div>')
 }
+
+// 75·5 — all'avvio il modulo del movimento e' vuoto: niente da salvare.
+moduloPulito('movimento')
