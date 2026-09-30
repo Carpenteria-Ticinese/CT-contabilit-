@@ -208,6 +208,40 @@ function badge(cls, label) {
   return '<span class="badge badge-' + cls + '">' + esc(label) + '</span>'
 }
 
+// ══ 77·1 — LE LETTURE SENZA TETTO ═════════════════════════════════════════
+// Supabase restituisce al massimo N righe per richiesta («Max rows», di norma
+// 1'000) e le altre le tace: nessun errore, solo un elenco più corto. Con
+// centinaia di documenti l'anno una tabella intera ci arriva in un anno o due,
+// e da lì Situazione, Scadenze e Cantieri sommerebbero solo una parte.
+//
+// leggiTutto() chiede a pagine finché il database non ha più niente da dare.
+// Non sa quanto è il tetto e non gli serve: avanza di quante righe sono
+// ARRIVATE (non di quante ne ha chieste) e si ferma alla prima pagina vuota.
+// Se il tetto fosse 500, chiedendo 1'000 ne arrivano 500 e la pagina dopo
+// parte dalla 501: non si salta niente. Costa una richiesta in più, vuota.
+//
+// `costruisci` rifà la richiesta da capo a ogni pagina (una richiesta di
+// supabase-js non si riusa). L'ordine deve essere STABILE, o fra una pagina
+// e l'altra due righe con la stessa data potrebbero scambiarsi di posto: per
+// questo chi la usa aggiunge sempre un ordine su una colonna unica (l'id).
+// Restituisce { data, error } come una lettura normale.
+var PAGINA_LETTURA = 1000
+var PAGINE_MASSIME = 500        // 500'000 righe: oltre c'è un errore, non un archivio
+
+async function leggiTutto(costruisci) {
+  var tutte = []
+  var da = 0
+  for (var giro = 0; giro < PAGINE_MASSIME; giro++) {
+    const { data, error } = await costruisci().range(da, da + PAGINA_LETTURA - 1)
+    if (error) return { data: null, error: error }
+    var pezzo = data || []
+    if (!pezzo.length) return { data: tutte, error: null }
+    tutte = tutte.concat(pezzo)
+    da += pezzo.length
+  }
+  return { data: null, error: new Error('lettura interrotta dopo ' + PAGINE_MASSIME + ' pagine: troppe righe') }
+}
+
 // ── Vocabolario del pagamento ────────────────────────────────────────────────
 // Nel database i valori sono due soli: 'aperto' e 'pagato'.
 // A schermo diventano quattro parole diverse, a seconda della direzione del
@@ -596,10 +630,10 @@ async function loadCanalA() {
 
   // spese: id, data, descrizione, importo, valuta, cantiere_id, note
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('spese')
       .select('id, data, descrizione, importo, valuta, cantiere_id, note')
-      .order('data', { ascending: false })
+      .order('data', { ascending: false }).order('id') })
     if (error) throw error
     for (var i = 0; i < (data || []).length; i++) {
       var s = data[i]
@@ -629,10 +663,10 @@ async function loadCanalA() {
   //   fatturato=false → informativa "da fatturare", importo null, NESSUN conto assegnato
   //   costo_unitario NON usato: evita doppio conteggio con il payroll
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('regia')
       .select('id, data, descrizione, cantiere_id, operaio_id, tipo, quantita, prezzo_unitario, um, fatturato, note')
-      .order('data', { ascending: false })
+      .order('data', { ascending: false }).order('id') })
     if (error) throw error
     for (var j = 0; j < (data || []).length; j++) {
       var r = data[j]
@@ -677,12 +711,12 @@ async function loadCanalA() {
   // La fattura resta la sua casa: qui si LEGGE soltanto, la classificazione la arricchisce.
   if (currentAziendaId) {
     try {
-      const { data, error } = await sb
+      const { data, error } = await leggiTutto(function () { return sb
         .from('tm_conta_fatture')
         .select('id, numero, data_emissione, cliente_nome, totale, valuta, tipo, stato, cantiere_id')
         .eq('azienda_id', currentAziendaId)
         .eq('stato', 'emessa')
-        .order('data_emissione', { ascending: false })
+        .order('data_emissione', { ascending: false }).order('id') })
       if (error) throw error
       for (var f = 0; f < (data || []).length; f++) {
         var ft = data[f]
@@ -717,11 +751,11 @@ async function loadCanalA() {
   // (lato costo, importo positivo). Restano la loro casa: qui si LEGGONO soltanto.
   if (currentAziendaId) {
     try {
-      const { data, error } = await sb
+      const { data, error } = await leggiTutto(function () { return sb
         .from('tm_conta_fatture_acquisto')
         .select('id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id, cantiere_id')
         .eq('azienda_id', currentAziendaId)
-        .order('data', { ascending: false })
+        .order('data', { ascending: false }).order('id') })
       if (error) throw error
       for (var q = 0; q < (data || []).length; q++) {
         var acq = data[q]
@@ -758,11 +792,11 @@ async function loadCanalA() {
 async function loadCanalB() {
   await richiediAccesso('loadCanalB')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_movimenti_propri')
       .select('id, data, descrizione, ente_fornitore, importo, valuta, ricorrente, periodicita, created_at, stato_conferma, cantiere_id')
       .eq('azienda_id', currentAziendaId)
-      .order('data', { ascending: false })
+      .order('data', { ascending: false }).order('id') })
     if (error) throw error
     return (data || []).map(function (m) {
       return {
@@ -819,10 +853,10 @@ async function loadDaClassificare() {
   var classMap = {}   // "origine_tipo:origine_id" -> riga classificazione
   if (currentAziendaId) {
     try {
-      const { data, error } = await sb
+      const { data, error } = await leggiTutto(function () { return sb
         .from('tm_conta_classificazioni')
         .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato')
-        .eq('azienda_id', currentAziendaId)
+        .eq('azienda_id', currentAziendaId).order('id') })
       if (error) throw error
       for (var k = 0; k < (data || []).length; k++) {
         classMap[data[k].origine_tipo + ':' + data[k].origine_id] = data[k]
@@ -1041,10 +1075,10 @@ async function refreshDaClassificareCount() {
     var tutti = canalA.concat(canalB)
 
     var classified = new Set()
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_classificazioni')
       .select('origine_tipo, origine_id')
-      .eq('azienda_id', currentAziendaId)
+      .eq('azienda_id', currentAziendaId).order('id') })
     if (!error) {
       for (var k = 0; k < (data || []).length; k++) {
         classified.add(data[k].origine_tipo + ':' + data[k].origine_id)
@@ -2350,6 +2384,8 @@ function exitEditMode() {
 
 async function deleteMovimento(id, descrizione) {
   if (!currentAziendaId) return
+  var motivoNo = await motivoPerNonEliminare('tm_conta_movimenti_propri', id)   // 77·2
+  if (motivoNo) { avvisoNonEliminabile('Questo movimento', motivoNo); return }
   if (isBloccato('proprio', id)) {
     alert('Questo movimento è in un periodo consegnato (bloccato). Sbloccalo dalla pagina «Export & consegna» per eliminarlo.')
     return
@@ -2641,10 +2677,10 @@ async function getClassificatiNelPeriodo(da, a) {
 
   var classMap = {}
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_classificazioni')
       .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato, created_at')
-      .eq('azienda_id', currentAziendaId)
+      .eq('azienda_id', currentAziendaId).order('id') })
     if (error) throw error
     // FASE 25 — un documento puo' avere piu' righe: si indicizza con il motore
     // unico, che somma imponibile e IVA invece di lasciare vincere l'ultima
@@ -2739,11 +2775,11 @@ async function loadExportDataset(force) {
   var fatture = [], acquisti = [], movimentiAll = [], classMap = {}, numeroById = {}
 
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_fatture')
       .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id')
       .eq('azienda_id', currentAziendaId)
-      .eq('stato', 'emessa')
+      .eq('stato', 'emessa').order('id') })
     if (error) throw error
     fatture = data || []
     for (var i = 0; i < fatture.length; i++) numeroById[fatture[i].id] = fatture[i].numero
@@ -2751,10 +2787,10 @@ async function loadExportDataset(force) {
 
   var CAMPI_ACQ = 'id, fornitore, numero_fornitore, data, importo, valuta, imponibile, iva_importo, stato_pagamento, data_pagamento, metodo_pagamento'
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_fatture_acquisto')
       .select(CAMPI_ACQ + ', stato_conferma')
-      .eq('azienda_id', currentAziendaId)
+      .eq('azienda_id', currentAziendaId).order('id') })
     if (error) throw error
     acquisti = data || []
   } catch (e) {
@@ -2762,10 +2798,10 @@ async function loadExportDataset(force) {
     // senza. Meglio un export completo senza il filtro che un export a cui
     // mancano tutti gli acquisti.
     try {
-      const { data, error: e2 } = await sb
+      const { data, error: e2 } = await leggiTutto(function () { return sb
         .from('tm_conta_fatture_acquisto')
         .select(CAMPI_ACQ)
-        .eq('azienda_id', currentAziendaId)
+        .eq('azienda_id', currentAziendaId).order('id') })
       if (e2) throw e2
       acquisti = data || []
       console.warn('Export / acquisti: stato_conferma non disponibile, filtro non applicato.')
@@ -2779,10 +2815,10 @@ async function loadExportDataset(force) {
   } catch (e) { console.warn('Export / movimenti:', e.message) }
 
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_classificazioni')
       .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato, created_at')
-      .eq('azienda_id', currentAziendaId)
+      .eq('azienda_id', currentAziendaId).order('id') })
     if (error) throw error
     // FASE 25 — un documento puo' avere piu' righe: si indicizza con il motore
     // unico, che somma imponibile e IVA invece di lasciare vincere l'ultima
@@ -3686,14 +3722,14 @@ async function loadFattureList() {
     // fattureList resta com'era: non si considera valido un elenco vuoto.
     // 52·B1 — idem se l'azienda non e' determinata.
     await richiediAccesso('lettura delle fatture')
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_fatture')
       // 62c — annullata_motivo serve al tooltip dell'elenco. La colonna arriva
       // con SQL_FASE62c_annullamento.sql: quello va applicato PRIMA di caricare
       // questa versione, altrimenti l'elenco non si carica e lo dice.
       .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, annullata_motivo')
       .eq('azienda_id', currentAziendaId)
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: false }).order('id') })
     if (error) throw error
     fattureList = data || []
     // I dati di contorno — pagamenti (per il residuo in cifra) e allegati — non
@@ -6179,11 +6215,11 @@ async function loadAcquistiList() {
   try {
     // 52·B / B1 — vedi loadFattureList: sessione e azienda prima, elenco dopo.
     await richiediAccesso('lettura delle fatture d\'acquisto')
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_fatture_acquisto')
       .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id, origine, stato_conferma')
       .eq('azienda_id', currentAziendaId)
-      .order('data', { ascending: false })
+      .order('data', { ascending: false }).order('id') })
     if (error) throw error
     acquistiList = data || []
     // I dati di contorno — pagamenti, allegati, doppioni, badge, cantieri — non
@@ -7222,8 +7258,78 @@ function onAcquistoAnnulla() {
   }
 }
 
+// ══ 77·2 — SI ELIMINA SOLO UN ERRORE APPENA FATTO ═════════════════════════
+// I documenti si tengono 10 anni. Un acquisto, un movimento o una conferma
+// d'ordine si eliminano solo se non hanno pagamenti, non hanno allegati e non
+// sono in un periodo consegnato al commercialista (classificazione «bloccato»).
+// Un allegato non si elimina se il documento è pagato o consegnato.
+// Il controllo si fa sul DATABASE, non sulla cache, e se non riesce a farlo
+// dice di no: meglio un documento di troppo che uno sparito.
+var ORIGINE_DI_TABELLA = {
+  tm_conta_fatture: 'fattura',
+  tm_conta_fatture_acquisto: 'acquisto',
+  tm_conta_movimenti_propri: 'proprio'
+}
+
+async function contaRighe(tabella, filtri) {
+  var q = sb.from(tabella).select('id', { count: 'exact', head: true }).eq('azienda_id', currentAziendaId)
+  Object.keys(filtri).forEach(function (k) { q = q.eq(k, filtri[k]) })
+  const { count, error } = await q
+  if (error) throw error
+  return count || 0
+}
+
+async function eConsegnato(tabella, id) {
+  var ot = ORIGINE_DI_TABELLA[tabella]
+  if (!ot) return false
+  return (await contaRighe('tm_conta_classificazioni', { origine_tipo: ot, origine_id: id, stato: 'bloccato' })) > 0
+}
+
+// Perché un documento NON si elimina, in parole; null se si può.
+async function motivoPerNonEliminare(tabella, id) {
+  try {
+    var motivi = []
+    if (tabella !== 'tm_conta_offerte') {
+      var nPag = await contaRighe('tm_conta_pagamenti', { tabella_origine: tabella, id_origine: id })
+      if (nPag) motivi.push(nPag === 1 ? 'ha un pagamento registrato' : 'ha ' + nPag + ' pagamenti registrati')
+    }
+    var nAll = await contaRighe('tm_conta_allegati', { tabella_origine: tabella, id_origine: id })
+    if (nAll) motivi.push(nAll === 1 ? 'ha un allegato' : 'ha ' + nAll + ' allegati')
+    if (await eConsegnato(tabella, id)) motivi.push('è in un periodo consegnato al commercialista')
+    return motivi.length ? motivi.join(', ') : null
+  } catch (e) {
+    return 'non riesco a verificare se ha pagamenti, allegati o se è stato consegnato (' + (e.message || e) + ')'
+  }
+}
+
+// Perché un allegato NON si elimina; null se si può.
+async function motivoPerTenereAllegato(a) {
+  try {
+    var t = a.tabella_origine, id = a.id_origine
+    var motivi = []
+    if (t === 'tm_conta_fatture' || t === 'tm_conta_fatture_acquisto' || t === 'tm_conta_movimenti_propri') {
+      const { data, error } = await sb.from(t).select('stato_pagamento')
+        .eq('id', id).eq('azienda_id', currentAziendaId).maybeSingle()
+      if (error) throw error
+      if (data && data.stato_pagamento === 'pagato') motivi.push('il documento è pagato')
+    }
+    if (await eConsegnato(t, id)) motivi.push('il documento è in un periodo consegnato al commercialista')
+    return motivi.length ? motivi.join(' e ') : null
+  } catch (e) {
+    return 'non riesco a verificare se il documento è pagato o consegnato (' + (e.message || e) + ')'
+  }
+}
+
+function avvisoNonEliminabile(cosa, motivo) {
+  window.alert(cosa + ' non si elimina: ' + motivo + '.\n\n' +
+    'I documenti si tengono 10 anni. Si elimina solo un errore appena fatto: ' +
+    'senza pagamenti, senza allegati e non ancora consegnato al commercialista.')
+}
+
 async function deleteAcquisto(id) {
   if (!currentAziendaId) return
+  var motivoNo = await motivoPerNonEliminare('tm_conta_fatture_acquisto', id)   // 77·2
+  if (motivoNo) { avvisoNonEliminabile('Questa fattura d\'acquisto', motivoNo); return }
   if (!window.confirm('Sicuro? Non si può annullare.\n\nLa fattura d\'acquisto verrà eliminata (con la sua eventuale classificazione).')) return
   try {
     const delClass = await sb.from('tm_conta_classificazioni').delete()
@@ -8321,11 +8427,11 @@ async function loadContatti(force) {
                   ' telefono, email, sito_web, uid_partita_iva, iban, gruppo_default,' +
                   ' giorni_pagamento, note, attivo'
   async function leggi(campi) {
-    return await sb
+    return await leggiTutto(function () { return sb
       .from('tm_contatti')
       .select(campi)
       .eq('azienda_id', currentAziendaId)
-      .order('ragione_sociale', { nullsFirst: false })
+      .order('ragione_sociale', { nullsFirst: false }).order('id') })
   }
   var res = await leggi(campiBase + ', e_cliente, e_fornitore, cellulare')
   // FASE 29 — SQL_FASE29 non ancora lanciato: si rilegge senza `cellulare`,
@@ -9593,11 +9699,11 @@ function nomeDocOff(o, maiuscolo) {
 async function loadOfferte(force) {
   if (offerteCache && !force) return offerteCache
   await richiediAccesso('loadOfferte')   // 52·B1: mai un elenco vuoto per silenzio
-  const { data, error } = await sb.from('tm_conta_offerte')
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_offerte')
     .select('id, contatto_id, fornitore, data, riferimento, cantiere_id, stato, valuta, totale, note, created_at,' +
             ' tipo_documento, totale_stampato, totale_stampato_iva_inclusa, totale_stampato_aliquota')   // 57
     .eq('azienda_id', currentAziendaId)
-    .order('data', { ascending: false })
+    .order('data', { ascending: false }).order('id') })   // 77·1 — ordine stabile fra le pagine
   if (error) throw error
   offerteCache = data || []
   return offerteCache
@@ -10235,6 +10341,8 @@ async function saveOfferta() {
 async function deleteOfferta(id) {
   var o = (offerteCache || []).filter(function (x) { return x.id === id })[0]
   var cosa = o ? nomeDocOff(o) : 'il documento'
+  var motivoNo = await motivoPerNonEliminare('tm_conta_offerte', id)   // 77·2 — qui conta solo l'allegato
+  if (motivoNo) { avvisoNonEliminabile(o ? 'Questa ' + cosa : 'Questo documento', motivoNo); return }
   if (!window.confirm('Eliminare ' + (o ? 'la ' + cosa + ' di ' + o.fornitore : cosa) + '? Le fatture d’acquisto restano, solo senza il collegamento.')) return
   try {
     const { error } = await sb.from('tm_conta_offerte').delete().eq('id', id).eq('azienda_id', currentAziendaId).select()
@@ -11606,12 +11714,12 @@ async function renderFattureDelContatto(contattoId) {
   var box = 'contatto-lettura-fatture'
   if (!currentAziendaId) { html(box, ''); return }
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_fatture')
       .select('id, numero, data_emissione, totale, valuta, stato, stato_pagamento, tipo')
       .eq('azienda_id', currentAziendaId)
       .eq('contatto_id', contattoId)
-      .order('data_emissione', { ascending: false, nullsFirst: false })
+      .order('data_emissione', { ascending: false, nullsFirst: false }).order('id') })
     if (error) throw error
 
     // Il residuo non si ricalcola qui: lo espone gia' v_conta_flussi, che tiene
@@ -12701,7 +12809,12 @@ async function loadFlussi(force) {
             ' data_pagamento, conto_codice, conto_descrizione, gruppo_codice, gruppo_manuale,' +
             ' gruppo_da_conto, stato_conferma, importo_pagato, residuo, prossima_rata'
   function leggiFlussi(campi) {
-    return sb.from('v_conta_flussi').select(campi).eq('azienda_id', currentAziendaId)
+    // 77·1 — a pagine, come le tabelle. La vista non ha un «id»: l'ordine
+    // stabile lo danno tabella e documento d'origine.
+    return leggiTutto(function () {
+      return sb.from('v_conta_flussi').select(campi).eq('azienda_id', currentAziendaId)
+        .order('tabella_origine').order('id_origine')
+    })
   }
   // 70·R — `tipo_documento` serve a riconoscere i rimborsi. La vista lo ha
   // dalla FASE 4b; se mancasse, si rilegge senza e tutto funziona come prima.
@@ -14577,9 +14690,8 @@ async function loadSpeseCantiere(force) {
   // Stessa guardia di loadContatti e loadCantieri.
   await richiediAccesso('loadSpeseCantiere')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb.from('spese')
-      .select('id, cantiere_id, data, descrizione, importo, valuta, note')
-      .limit(2000)
+    const { data, error } = await leggiTutto(function () { return sb.from('spese')
+      .select('id, cantiere_id, data, descrizione, importo, valuta, note').order('id') })
     if (error) throw error
     speseCantiereCache = data || []
     segnaCacheOk('speseCantiere')
@@ -14597,9 +14709,8 @@ async function loadRegiaCantiere(force) {
   // Stessa guardia di loadContatti e loadCantieri.
   await richiediAccesso('loadRegiaCantiere')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb.from('regia')
-      .select('id, cantiere_id, data, descrizione, quantita, um, prezzo_unitario, fatturato')
-      .limit(2000)
+    const { data, error } = await leggiTutto(function () { return sb.from('regia')
+      .select('id, cantiere_id, data, descrizione, quantita, um, prezzo_unitario, fatturato').order('id') })
     if (error) throw error
     regiaCantiereCache = data || []
     segnaCacheOk('regiaCantiere')
@@ -14617,9 +14728,8 @@ async function loadGiornate(force) {
   // Stessa guardia di loadContatti e loadCantieri.
   await richiediAccesso('loadGiornate')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb.from('giornate')
-      .select('id, cantiere_id, data, ore_totali, note')
-      .limit(5000)
+    const { data, error } = await leggiTutto(function () { return sb.from('giornate')
+      .select('id, cantiere_id, data, ore_totali, note').order('id') })
     if (error) throw error
     giornateCache = data || []
     segnaCacheOk('giornate')
@@ -14947,10 +15057,10 @@ async function loadCantiereDocumenti(force) {
   ]
   for (var i = 0; i < fonti.length; i++) {
     try {
-      const { data, error } = await sb.from(fonti[i].tabella)
+      const { data, error } = await leggiTutto(function () { return sb.from(fonti[i].tabella)
         .select('id, cantiere_id')
         .eq('azienda_id', currentAziendaId)
-        .not('cantiere_id', 'is', null)
+        .not('cantiere_id', 'is', null).order('id') })
       if (error) throw error
       ;(data || []).forEach(function (r) {
         mappa[chiaveClassificazione(fonti[i].tipo, r.id)] = r.cantiere_id
@@ -14971,9 +15081,9 @@ async function loadMappaCantieri(force) {
   await richiediAccesso('loadMappaCantieri')   // 52·B1: mai un elenco vuoto per silenzio
   await loadCantiereDocumenti(force)
   try {
-    const { data, error } = await sb.from('tm_conta_classificazioni')
+    const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_classificazioni')
       .select('origine_tipo, origine_id, cantiere_id, imponibile, iva_importo')
-      .eq('azienda_id', currentAziendaId)
+      .eq('azienda_id', currentAziendaId).order('id') })
     if (error) throw error
     ;(data || []).forEach(function (c) {
       var k = chiaveClassificazione(c.origine_tipo, c.origine_id)
@@ -16538,10 +16648,10 @@ async function loadPagamenti(force) {
   // chi ha chiesto i pagamenti, che lo mostra dove serve. La cache resta
   // com'era e NON viene segnata buona: zero righe con la sessione valida
   // sono un risultato vero, zero righe senza sessione no.
-  const { data, error } = await sb.from('tm_conta_pagamenti')
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_pagamenti')
     .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note')
     .eq('azienda_id', currentAziendaId)
-    .order('data')
+    .order('data').order('id') })
   if (error) throw error
   pagamentiCache = data || []
   segnaCacheOk('pagamenti')
@@ -16554,10 +16664,10 @@ async function loadRate(force) {
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
   await richiediAccesso('loadRate')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb.from('tm_conta_rate')
+    const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_rate')
       .select('id, tabella_origine, id_origine, numero_rata, data_prevista, importo_previsto, pagamento_id, note')
       .eq('azienda_id', currentAziendaId)
-      .order('numero_rata')
+      .order('numero_rata').order('id') })
     if (error) throw error
     rateCache = data || []
     segnaCacheOk('rate')
@@ -16637,13 +16747,13 @@ var noteCreditoCache = null
 async function loadNoteCredito(force) {
   if (cacheOk('noteCredito') && !force) return noteCreditoCache || []
   await richiediAccesso('loadNoteCredito')   // 52·B1: mai un elenco vuoto per silenzio
-  const { data, error } = await sb.from('tm_conta_fatture')
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture')
     // 62h — `totale_imponibile` serve al contratto, che ragiona IVA esclusa.
     // `totale` resta quello che usa il residuo di una fattura, che il cliente
     // paga IVA inclusa: due colonne per due domande diverse.
     .select('id, numero, data_emissione, totale, totale_imponibile, stato, rif_fattura_id')
     .eq('azienda_id', currentAziendaId)
-    .eq('tipo', 'nota_credito')
+    .eq('tipo', 'nota_credito').order('id') })
   if (error) throw error
   noteCreditoCache = data || []
   segnaCacheOk('noteCredito')
@@ -17967,10 +18077,10 @@ function testoSollecito(livello) {
 async function loadSolleciti(force) {
   if (cacheOk('solleciti') && !force) return sollecitiCache || []
   await richiediAccesso('loadSolleciti')   // 52·B1: mai un elenco vuoto per silenzio
-  const { data, error } = await sb.from('tm_conta_solleciti')
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_solleciti')
     .select('id, fattura_id, livello, data_preparato, data_inviato, nuovo_termine, importo_dovuto, spese, interessi')
     .eq('azienda_id', currentAziendaId)
-    .order('livello')
+    .order('livello').order('id') })
   if (error) throw error
   sollecitiCache = data || []
   segnaCacheOk('solleciti')
@@ -19021,9 +19131,9 @@ async function assicuraClassificazioni(force) {
   if (classByKey && Object.keys(classByKey).length && !force) return classByKey
   await richiediAccesso('assicuraClassificazioni')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await sb.from('tm_conta_classificazioni')
+    const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_classificazioni')
       .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at')
-      .eq('azienda_id', currentAziendaId)
+      .eq('azienda_id', currentAziendaId).order('id') })
     if (error) throw error
     // FASE 25 — le due mappe si riempiono sempre insieme.
     var idx = indicizzaClassificazioni(data || [])
@@ -19644,10 +19754,10 @@ async function loadAllegati(force) {
   var COLONNE_POLIZZA = COLONNE_BASE + ', img_path, img_larghezza_mm, img_altezza_mm, pagina_origine'
 
   async function leggi(colonne) {
-    return await sb.from('tm_conta_allegati')
+    return await leggiTutto(function () { return sb.from('tm_conta_allegati')
       .select(colonne)
       .eq('azienda_id', currentAziendaId)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: true }).order('id') })
   }
 
   var r = await leggi(COLONNE_POLIZZA)
@@ -19887,6 +19997,12 @@ async function eliminaAllegato(idAllegato, tabella, id, nome) {
   var a = (allegatiCache || []).filter(function (x) { return x.id === idAllegato })[0]
   if (!a) return
   var etichetta = a.nome_file || allegatoNomeFile(a.path)
+  var motivoNo = await motivoPerTenereAllegato(a)   // 77·2
+  if (motivoNo) {
+    window.alert('L\'allegato «' + etichetta + '» non si elimina: ' + motivoNo + '.\n\n' +
+      'Il file resta con il documento per 10 anni. Se è quello sbagliato, aggiungi quello giusto accanto.')
+    return
+  }
   if (!window.confirm('Eliminare l\'allegato «' + etichetta + '»?\n\n' +
       'Il file viene cancellato dallo storage: non si può annullare.')) return
   try {
@@ -20623,10 +20739,10 @@ async function caricaChiaviDoppioni(force) {
   if (chiaviCaricate && !force) return chiaviDoppioni
   chiaviDoppioni = {}
   await richiediAccesso('caricaChiaviDoppioni')   // 52·B1: mai un elenco vuoto per silenzio
-  const { data, error } = await sb.from('tm_conta_fatture_acquisto')
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture_acquisto')
     .select('id, fornitore, numero_fornitore, data, importo, valuta')
     .eq('azienda_id', currentAziendaId)
-    .not('numero_fornitore', 'is', null)
+    .not('numero_fornitore', 'is', null).order('id') })
   if (error) throw error
   ;(data || []).forEach(function (r) {
     var k = chiaveDoppione(r.fornitore, r.numero_fornitore)
@@ -20723,7 +20839,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '76'
+var VERSIONE = '77'
 
 function controllaVersionePagina() {
   try {
@@ -21114,10 +21230,10 @@ async function confermaAcquisto(id) {
 async function refreshDaConfermareCount() {
   if (!currentUser || !currentAziendaId) return
   try {
-    const { data, error } = await sb.from('tm_conta_fatture_acquisto')
+    const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture_acquisto')
       .select('id')
       .eq('azienda_id', currentAziendaId)
-      .eq('stato_conferma', 'da_confermare')
+      .eq('stato_conferma', 'da_confermare').order('id') })
     if (error) throw error
     var n = (data || []).length
     var badge = el('nav-badge-acquisti')
@@ -22895,12 +23011,12 @@ async function eliminaAcconto(id) {
 // niente di congelato: solo cantiere_id, se manca (FASE 27: modificabile anche
 // a fattura emessa). Il legame vero sta nella rata.
 async function fattureEmesseCollegabili() {
-  const { data, error } = await sb.from('tm_conta_fatture')
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture')
     .select('id, numero, data_emissione, cliente_nome, totale_imponibile, cantiere_id')
     .eq('azienda_id', currentAziendaId)
     .eq('stato', 'emessa')
     .eq('tipo', 'fattura')
-    .order('data_emissione', { ascending: false })
+    .order('data_emissione', { ascending: false }).order('id') })
   if (error) throw error
   // Fuori quelle gia' collegate a una rata, di qualunque cantiere.
   var usate = {}
