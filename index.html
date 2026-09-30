@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=79" />
+  <link rel="stylesheet" href="css/style.css?v=80" />
 </head>
-<body data-versione="79">
+<body data-versione="80">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 79</span>
+      <span id="sidebar-versione">Versione 80</span>
     </div>
 
   </aside>
@@ -1593,41 +1593,31 @@
             </div>
           </div>
           <div class="form-row" style="margin-bottom:12px">
-            <!-- Due filtri separati, non uno solo: lo stato del DOCUMENTO e lo
-                 stato dell'INCASSO sono due domande diverse. Prima erano
-                 schiacciate in un menu unico, dove l'incasso prendeva il posto
-                 di "Emessa" e non si poteva piu' sapere quale fosse quale.
-                 Ogni menu ha la sua etichetta sopra: mai la parola "Stato" da sola. -->
-            <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="fatture-filtro-stato" class="form-label">Stato documento</label>
+            <!-- 80·2 — UN comando di stato. Nella 78 erano tre (stato documento,
+                 stato incasso, «Mostra anche i chiusi») e si pestavano i piedi.
+                 Parte da «Aperti»; ogni voce mostra esattamente quello che dice,
+                 cioè lo stato che si legge sulla riga. -->
+            <div class="form-group" style="flex:2; margin-bottom:0">
+              <label for="fatture-filtro-stato" class="form-label">Stato</label>
               <select id="fatture-filtro-stato" class="form-input" onchange="renderFattureTable()">
-                <option value="">Tutti</option>
-                <option value="bozza">Bozza</option>
-                <option value="emessa">Emessa</option>
-                <option value="annullata">Annullata</option>
-              </select>
-            </div>
-            <!-- Separazione visiva: il bordo a sinistra stacca i due menu, cosi'
-                 a colpo d'occhio non si scambia l'uno per l'altro. -->
-            <div class="form-group" style="flex:1; margin-bottom:0; padding-left:14px; border-left:1px solid var(--border)">
-              <label for="fatture-filtro-incasso" class="form-label">Stato incasso</label>
-              <select id="fatture-filtro-incasso" class="form-input" onchange="renderFattureTable()">
-                <option value="">Tutti</option>
-                <option value="aperto">🔵 Non incassato</option>
-                <option value="parziale">🟠 Incassato in parte</option>
-                <option value="pagato">✅ Incassato</option>
+                <option value="aperti" selected>Aperti</option>
+                <option value="tutti">Tutti (aperti e chiusi)</option>
+                <optgroup label="Fatture">
+                  <option value="bozza">Bozze</option>
+                  <option value="non_incassato">🔵 Non incassate</option>
+                  <option value="parziale">🟠 Incassate in parte</option>
+                  <option value="incassato">✅ Incassate</option>
+                  <option value="annullata">Annullate</option>
+                </optgroup>
+                <optgroup label="Note di credito">
+                  <option value="nc_da_rimborsare">↩️ Da rimborsare</option>
+                  <option value="nc">↩️ Tutte le note di credito</option>
+                </optgroup>
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="fatture-filtro-anno" class="form-label">Anno</label>
               <input type="number" id="fatture-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderFattureTable()" />
-            </div>
-            <div class="form-group" style="flex:1; margin-bottom:0; align-self:flex-end">
-              <!-- 78 — spento ogni volta che si entra: si parte dagli aperti -->
-              <label class="check-riga" for="fatture-mostra-chiusi" style="margin:0">
-                <input type="checkbox" id="fatture-mostra-chiusi" onchange="renderFattureTable()" />
-                <span>Mostra anche i chiusi</span>
-              </label>
             </div>
           </div>
           <!-- 59·B — quanti documenti, per stato; con filtro: «4 di 6 (filtro attivo)» -->
@@ -1941,15 +1931,8 @@
               <label for="offerte-filtro-stato" class="form-label">Stato</label>
               <!-- Le voci le mette il programma secondo il tipo scelto (aggiornaFiltroStatoOfferte). -->
               <select id="offerte-filtro-stato" class="form-input" onchange="renderOfferteTable()">
-                <option value="">Tutti gli stati</option>
+                <option value="aperti" selected>Aperti</option>
               </select>
-            </div>
-            <div class="form-group" style="flex:1; margin-bottom:0; align-self:flex-end">
-              <!-- 78 — spento ogni volta che si entra: si parte dagli aperti -->
-              <label class="check-riga" for="offerte-mostra-chiusi" style="margin:0">
-                <input type="checkbox" id="offerte-mostra-chiusi" onchange="renderOfferteTable()" />
-                <span>Mostra anche i chiusi</span>
-              </label>
             </div>
           </div>
           <div id="offerte-contatore" class="elenco-contatore"></div>
@@ -2177,12 +2160,15 @@
           </div>
           <div class="form-row" style="margin-bottom:12px">
             <div class="form-group" style="flex:1; margin-bottom:0">
-              <label for="acquisti-filtro-stato" class="form-label">Stato pagamento</label>
+              <label for="acquisti-filtro-stato" class="form-label">Stato</label>
+              <!-- 80·2 — un comando solo, da «Aperti» -->
               <select id="acquisti-filtro-stato" class="form-input" onchange="renderAcquistiTable()">
-                <option value="">Tutti</option>
-                <option value="aperto">⏳ Non pagato</option>
-                <option value="parziale">🟠 Pagato in parte</option>
-                <option value="pagato">✅ Pagato</option>
+                <option value="aperti" selected>Aperti</option>
+                <option value="tutti">Tutti (aperti e chiusi)</option>
+                <option value="aperto">⏳ Non pagate</option>
+                <option value="parziale">🟠 Pagate in parte</option>
+                <option value="pagato">✅ Pagate</option>
+                <option value="da_confermare">⏳ Da confermare</option>
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
@@ -2194,13 +2180,6 @@
             <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="acquisti-filtro-anno" class="form-label">Anno</label>
               <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
-            </div>
-            <div class="form-group" style="flex:1; margin-bottom:0; align-self:flex-end">
-              <!-- 78 — spento ogni volta che si entra: si parte dagli aperti -->
-              <label class="check-riga" for="acquisti-mostra-chiusi" style="margin:0">
-                <input type="checkbox" id="acquisti-mostra-chiusi" onchange="renderAcquistiTable()" />
-                <span>Mostra anche i chiusi</span>
-              </label>
             </div>
           </div>
           <div id="acquisti-contatore" class="elenco-contatore"></div>
@@ -3364,7 +3343,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=79"></script>
+<script src="js/app.js?v=80"></script>
 
 </body>
 </html>
