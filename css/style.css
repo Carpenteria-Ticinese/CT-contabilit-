@@ -216,6 +216,11 @@ body {
 .chiusi-nascosti { font-size: 12.5px; color: var(--text2); margin: 0 0 6px; }
 .arch-tipi { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
 .arch-tipi .btn-secondary { margin-left: auto; }
+/* 79·1 / 79·2 — l'avviso della conferma e il confronto letto dall'AI */
+.avviso-conferma-alta { margin: 8px 0; }
+.confronto-ai .confronto-sezione { margin: 10px 0 0; }
+.confronto-ai .confronto-sezione ul { margin: 4px 0 0 20px; padding: 0; }
+.confronto-ai .confronto-sezione li { margin: 2px 0; }
 
 /* ── Check list ──────────────────────────────────────────────────────────── */
 .check-list { display: flex; flex-direction: column; gap: 8px; }
