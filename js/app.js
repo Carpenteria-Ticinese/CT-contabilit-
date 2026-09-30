@@ -10187,15 +10187,18 @@ function foglioCodiciHtml() {
   function sezione(cat) {
     var dentro = conti.filter(function (c) { return c.tipo === cat.tipo })
     if (!dentro.length) return ''
+    // 74·3 — ricavi e costi hanno i titoli nel rosso delle fatture, e con
+    // loro i gruppi che contengono: sono le sezioni che si cercano.
+    var rosso = (cat.tipo === 'ricavo' || cat.tipo === 'costo') ? ' cod-evidenza' : ''
     var blocchi = raggruppaPerGruppo(dentro).map(function (b) {
-      return '<h3 class="cod-sottotitolo">' + esc(nomeGruppoElenco(b.codice)) +
+      return '<h3 class="cod-sottotitolo' + rosso + '">' + esc(nomeGruppoElenco(b.codice)) +
                ' <span class="cod-quanti">(' + b.conti.length + ')</span></h3>' +
              '<table class="cod-tabella">' +
                '<thead><tr><th class="cod-num">Conto</th><th>Descrizione</th></tr></thead>' +
                '<tbody>' + righeConti(b.conti) + '</tbody>' +
              '</table>'
     }).join('')
-    return '<h2 class="cod-sezione">' + esc(cat.titolo) +
+    return '<h2 class="cod-sezione' + rosso + '">' + esc(cat.titolo) +
              ' <span class="cod-quanti">(' + dentro.length + ' — ' + esc(cat.sotto) + ')</span></h2>' +
            blocchi
   }
@@ -10241,11 +10244,11 @@ function foglioCodiciHtml() {
   var gruppiCosto  = gruppi.filter(function (g) { return g.tipo !== 'ricavo' })
   var gruppiRicavo = gruppi.filter(function (g) { return g.tipo === 'ricavo' })
   var gruppiHtml = gruppi.length
-    ? '<h2 class="cod-sezione">I gruppi di costo ' +
+    ? '<h2 class="cod-sezione cod-evidenza">I gruppi di costo ' +
         '<span class="cod-quanti">(' + gruppiCosto.length + ')</span></h2>' +
       tabellaGruppi(gruppiCosto) +
       (gruppiRicavo.length
-        ? '<h2 class="cod-sezione">I gruppi di ricavo ' +
+        ? '<h2 class="cod-sezione cod-evidenza">I gruppi di ricavo ' +
             '<span class="cod-quanti">(' + gruppiRicavo.length + ')</span></h2>' +
           tabellaGruppi(gruppiRicavo)
         : '')
@@ -13020,19 +13023,48 @@ async function aggiornaGruppoDaConto(forzaRiallineo) {
   renderNotaGruppo()
 }
 
+// 74·1 — Quali gruppi offrire. Una vendita va in un gruppo di RICAVO, un
+// acquisto in uno di COSTO. I movimenti propri possono essere l'una o l'altra
+// cosa, e una classificazione in blocco può mescolare vendite e acquisti: lì
+// si offrono tutti, perché non c'è modo di sapere quale serve.
+// Di costo = tipo diverso da 'ricavo': i 9 di sistema possono avere tipo NULL
+// (UPDATE facoltativo di SQL_FASE68), e sono gruppi di costo. Regola della 72·2.
+function tipoGruppiClassificazione(targets) {
+  var tipi = {}
+  ;(targets || []).forEach(function (m) {
+    if (tabellaPerOrigine(m.origine_tipo)) tipi[m.origine_tipo] = true
+  })
+  var k = Object.keys(tipi)
+  if (k.length === 1 && k[0] === 'fattura')  return 'ricavo'
+  if (k.length === 1 && k[0] === 'acquisto') return 'costo'
+  return null
+}
+
+function gruppoDelTipo(g, tipo) {
+  if (!tipo) return true
+  return tipo === 'ricavo' ? g.tipo === 'ricavo' : g.tipo !== 'ricavo'
+}
+
 // Il campo resta visibile anche quando e' vuoto: «Non assegnato» e' scritto,
 // non lasciato indovinare da un menu vuoto.
 function buildGruppoOptionsCls(selected) {
   // Stessa regola del menu principale: un elenco vuoto si dichiara.
   if (!gruppiCache || !gruppiCache.length) return opzioneGruppiMancanti()
+  var tipo = tipoGruppiClassificazione(classifyTargets)
   var out = '<option value=""' + (!selected ? ' selected' : '') + '>— Non assegnato —</option>'
   // 68·3 — come nell'altro menu: i disattivati non si scelgono piu', ma quello
   // gia' scritto sul documento resta, o si cancellerebbe da solo salvando.
+  // 74·1 — stessa regola per il tipo: un gruppo di costo gia' scritto su una
+  // vendita resta nel menu, e dice che cos'e', invece di sparire al salvataggio.
   ;(gruppiCache || []).forEach(function (g) {
-    if (g.attivo === false && g.codice !== selected) return
-    out += '<option value="' + esc(g.codice) + '"' + (g.codice === selected ? ' selected' : '') + '>' +
+    var giaScritto = g.codice === selected
+    if (g.attivo === false && !giaScritto) return
+    if (!gruppoDelTipo(g, tipo) && !giaScritto) return
+    out += '<option value="' + esc(g.codice) + '"' + (giaScritto ? ' selected' : '') + '>' +
            esc(g.codice + ' · ' + g.nome) +
-           (g.attivo === false ? ' (disattivato)' : '') + '</option>'
+           (g.attivo === false ? ' (disattivato)' : '') +
+           (!gruppoDelTipo(g, tipo) ? (g.tipo === 'ricavo' ? ' (di ricavo)' : ' (di costo)') : '') +
+           '</option>'
   })
   return out
 }
@@ -13057,7 +13089,7 @@ function renderNotaGruppo() {
   } else if (clsGruppoForzato) {
     nota = '<span class="gruppo-proposto">✍️ scelto a mano — resta così finché non lo cambi</span>'
   } else if (!dalConto && !scelto) {
-    nota = '<span class="dim" style="font-size:11px">Il conto scelto non appartiene a nessun gruppo di spesa: resta «Non assegnato».</span>'
+    nota = '<span class="dim" style="font-size:11px">Il conto scelto non appartiene a nessun gruppo: resta «Non assegnato».</span>'
   }
   html('cls-gruppo-nota', nota)
 
@@ -20154,7 +20186,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '73'
+var VERSIONE = '74'
 
 function controllaVersionePagina() {
   try {
@@ -21659,6 +21691,9 @@ function renderPianoPrint(c, cantiere) {
         '</div>' +
         '<div class="inv-meta">' +
           '<div class="inv-title">PIANO<br>PAGAMENTI</div>' +
+          // 74·2 — titolo blu petrolio (CSS) e questa riga: a colpo d'occhio
+          // non si confonde con una fattura, anche stampato in bianco e nero.
+          '<div class="inv-informativo">Documento informativo — non è una fattura</div>' +
           '<table class="inv-meta-tbl">' +
             '<tr><td>Data</td><td>' + esc(fmtDate(oggiISO())) + '</td></tr>' +
             (c.data_contratto ? '<tr><td>Contratto</td><td>' + esc(fmtDate(c.data_contratto)) + '</td></tr>' : '') +
@@ -22024,6 +22059,7 @@ function renderCartellaPrint(c, cantiere) {
         '</div>' +
         '<div class="inv-meta">' +
           '<div class="inv-title">RIASSUNTO<br>CANTIERE</div>' +
+          '<div class="inv-informativo">Documento informativo — non è una fattura</div>' +   // 74·2
           '<table class="inv-meta-tbl">' +
             '<tr><td>Stampato il</td><td>' + esc(fmtDate(oggiISO())) + '</td></tr>' +
             (c.rif_offerta ? '<tr><td>Rif. offerta</td><td>' + esc(c.rif_offerta) + '</td></tr>' : '') +
