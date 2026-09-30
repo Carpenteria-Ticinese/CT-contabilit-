@@ -2227,6 +2227,15 @@ tr.riga-fuori-cantiere td {
   border-bottom: 1px solid var(--border);
 }
 .cru-elenco-riga:last-child { border-bottom: none; }
+/* 75·9 — la riga che apre il documento: un bottone che sembra una riga. */
+.cru-elenco-apri {
+  width: 100%; background: none; border: 0; border-bottom: 1px solid var(--border);
+  font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: 4px;
+}
+.cru-elenco-apri:hover, .cru-elenco-apri:focus-visible { background: var(--primary-lt); }
+.cru-elenco-freccia { color: var(--text2); font-weight: 700; }
+/* 75·8 — il riquadro su cui si sta trascinando un file. */
+.drop-attivo { outline: 2px dashed var(--primary); outline-offset: 3px; background: var(--primary-lt); }
 .cru-elenco-nome { font-weight: 600; flex: 1; min-width: 140px; }
 .cru-elenco-meta { font-size: 12px; color: var(--text2); }
 .cru-elenco-imp  { font-weight: 700; margin-left: auto; }
