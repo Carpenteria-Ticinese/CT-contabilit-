@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=77" />
+  <link rel="stylesheet" href="css/style.css?v=78" />
 </head>
-<body data-versione="77">
+<body data-versione="78">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -84,6 +84,12 @@
     <button class="nav-item auth-only" data-page="offerte">
       <span aria-hidden="true">📦</span>
       <span>Conferme d'ordine</span>
+    </button>
+
+    <!-- 78 — tutti i documenti, anche chiusi: si cerca e si apre -->
+    <button class="nav-item auth-only" data-page="archivio">
+      <span aria-hidden="true">🗂️</span>
+      <span>Archivio</span>
     </button>
 
     <button class="nav-item auth-only" data-page="export">
@@ -1356,6 +1362,74 @@
     </div>
 
     <!-- ══ PAGINA: Export & consegna (Fase 5) ══════════════════════════════ -->
+    <!-- ══ 78 — ARCHIVIO: tutti i documenti, anche chiusi ════════════════════ -->
+    <div id="page-archivio" class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">🗂️ Archivio</div>
+          <div class="page-subtitle">Tutti i documenti di ogni tipo, anche chiusi. Si cerca e si apre: niente si cancella, si tengono 10 anni.</div>
+        </div>
+      </div>
+      <div id="archivio-banner" role="alert" aria-live="assertive" style="margin-bottom:16px"></div>
+      <div class="card">
+        <div class="card-title">🔍 Cerca</div>
+        <div class="form-row" style="margin-bottom:12px">
+          <div class="form-group" style="flex:3; margin-bottom:0">
+            <label for="arch-testo" class="form-label">Numero, cliente o fornitore</label>
+            <input type="text" id="arch-testo" class="form-input" placeholder="🔍 es. 2026-09-009, Marotta, 1350" oninput="onFiltroArchivio()" autocomplete="off" />
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="arch-anno" class="form-label">Anno</label>
+            <input type="number" id="arch-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="onFiltroArchivio()" />
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="arch-stato" class="form-label">Stato</label>
+            <select id="arch-stato" class="form-input" onchange="onFiltroArchivio()">
+              <option value="">Tutti</option>
+              <option value="aperti">Aperti</option>
+              <option value="chiusi">Chiusi</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row" style="margin-bottom:12px">
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="arch-da" class="form-label">Data da</label>
+            <input type="date" id="arch-da" class="form-input" onchange="onFiltroArchivio()" />
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="arch-a" class="form-label">Data a</label>
+            <input type="date" id="arch-a" class="form-input" onchange="onFiltroArchivio()" />
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="arch-imp-da" class="form-label">Importo da (CHF)</label>
+            <input type="number" id="arch-imp-da" class="form-input num" step="0.01" min="0" oninput="onFiltroArchivio()" />
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="arch-imp-a" class="form-label">Importo a (CHF)</label>
+            <input type="number" id="arch-imp-a" class="form-input num" step="0.01" min="0" oninput="onFiltroArchivio()" />
+          </div>
+          <div class="form-group" style="flex:2; margin-bottom:0">
+            <label for="arch-cantiere" class="form-label">Cantiere</label>
+            <select id="arch-cantiere" class="form-input" onchange="onFiltroArchivio()">
+              <option value="">Tutti</option>
+            </select>
+          </div>
+        </div>
+        <div class="arch-tipi" role="group" aria-label="Tipi di documento">
+          <label class="check-riga"><input type="checkbox" id="arch-tipo-vendita" checked onchange="onFiltroArchivio()" /><span>🧾 Fatture di vendita</span></label>
+          <label class="check-riga"><input type="checkbox" id="arch-tipo-nota" checked onchange="onFiltroArchivio()" /><span>↩️ Note di credito</span></label>
+          <label class="check-riga"><input type="checkbox" id="arch-tipo-acquisto" checked onchange="onFiltroArchivio()" /><span>📥 Fatture d&rsquo;acquisto</span></label>
+          <label class="check-riga"><input type="checkbox" id="arch-tipo-movimento" checked onchange="onFiltroArchivio()" /><span>🏢 Movimenti manuali</span></label>
+          <label class="check-riga"><input type="checkbox" id="arch-tipo-conferma" checked onchange="onFiltroArchivio()" /><span>📦 Conferme d&rsquo;ordine</span></label>
+          <button type="button" class="btn-secondary" onclick="azzeraArchivio()">↺ Azzera i filtri</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="arch-contatore" class="elenco-contatore"></div>
+        <div id="arch-risultati"></div>
+      </div>
+    </div>
+
     <div id="page-export" class="page">
 
       <div class="page-header">
@@ -1547,6 +1621,13 @@
             <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="fatture-filtro-anno" class="form-label">Anno</label>
               <input type="number" id="fatture-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderFattureTable()" />
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0; align-self:flex-end">
+              <!-- 78 — spento ogni volta che si entra: si parte dagli aperti -->
+              <label class="check-riga" for="fatture-mostra-chiusi" style="margin:0">
+                <input type="checkbox" id="fatture-mostra-chiusi" onchange="renderFattureTable()" />
+                <span>Mostra anche i chiusi</span>
+              </label>
             </div>
           </div>
           <!-- 59·B — quanti documenti, per stato; con filtro: «4 di 6 (filtro attivo)» -->
@@ -1863,6 +1944,13 @@
                 <option value="">Tutti gli stati</option>
               </select>
             </div>
+            <div class="form-group" style="flex:1; margin-bottom:0; align-self:flex-end">
+              <!-- 78 — spento ogni volta che si entra: si parte dagli aperti -->
+              <label class="check-riga" for="offerte-mostra-chiusi" style="margin:0">
+                <input type="checkbox" id="offerte-mostra-chiusi" onchange="renderOfferteTable()" />
+                <span>Mostra anche i chiusi</span>
+              </label>
+            </div>
           </div>
           <div id="offerte-contatore" class="elenco-contatore"></div>
           <div id="offerte-table"></div>
@@ -2105,6 +2193,13 @@
             <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="acquisti-filtro-anno" class="form-label">Anno</label>
               <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0; align-self:flex-end">
+              <!-- 78 — spento ogni volta che si entra: si parte dagli aperti -->
+              <label class="check-riga" for="acquisti-mostra-chiusi" style="margin:0">
+                <input type="checkbox" id="acquisti-mostra-chiusi" onchange="renderAcquistiTable()" />
+                <span>Mostra anche i chiusi</span>
+              </label>
             </div>
           </div>
           <div id="acquisti-contatore" class="elenco-contatore"></div>
@@ -3263,7 +3358,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=77"></script>
+<script src="js/app.js?v=78"></script>
 
 </body>
 </html>
