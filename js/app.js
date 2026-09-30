@@ -3710,7 +3710,7 @@ function statoFatturaBadge(stato, motivo) {
 }
 
 async function initFatturePage() {
-  spegniMostraChiusi('fatture-mostra-chiusi')   // 78 — ogni volta si riparte dagli aperti
+  statoFiltroDefault('fatture-filtro-stato')   // 80·2 — ogni volta si riparte dagli aperti
   fattureBackToList()
   await loadFattureList()
 }
@@ -3835,9 +3835,82 @@ function segnoChiuso() { return ' <span class="badge badge-chiuso">Chiuso</span>
 function rigaChiusiNascostiHtml(n) {
   if (!n) return ''
   return '<div class="chiusi-nascosti">+ ' + n + (n === 1 ? ' chiuso non mostrato' : ' chiusi non mostrati') +
-    ' — accendi «Mostra anche i chiusi», oppure ' +
+    ' — scegli «Tutti» nel filtro Stato, oppure ' +
     '<button type="button" class="link-btn" onclick="vaiAllArchivio()">cercali nell\'Archivio</button>.</div>'
 }
+
+// ══ 80·2 — UN COMANDO SOLO: IL FILTRO «STATO» ══════════════════════════════
+// Nella 78 c'erano due comandi — il filtro e l'interruttore «Mostra anche i
+// chiusi» — e si pestavano i piedi: con «Incassate» scelto si vedevano le
+// altre. Adesso il filtro è uno: parte da «Aperti» (che è l'elenco di lavoro),
+// ha «Tutti» (aperti e chiusi) e gli stati singoli, che mostrano ESATTAMENTE
+// quello che dicono — lo stato che si LEGGE sulla riga, note di credito
+// comprese, non quello grezzo del database.
+// La ricerca, con «Aperti», cerca anche fra i chiusi (78): chi cerca un
+// numero vuole trovarlo. Con uno stato scelto, cerca dentro quello.
+// A ogni ingresso nella pagina il filtro torna su «Aperti».
+function statoVenditaFiltro(f, filtro) {
+  switch (filtro) {
+    case '':
+    case 'tutti':    return true
+    case 'aperti':   return !venditaChiusa(f)
+    case 'bozza':    return f.stato === 'bozza'
+    case 'annullata': return f.stato === 'annullata'
+    case 'nc':       return f.tipo === 'nota_credito'
+    case 'nc_da_rimborsare':
+      return f.tipo === 'nota_credito' && f.stato === 'emessa' && eccedenzaDaNota(f.id) > 0.005
+    case 'non_incassato':
+    case 'parziale':
+    case 'incassato':
+      if (f.tipo === 'nota_credito' || f.stato !== 'emessa') return false
+      var letto = statoConStorno('tm_conta_fatture', f.id, f.totale, f.stato_pagamento)
+      return letto === ({ non_incassato: 'aperto', parziale: 'parziale', incassato: 'pagato' })[filtro]
+  }
+  return true
+}
+
+function statoAcquistoFiltro(a, filtro) {
+  switch (filtro) {
+    case '':
+    case 'tutti':        return true
+    case 'aperti':       return !acquistoChiuso(a) || daConfermare(a)
+    case 'da_confermare': return daConfermare(a)
+    case 'aperto':
+    case 'parziale':
+    case 'pagato':       return (a.stato_pagamento || 'aperto') === filtro
+  }
+  return true
+}
+
+function statoConfermaFiltro(o, filtro) {
+  if (!filtro || filtro === 'tutti') return true
+  if (filtro === 'aperti') return !confermaChiusa(o)
+  if (filtro === 'da_fatturare') return offertaDaFatturare(o)
+  return o.stato === filtro
+}
+
+// Un elenco con il filtro Stato: i documenti da mostrare, quelli su cui il
+// contatore fa «N di M», e quanti chiusi restano fuori con «Aperti».
+//   tutte      l'elenco intero
+//   base       filtro → documenti che passano gli ALTRI filtri (anno, cantiere…)
+//   cerca      filtro → documenti che passano la ricerca (null = nessuna ricerca)
+function elencoConStato(tutte, filtro, base, cerca, stato, chiuso) {
+  var conRicerca = !!cerca
+  // Con «Aperti» la ricerca guarda anche i chiusi.
+  var usaStato = !(conRicerca && filtro === 'aperti')
+  var list = tutte.filter(function (x) {
+    return base(x) && (!usaStato || stato(x, filtro)) && (!conRicerca || cerca(x))
+  })
+  var nascosti = 0, universo = tutte
+  // Con una ricerca il contatore conta su tutto, perché si cerca su tutto.
+  if (filtro === 'aperti' && !conRicerca) {
+    universo = tutte.filter(function (x) { return !chiuso(x) })
+    nascosti = tutte.filter(function (x) { return base(x) && chiuso(x) }).length
+  }
+  return { list: list, universo: universo, nascosti: nascosti }
+}
+
+function statoFiltroDefault(id) { var s = el(id); if (s) s.value = 'aperti' }
 
 // Un elenco di lavoro si divide così: `filtrate` sono i documenti che passano i
 // filtri di chi guarda. Se i chiusi non sono stati chiesti, si tolgono, e si
@@ -3851,7 +3924,6 @@ function dividiApertiChiusi(tutte, filtrate, chiuso, vediChiusi) {
   return { universo: tutte.filter(aperto), list: list, nascosti: filtrate.length - list.length }
 }
 
-function spegniMostraChiusi(id) { var c = el(id); if (c) c.checked = false }
 
 function vaiAllArchivio() {
   showPage('archivio')
@@ -4114,10 +4186,8 @@ async function apriDaArchivio(tabella, id) {
 }
 
 function renderFattureTable() {
-  var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : ''
-  // Due filtri distinti: lo stato del DOCUMENTO e lo stato dell'INCASSO.
-  // Sono due domande diverse e prima erano schiacciate in un menu solo.
-  var incasso = el('fatture-filtro-incasso') ? el('fatture-filtro-incasso').value : ''
+  // 80·2 — UN filtro di stato, che parte da «Aperti» (vedi statoVenditaFiltro).
+  var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : 'aperti'
   var anno  = el('fatture-filtro-anno') ? el('fatture-filtro-anno').value : ''
   var q = el('fatture-search') ? el('fatture-search').value.trim().toLowerCase() : ''
 
@@ -4125,33 +4195,23 @@ function renderFattureTable() {
   var clearBtn = el('fatture-search-clear')
   if (clearBtn) clearBtn.style.display = q ? 'flex' : 'none'
 
-  // filtri esistenti (stato/anno)
-  var list = fattureList.filter(function (f) {
-    if (stato && f.stato !== stato) return false
-    if (incasso && f.stato_pagamento !== incasso) return false
-    if (anno && String(f.anno) !== String(anno)) return false
-    return true
-  })
-  // 78 — i chiusi si vedono se li si chiede: con l'interruttore, con una
-  // ricerca (chi cerca un numero vuole trovarlo), o con un filtro che chiede
-  // proprio uno stato chiuso.
-  var vediChiusi = !!(el('fatture-mostra-chiusi') && el('fatture-mostra-chiusi').checked) ||
-                   !!q || stato === 'annullata' || incasso === 'pagato'
-
-  // ricerca testuale DENTRO il risultato filtrato: numero, cliente, totale
-  // (case-insensitive, per pezzi di parola; tutti i termini devono combaciare)
-  if (q) {
-    var termini = q.split(/\s+/)
-    list = list.filter(function (f) {
-      var totNum = safeNum(f.totale)
-      var hay = (
-        (f.numero || '') + ' ' +
-        (f.cliente_nome || '') + ' ' +
-        (totNum != null ? String(totNum) + ' ' + totNum.toFixed(2) : '')
-      ).toLowerCase()
-      return termini.every(function (t) { return hay.indexOf(t) !== -1 })
-    })
-  }
+  // ricerca testuale: numero, cliente, totale (case-insensitive, per pezzi di
+  // parola; tutti i termini devono combaciare)
+  var termini = q ? q.split(/\s+/) : []
+  var cerca = q ? function (f) {
+    var totNum = safeNum(f.totale)
+    var hay = (
+      (f.numero || '') + ' ' +
+      (f.cliente_nome || '') + ' ' +
+      (totNum != null ? String(totNum) + ' ' + totNum.toFixed(2) : '')
+    ).toLowerCase()
+    return termini.every(function (t) { return hay.indexOf(t) !== -1 })
+  } : null
+  var diviso = elencoConStato(fattureList,
+    stato,
+    function (f) { return !anno || String(f.anno) === String(anno) },
+    cerca, statoVenditaFiltro, function (f) { return venditaChiusa(f) })
+  var list = diviso.list
 
   // 61g — la vista «Scadute»: un'altra tabella, non un filtro di questa.
   html('fatture-scadute-barra', barraScaduteHtml())
@@ -4161,10 +4221,6 @@ function renderFattureTable() {
     return
   }
 
-  // 78 — solo gli aperti, se i chiusi non sono stati chiesti.
-  var diviso = dividiApertiChiusi(fattureList, list, function (f) { return venditaChiusa(f) }, vediChiusi)
-  list = diviso.list
-
   // 59·B — quante, e in che stato. Sempre, anche a elenco vuoto.
   html('fatture-contatore', rigaChiusiNascostiHtml(diviso.nascosti) + contatoreElencoHtml(diviso.universo, list,
     { sing: 'fattura', plur: 'fatture' },
@@ -4173,7 +4229,7 @@ function renderFattureTable() {
       annullata: { sing: 'annullata', plur: 'annullate' } }))
 
   if (!list.length) {
-    var filtroAttivo = q || stato || incasso || anno
+    var filtroAttivo = q || (stato && stato !== 'aperti' && stato !== 'tutti') || anno
     var msg = filtroAttivo
       ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.'
       : (diviso.nascosti ? 'Nessuna fattura aperta.' : 'Nessuna fattura.')
@@ -6533,7 +6589,7 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
 function acquistiBackToList() { showAcquistiView('list') }
 
 async function initAcquistiPage() {
-  spegniMostraChiusi('acquisti-mostra-chiusi')   // 78
+  statoFiltroDefault('acquisti-filtro-stato')   // 80·2
   acquistiBackToList()
   await loadAcquistiList()
 }
@@ -6601,9 +6657,16 @@ function nettoAcquisto(a) {
 
 function confrontoConConferma(a, o) {
   if (!a || !o) return null
+  // 80·1 — una conferma senza importo (né totale stampato né righe con prezzo)
+  // non si confronta: prima valeva 0, e qualunque fattura risultava «più alta
+  // della conferma» di tutto il suo importo. Zero vale come «non scritto».
   var stampato = safeNum(o.totale_stampato)
+  if (stampato != null && stampato <= 0) stampato = null
+  var righe = safeNum(o.totale)
+  if (righe != null && righe <= 0) righe = null
+  if (stampato == null && righe == null) return { senzaImporto: true }
   var conIva = stampato != null && o.totale_stampato_iva_inclusa === true
-  var conferma = stampato != null ? stampato : safeNum(o.totale)
+  var conferma = stampato != null ? stampato : righe
   var fattura = conIva ? safeNum(a.importo) : nettoAcquisto(a)
   if (conferma == null || fattura == null) return null
   return { diff: round2(fattura - conferma), conIva: conIva, fattura: fattura, conferma: conferma }
@@ -6615,8 +6678,17 @@ function avvisoConfermaAcquisto(a) {
   if (!a || !a.offerta_id) return null
   var o = (offerteCache || []).filter(function (x) { return x.id === a.offerta_id })[0]
   var c = confrontoConConferma(a, o)
-  return (c && c.diff > SOGLIA_CONFERMA_CHF) ? c : null
+  return (c && !c.senzaImporto && c.diff > SOGLIA_CONFERMA_CHF) ? c : null
 }
+
+// 80·1 — la conferma collegata non ha importo: si dice, non si avvisa.
+function confermaSenzaImporto(a) {
+  if (!a || !a.offerta_id) return false
+  var o = (offerteCache || []).filter(function (x) { return x.id === a.offerta_id })[0]
+  var c = confrontoConConferma(a, o)
+  return !!(c && c.senzaImporto)
+}
+var TESTO_CONFERMA_SENZA_IMPORTO = 'Conferma senza importo: confronto non possibile.'
 
 function testoAvvisoConferma(c, breve) {
   return 'Fattura più alta della conferma di CHF ' + fmtNumIt(c.diff) +
@@ -6627,6 +6699,9 @@ function testoAvvisoConferma(c, breve) {
 
 function bloccoAvvisoConferma(a) {
   var c = avvisoConfermaAcquisto(a)
+  if (!c && confermaSenzaImporto(a)) {   // 80·1
+    return '<div class="form-hint avviso-conferma-alta">ℹ️ ' + esc(TESTO_CONFERMA_SENZA_IMPORTO) + '</div>'
+  }
   if (!c) return ''
   return '<div class="fase-banner warn avviso-conferma-alta" role="status">' +
     '<span class="icon" aria-hidden="true">⚠️</span><div class="msg">' + esc(testoAvvisoConferma(c)) + '</div></div>'
@@ -6768,8 +6843,8 @@ function renderAcquistiTable() {
   // FASE 6A — filtro per cantiere. '__nessuno__' = le spese aziendali, che sono
   // una risposta valida e devono potersi cercare come le altre.
   var cantF = el('acquisti-filtro-cantiere') ? el('acquisti-filtro-cantiere').value : ''
+  // 80·2 — lo stato lo decide elencoConStato qui sotto; qui gli altri filtri.
   var list = acquistiList.filter(function (a) {
-    if (stato && a.stato_pagamento !== stato) return false
     if (anno && (!a.data || String(a.data).slice(0, 4) !== String(anno))) return false
     if (cantF) {
       // FASE 25 — una fattura divisa appartiene a piu' cantieri: si mostra
@@ -6787,21 +6862,20 @@ function renderAcquistiTable() {
     }
     return true
   })
-  if (qv) {
-    var termini = qv.split(/\s+/)
-    list = list.filter(function (a) {
-      var imp = safeNum(a.importo)
-      var hay = ((a.fornitore || '') + ' ' + (a.numero_fornitore || '') + ' ' +
-        (imp != null ? String(imp) + ' ' + imp.toFixed(2) : '')).toLowerCase()
-      return termini.every(function (t) { return hay.indexOf(t) !== -1 })
-    })
-  }
-  // 78 — solo gli aperti, se i chiusi non sono stati chiesti. Quelli «da
-  // confermare» restano sempre: c'è ancora qualcosa da fare.
-  var vediChiusiA = !!(el('acquisti-mostra-chiusi') && el('acquisti-mostra-chiusi').checked) ||
-                    !!qv || stato === 'pagato'
-  var divisoA = dividiApertiChiusi(acquistiList, list,
-    function (a) { return acquistoChiuso(a) && !daConfermare(a) }, vediChiusiA)
+  var terminiA = qv ? qv.split(/\s+/) : []
+  var cercaA = qv ? function (a) {
+    var imp = safeNum(a.importo)
+    var hay = ((a.fornitore || '') + ' ' + (a.numero_fornitore || '') + ' ' +
+      (imp != null ? String(imp) + ' ' + imp.toFixed(2) : '')).toLowerCase()
+    return terminiA.every(function (t) { return hay.indexOf(t) !== -1 })
+  } : null
+  // 80·2 — il filtro Stato, da «Aperti». Quelli «da confermare» sono aperti:
+  // c'è ancora qualcosa da fare.
+  var nelFiltro = {}
+  list.forEach(function (a) { nelFiltro[a.id] = true })
+  var divisoA = elencoConStato(acquistiList, stato || 'aperti',
+    function (a) { return !!nelFiltro[a.id] }, cercaA, statoAcquistoFiltro,
+    function (a) { return acquistoChiuso(a) && !daConfermare(a) })
   list = divisoA.list
 
   // 59·B — quante, e come stanno a pagamento.
@@ -6812,7 +6886,7 @@ function renderAcquistiTable() {
       pagato: { sing: 'pagata', plur: 'pagate' } }))
 
   if (!list.length) {
-    var attivo = qv || stato || anno
+    var attivo = qv || (stato && stato !== 'aperti' && stato !== 'tutti') || anno || cantF
     html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
       (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
     return
@@ -10136,7 +10210,7 @@ function showOfferteView(which) {
 
 async function initOffertePage() {
   if (!currentAziendaId) { html('offerte-table', '<div class="dim">Accedi per vedere le conferme d’ordine.</div>'); return }
-  spegniMostraChiusi('offerte-mostra-chiusi')   // 78
+  statoFiltroDefault('offerte-filtro-stato')   // 80·2 — aggiornaFiltroStatoOfferte lo conserva
   showOfferteView('list')
   aggiornaFiltroStatoOfferte()
   html('offerte-table', loadingRow('Caricamento conferme d’ordine…'))
@@ -10197,7 +10271,8 @@ function aggiornaFiltroStatoOfferte() {
       return '<option value="' + k + '">' + stati[k].ic + ' ' + esc(stati[k].et) + '</option>'
     }).join('')
   }
-  var out = '<option value="">Tutti gli stati</option>'
+  // 80·2 — si parte da «Aperti»; «Tutti» sono aperti e chiusi.
+  var out = '<option value="aperti">Aperti</option><option value="tutti">Tutti (aperti e chiusi)</option>'
   if (tipo !== 'offerta') {
     out += '<option value="da_fatturare">⏳ Ordinate, non ancora fatturate</option>'
   }
@@ -10207,7 +10282,7 @@ function aggiornaFiltroStatoOfferte() {
               '<optgroup label="Offerte (FASE 29)">' + voci(STATI_OFFERTA) + '</optgroup>'
   sel.innerHTML = out
   sel.value = prima
-  if (sel.value !== prima) sel.value = ''
+  if (sel.value !== prima) sel.value = 'aperti'   // 80·2
 }
 
 function onFiltroTipoOfferteChange() {
@@ -10238,34 +10313,26 @@ function renderOfferteTable() {
   var q = (getVal('offerte-search') || '').toLowerCase()
   var tipo = getVal('offerte-filtro-tipo')
   var stato = getVal('offerte-filtro-stato')
-  // 78 — i chiusi (fatturate; vecchie offerte scadute o rifiutate) si vedono
-  // se li si chiede.
-  var vediChiusiO = !!(el('offerte-mostra-chiusi') && el('offerte-mostra-chiusi').checked) || !!q ||
-                    stato === 'fatturato' || stato === 'scaduta' || stato === 'rifiutata'
-  var list = (offerteList || []).filter(function (o) {
-    var t = o.tipo_documento || 'conferma_ordine'
-    if (tipo && t !== tipo) return false
-    if (stato === 'da_fatturare') { if (!offertaDaFatturare(o)) return false }
-    else if (stato && o.stato !== stato) return false
-    if (q) {
-      var tot = safeNum(o.totale)
-      var hay = ((o.fornitore || '') + ' ' + (o.riferimento || '') + ' ' +
-                 nomeCantiereDaId(o.cantiere_id) + ' ' + etichettaStatoOff(o) + ' ' +
-                 (tot != null ? String(tot) + ' ' + tot.toFixed(2) : '') + ' ' +
-                 (o.totale_stampato != null ? String(o.totale_stampato) : '')).toLowerCase()
-      if (!q.split(/\s+/).every(function (t) { return hay.indexOf(t) !== -1 })) return false
-    }
-    return true
-  })
+  // 80·2 — il filtro Stato, da «Aperti» (fatturate e vecchie offerte scadute o
+  // rifiutate sono chiuse). Il tipo è un altro filtro, e resta.
+  var cercaO = q ? function (o) {
+    var tot = safeNum(o.totale)
+    var hay = ((o.fornitore || '') + ' ' + (o.riferimento || '') + ' ' +
+               nomeCantiereDaId(o.cantiere_id) + ' ' + etichettaStatoOff(o) + ' ' +
+               (tot != null ? String(tot) + ' ' + tot.toFixed(2) : '') + ' ' +
+               (o.totale_stampato != null ? String(o.totale_stampato) : '')).toLowerCase()
+    return q.split(/\s+/).every(function (t) { return hay.indexOf(t) !== -1 })
+  } : null
+  var divisoO = elencoConStato(offerteList || [], stato || 'aperti',
+    function (o) { return !tipo || (o.tipo_documento || 'conferma_ordine') === tipo },
+    cercaO, statoConfermaFiltro, confermaChiusa)
+  var list = divisoO.list
 
   // Il conteggio di quello che e' in giro, sempre visibile, filtri o no.
   var inGiro = (offerteList || []).filter(offertaDaFatturare).length
   html('offerte-da-fatturare-conta', inGiro
     ? '⏳ <strong>' + inGiro + '</strong> ' + (inGiro === 1 ? 'conferma ordinata, non ancora fatturata' : 'conferme ordinate, non ancora fatturate')
     : '✅ Nessuna conferma in attesa di fattura')
-
-  var divisoO = dividiApertiChiusi(offerteList || [], list, confermaChiusa, vediChiusiO)
-  list = divisoO.list
 
   // 59·B — quante, e in che stato. Gli stati delle conferme e delle vecchie
   // offerte sono due elenchi diversi: si mostrano con le loro parole.
@@ -10278,7 +10345,7 @@ function renderOfferteTable() {
       scaduta: { sing: 'offerta scaduta', plur: 'offerte scadute' }, rifiutata: { sing: 'offerta rifiutata', plur: 'offerte rifiutate' } }))
 
   if (!list.length) {
-    var vuoto = (q || stato || tipo === 'offerta')
+    var vuoto = (q || (stato && stato !== 'aperti' && stato !== 'tutti') || tipo === 'offerta')
       ? 'Nessun documento trovato con questi filtri.'
       : 'Nessuna conferma d’ordine registrata. Premi «➕ Nuova conferma» per la prima.'
     html('offerte-table', '<div class="cru-vuoto">' + vuoto + '</div>')
@@ -10968,10 +11035,12 @@ function confrontoOffertaHtml(o, righe) {
   // risultava sempre «più alta».
   var cfr = confrontoConConferma({ importo: getVal('a-importo'), imponibile: getVal('a-imponibile'),
                                    codice_iva_id: getVal('a-codice-iva') || null }, o)
-  var diff = cfr ? cfr.diff : null
+  var senzaImporto = !!(cfr && cfr.senzaImporto)   // 80·1
+  var diff = (cfr && !senzaImporto) ? cfr.diff : null
   var segno = diff == null ? '' : (diff > 0 ? '+' : '')
   var che = td.et.toLowerCase()
-  var giudizio = diff == null ? '<span class="dim">scrivi l’importo della fattura per vedere la differenza</span>'
+  var giudizio = senzaImporto ? 'ℹ️ ' + esc(TESTO_CONFERMA_SENZA_IMPORTO)
+    : diff == null ? '<span class="dim">scrivi l’importo della fattura per vedere la differenza</span>'
     : Math.abs(diff) < 0.005 ? '✅ Fattura e ' + esc(che) + ' coincidono'
     : (diff > 0 ? '⚠️ La fattura è PIÙ ALTA della ' + esc(che) + ' di ' : 'ℹ️ La fattura è più bassa della ' + esc(che) + ' di ') +
       fmtNum2(Math.abs(diff)) + ' CHF'
@@ -10997,7 +11066,7 @@ function confrontoOffertaHtml(o, righe) {
       (diff != null && Math.abs(diff) >= 0.005 ? ' <span class="dim">(' + segno + fmtNum2(diff) + ' CHF)</span>' : '') +
       '<div class="dim" style="font-size:11px;margin-top:3px">Si confrontano i totali: la somma delle righe del documento è escl. IVA, il totale della fattura di solito no. ' +
       'La composizione può essere diversa (ordinati cinque articoli, fatturati tre): giudichi tu.' +
-      (cfr ? ' Differenza calcolata ' + (cfr.conIva ? 'IVA inclusa' : 'IVA esclusa') + ': fattura ' +
+      (cfr && !senzaImporto ? ' Differenza calcolata ' + (cfr.conIva ? 'IVA inclusa' : 'IVA esclusa') + ': fattura ' +
         esc(fmtNumIt(cfr.fattura)) + ', ' + esc(che) + ' ' + esc(fmtNumIt(cfr.conferma)) + '.' : '') + '</div>' +
     '</div>' +
   '</div>'
@@ -21298,7 +21367,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '79'
+var VERSIONE = '80'
 
 function controllaVersionePagina() {
   try {
