@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=78" />
+  <link rel="stylesheet" href="css/style.css?v=79" />
 </head>
-<body data-versione="78">
+<body data-versione="79">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -120,8 +120,8 @@
     </div>
 
     <div class="sidebar-footer">
-      Carpenteria Ticinese Sàgl<br>
-      v1 · Giugno 2026
+      Carpenteria Ticinese Sagl<br>
+      <span id="sidebar-versione">Versione 79</span>
     </div>
 
   </aside>
@@ -1989,7 +1989,7 @@
              ondragover="onTrascinaSopra(event)" ondragleave="onTrascinaVia(event)"
              ondrop="onRilascioLettura(event, 'conferma')">
           <div class="card-title">📄 Lettura della conferma</div>
-          <div class="form-hint" style="margin-bottom:12px">
+          <div class="form-hint" id="conf-lettura-spiega" style="margin-bottom:12px">
             Scegli il PDF o la foto, oppure <strong>trascinalo su questo riquadro</strong>: si compilano
             fornitore, numero, data, totale e consegna prevista (nelle Note). Gli articoli no:
             le righe si scrivono a mano.
@@ -2002,6 +2002,7 @@
                    accept=".pdf,.jpg,.jpeg,.png,.webp,image/*" capture="environment"
                    onchange="leggiConfermaDaFile(this)" />
           </div>
+          <div id="conf-lettura-perche"></div>   <!-- 79·3 -->
           <div id="conf-lettura-banner" role="status" aria-live="polite" style="margin-top:12px"></div>
           <div id="conf-lettura-note" style="margin-top:12px"></div>
           <div id="conf-lettura-costo"></div>
@@ -2218,11 +2219,13 @@
         </div>
         <div id="acquisti-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
         <div class="card no-print" id="acquisti-detail-actions"></div>
+        <div id="acquisti-avviso-conferma"></div>   <!-- 79·1 — sopra i dati, dove l'occhio cade per primo -->
         <div class="card">
           <div id="acquisti-detail-body"></div>
         </div>
         <!-- FASE 8: pagamenti e rate della fattura d'acquisto -->
         <div id="acquisti-detail-conferma"></div>
+        <div id="acquisti-confronto-ai"></div>      <!-- 79·2 -->
         <div id="acquisti-pagamenti"></div>
         <div id="acquisti-classificazione"></div>
         <div id="acquisti-allegati"></div>
@@ -2270,6 +2273,7 @@
               📥 Incolla risposta
             </button>
           </div>
+          <div id="lettura-perche"></div>   <!-- 79·3 -->
 
           <div id="ponte-ai-banner" role="status" aria-live="polite" style="margin-top:12px"></div>
 
@@ -2433,6 +2437,7 @@
             <div class="form-hint">
               Prima i documenti di questo fornitore, poi gli altri. Collegandone uno vedi il confronto dei totali qui sotto.
             </div>
+            <div id="a-avviso-conferma"></div>   <!-- 79·1 -->
             <div id="a-offerta-confronto"></div>
           </div>
 
@@ -2544,12 +2549,12 @@
         <div class="card-title">🏢 Anagrafica</div>
         <div class="form-group">
           <label for="imp-ragione" class="form-label">Ragione sociale <span class="req" aria-hidden="true">*</span></label>
-          <input type="text" id="imp-ragione" class="form-input" maxlength="200" placeholder="es. Carpenteria Ticinese Sàgl" />
+          <input type="text" id="imp-ragione" class="form-input" maxlength="200" placeholder="es. Carpenteria Ticinese Sagl" />
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
             <label for="imp-forma" class="form-label">Forma giuridica</label>
-            <input type="text" id="imp-forma" class="form-input" maxlength="40" placeholder="Sàgl, SA, Ditta individuale…" />
+            <input type="text" id="imp-forma" class="form-input" maxlength="40" placeholder="Sagl, SA, Ditta individuale…" />
           </div>
           <div class="form-group" style="flex:2">
             <label for="imp-uid" class="form-label">IDI / UID</label>
@@ -2956,6 +2961,7 @@
       </div>
       <div class="modal-body">
         <div id="pag-riepilogo" class="pag-sommario"></div>
+        <div id="pag-avviso-conferma"></div>   <!-- 79·1 -->
         <div id="pag-banner"></div>
 
         <div class="form-row" style="margin-top:12px">
@@ -3358,7 +3364,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=78"></script>
+<script src="js/app.js?v=79"></script>
 
 </body>
 </html>
