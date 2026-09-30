@@ -1565,6 +1565,26 @@ textarea.cell-desc {
   }
   #fatture-print .inv { max-width: 100%; }
   #fatture-print .inv-logo { height: 68px; }
+  /* 82·1 — stampando la fattura (body.stampa-fattura, messo da
+     isolaPerStampa) tutto il resto del programma è tolto dal disegno, e i
+     contenitori che restano fra il <body> e la fattura si annullano: niente
+     margini, bordi, ombre, altezze minime. La fattura può così stare NEL
+     FLUSSO invece che sovrapposta (position: absolute), ed è quello che
+     permette alla polizza di avere un foglio suo (@page polizza). */
+  body.stampa-fattura #app, body.stampa-fattura #content, body.stampa-fattura #page-fatture,
+  body.stampa-fattura #fatture-detail-view, body.stampa-fattura #fatture-print-card {
+    display: block !important;
+    position: static !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    background: none !important;
+    min-height: 0 !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+  body.stampa-fattura #fatture-print { position: static; }
 
   /* FASE 20 — Il piè di pagina va in fondo al FOGLIO, non sotto l'ultima riga
      scritta: su una fattura corta restava a due terzi di pagina, con un terzo
@@ -1589,18 +1609,34 @@ textarea.cell-desc {
      ATTENZIONE: questa regola vale quando la fattura NON ha la polizza. Con la
      polizza il margine inferiore cambia, e lo scrive il JS nel tag
      <style id="fatture-page-style"> — che arriva dopo e quindi vince. */
-  @page { size: 210mm 297mm; margin: 15mm 15mm 30mm 15mm; }
-
-  #fatture-print .inv-footer {
-    position: fixed;
-    left: 0; right: 0;
-    bottom: -20mm;          /* dentro i 30mm riservati */
-    margin: 0;
-    padding-top: 3mm;
-    background: #fff;
+  /* ── 82·1 — LA FATTURA SU UN FOGLIO ────────────────────────────────────
+     Il piè di pagina «fisso» 20 mm dentro il margine (FASE 20) e la polizza
+     «fissa» 110 mm sotto (FASE 28) non funzionano più in Chrome/Edge: un
+     elemento fisso che esce dall'area della pagina non si disegna nel
+     margine, finisce sul FOGLIO DOPO. Una fattura di mezza pagina usciva su
+     due fogli, il secondo con il solo piè di pagina (o con la polizza
+     tagliata in cima). Provato in Edge il 30.09.2026.
+     Adesso niente è fisso. Il foglio della fattura è alto quanto l'area della
+     pagina (297 − 15 − 15 mm, meno 2 di prudenza) e il piè di pagina ci sta
+     DENTRO, spinto in fondo (margin-top: auto). Una fattura lunga va avanti
+     sui fogli dopo, e il piè di pagina chiude l'ultimo. */
+  @page { size: 210mm 297mm; margin: 15mm; }
+  /* 82·1 — i fogli della fattura: 15 mm sopra e sotto, ZERO ai lati. Chrome
+     impagina tutto il documento con la larghezza del primo foglio: con 15 mm
+     ai lati sarebbe 180 mm dappertutto, e la polizza (210 mm) resterebbe
+     tagliata anche sul suo foglio senza margini. I 15 mm laterali li mette la
+     fattura stessa (padding), e valgono su ogni foglio. */
+  @page fattura { size: 210mm 297mm; margin: 15mm 0; }
+  @page polizza { size: 210mm 297mm; margin: 0; }   /* 82·1 — il foglio della polizza a parte */
+  #fatture-print .inv {
+    page: fattura;
+    box-sizing: border-box;
+    padding: 0 15mm;
+    display: flex; flex-direction: column; min-height: 265mm;
   }
-  /* Un dito di aria fra l'ultima riga e la fascia del piè di pagina. */
-  #fatture-print .inv { padding-bottom: 6mm; }
+  #fatture-print .inv-footer { margin-top: auto; padding-top: 6mm; background: #fff; }
+  /* Con la polizza in fondo lo spazio è poco: il piè di pagina le sta appena sopra. */
+  body.polizza-in-fondo #fatture-print .inv-footer { padding-top: 2mm; }
 
   /* ── FASE 28 — LA POLIZZA QR IN FONDO ALLA FATTURA ────────────────────────
 
@@ -1629,39 +1665,59 @@ textarea.cell-desc {
      va bene finche' la fattura sta in una pagina, ed e' il JS a controllarlo
      prima di scegliere questa modalita'. */
 
-  /* Modalita' A — la polizza in fondo alla fattura, stesso foglio. */
+  /* Modalita' A — la polizza in fondo alla fattura, stesso foglio.
+     82·1 — il JS toglie i margini della pagina (impostaPaginaFattura): il
+     foglio della fattura è il FOGLIO VERO, 210 × 297 mm, con i suoi margini
+     messi da qui. La polizza sta negli ultimi 105 mm, da bordo a bordo; il
+     piè di pagina appena sopra. Niente di fisso, niente fuori dall'area. */
+  body.polizza-in-fondo #fatture-print .inv {
+    position: relative;
+    box-sizing: border-box;
+    width: 210mm;
+    height: 297mm;
+    min-height: 0;
+    max-width: none;
+    padding: 15mm 15mm 110mm 15mm;   /* in basso: la polizza e 5 mm di aria */
+    overflow: hidden;
+  }
   body.polizza-in-fondo #fatture-print .inv-qrpage {
-    position: fixed;
-    left: -15mm;            /* dal bordo sinistro della page area a quello del foglio */
-    bottom: -110mm;         /* dentro i 110mm riservati, fino al bordo inferiore */
+    position: absolute;
+    left: 0;
+    bottom: 0;
     width: 210mm;
     height: 105mm;
     margin: 0;
     padding: 0;
     overflow: hidden;
     background: #fff;
-    z-index: 2;             /* sopra il pie' di pagina */
+    z-index: 2;
   }
-  /* Con la polizza sotto, il pie' di pagina risale sopra di lei. */
-  body.polizza-in-fondo #fatture-print .inv-footer { bottom: 2mm; }
 
   /* Modalita' B — la fattura e' lunga e i 105mm non ci stanno: pagina propria.
      Anche qui una cura sola: il margine inferiore resta quello riservato e la
      polizza ci scende dentro con lo scostamento negativo. */
+  /* 82·1 — la polizza sul foglio dopo, IN FONDO e da bordo a bordo. Quello
+     che sporge nel margine il browser lo taglia (prima usciva senza i primi
+     15 mm a sinistra): la polizza ha quindi un FOGLIO SUO, senza margini
+     (@page polizza), e ci sta dentro in basso. La fattura lunga resta un
+     blocco normale: il piè di pagina chiude l'ultimo foglio di testo. */
+  body.polizza-a-parte #fatture-print .inv { display: block; min-height: 0; }
   body.polizza-a-parte #fatture-print .inv-qrpage {
+    page: polizza;
     break-before: page;
     page-break-before: always;
     break-inside: avoid;
     page-break-inside: avoid;
     position: relative;
     width: 210mm;
-    height: 105mm;
-    margin: 0 0 0 -15mm;    /* solo a sinistra: e' l'unico scostamento */
+    height: 296mm;
+    margin: 0 0 0 -15mm;    /* esce dal padding della fattura: da bordo a bordo */
     padding: 0;
     overflow: hidden;
     background: #fff;
     z-index: 2;
   }
+  body.polizza-a-parte #fatture-print .inv-qrimg { left: 0; bottom: 0; }
 
   #fatture-print .inv-qrimg {
     position: absolute;
