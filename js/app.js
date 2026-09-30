@@ -3710,6 +3710,7 @@ function statoFatturaBadge(stato, motivo) {
 }
 
 async function initFatturePage() {
+  spegniMostraChiusi('fatture-mostra-chiusi')   // 78 — ogni volta si riparte dagli aperti
   fattureBackToList()
   await loadFattureList()
 }
@@ -3803,6 +3804,315 @@ function clearFattureSearch() {
   if (inp) inp.focus()
 }
 
+// ══ 78 — CHIUSO O APERTO, GLI ELENCHI DI LAVORO, L'ARCHIVIO ═══════════════
+// «Chiuso» è una parola sola per tutto il programma, e si decide qui:
+//   vendita          annullata, oppure incassata (anche chiusa da una nota)
+//   nota di credito  annullata, oppure emessa senza niente da rimborsare:
+//                    nessuna eccedenza, o eccedenza già restituita. Con
+//                    qualcosa ancora da rimborsare resta APERTA.
+//   acquisto         pagato
+//   movimento        pagato
+//   conferma         fatturata; una vecchia offerta: scaduta o rifiutata
+// Una bozza è sempre aperta. Chiuso non vuol dire cancellato: si vede con
+// «Mostra anche i chiusi», con la ricerca e nell'Archivio.
+function venditaChiusa(f, fatture) {
+  if (f.stato === 'annullata') return true
+  if (f.stato !== 'emessa') return false
+  if (f.tipo === 'nota_credito') return eccedenzaDaNota(f.id, fatture) <= 0.005
+  return statoConStorno('tm_conta_fatture', f.id, f.totale, f.stato_pagamento) === 'pagato'
+}
+function acquistoChiuso(a)   { return a.stato_pagamento === 'pagato' }
+function movimentoChiuso(m)  { return m.stato_pagamento === 'pagato' }
+function confermaChiusa(o) {
+  if ((o.tipo_documento || 'conferma_ordine') === 'conferma_ordine') return o.stato === 'fatturato'
+  return o.stato === 'scaduta' || o.stato === 'rifiutata'
+}
+
+// Il segno sulla riga di un documento chiuso, quando si vede.
+function segnoChiuso() { return ' <span class="badge badge-chiuso">Chiuso</span>' }
+
+// La riga sopra la tabella: quanti chiusi non si vedono, e dove trovarli.
+function rigaChiusiNascostiHtml(n) {
+  if (!n) return ''
+  return '<div class="chiusi-nascosti">+ ' + n + (n === 1 ? ' chiuso non mostrato' : ' chiusi non mostrati') +
+    ' — accendi «Mostra anche i chiusi», oppure ' +
+    '<button type="button" class="link-btn" onclick="vaiAllArchivio()">cercali nell\'Archivio</button>.</div>'
+}
+
+// Un elenco di lavoro si divide così: `filtrate` sono i documenti che passano i
+// filtri di chi guarda. Se i chiusi non sono stati chiesti, si tolgono, e si
+// dice quanti. `universo` è quello su cui il contatore fa «N di M»: senza i
+// chiusi quando non si vedono, cosi' «filtro attivo» compare solo se un filtro
+// l'ha messo chi guarda.
+function dividiApertiChiusi(tutte, filtrate, chiuso, vediChiusi) {
+  if (vediChiusi) return { universo: tutte, list: filtrate, nascosti: 0 }
+  var aperto = function (x) { return !chiuso(x) }
+  var list = filtrate.filter(aperto)
+  return { universo: tutte.filter(aperto), list: list, nascosti: filtrate.length - list.length }
+}
+
+function spegniMostraChiusi(id) { var c = el(id); if (c) c.checked = false }
+
+function vaiAllArchivio() {
+  showPage('archivio')
+  initArchivioPage()
+}
+
+// ── L'Archivio ──────────────────────────────────────────────────────────────
+// Tutti i documenti, di ogni tipo, anche chiusi, in una tabella sola. Niente
+// si cancella da qui: si cerca e si apre.
+//
+// La ricerca si fa nel browser, sui documenti letti per intero con
+// leggiTutto() (77·1): le regole di «chiuso», della nota da rimborsare e del
+// cantiere di un documento diviso esistono una volta sola, qui, e rifarle nel
+// database vorrebbe dire due regole che un giorno direbbero cose diverse.
+// Con qualche migliaio di documenti resta istantanea.
+var ARCHIVIO_PASSO = 50
+var archivioDocs = null
+var archivioMostrati = ARCHIVIO_PASSO
+var archivioVendite = []
+var TIPI_ARCHIVIO = {
+  vendita:   { et: 'Fattura di vendita', ic: '🧾' },
+  nota:      { et: 'Nota di credito',    ic: '↩️' },
+  acquisto:  { et: 'Fattura d\'acquisto', ic: '📥' },
+  movimento: { et: 'Movimento manuale',  ic: '🏢' },
+  conferma:  { et: 'Conferma d\'ordine', ic: '📦' }
+}
+
+// I cantieri di un documento: quelli delle righe di classificazione se ci
+// sono (vincono), altrimenti quello scritto alla registrazione. '' = nessuno.
+// Stessa regola di quoteCantieriDelFlusso().
+function cantieriDelDocumento(origineTipo, id) {
+  var k = chiaveClassificazione(origineTipo, id)
+  var daClass = classCantiereMap ? (classCantiereMap[k] || []) : []
+  if (daClass.length) {
+    var visti = {}
+    daClass.forEach(function (q) { visti[q.cantiere_id || ''] = true })
+    return Object.keys(visti)
+  }
+  var cid = docCantiereMap ? docCantiereMap[k] : null
+  return [cid || '']
+}
+
+function nomiCantieri(ids) {
+  return ids.map(function (id) {
+    if (!id) return 'Nessun cantiere (da assegnare)'
+    return nomeCantiereDaId(id) || 'cantiere non leggibile'
+  }).join(' · ')
+}
+
+async function initArchivioPage() {
+  html('archivio-banner', '')
+  html('arch-risultati', loadingRow('Caricamento dell\'archivio…'))
+  archivioMostrati = ARCHIVIO_PASSO
+  try {
+    await richiediAccesso('archivio')
+    const rV = await leggiTutto(function () {
+      return sb.from('tm_conta_fatture')
+        .select('id, numero, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, tipo, rif_fattura_id, annullata_motivo')
+        .eq('azienda_id', currentAziendaId).order('id')
+    })
+    if (rV.error) throw rV.error
+    const rA = await leggiTutto(function () {
+      return sb.from('tm_conta_fatture_acquisto')
+        .select('id, fornitore, numero_fornitore, data, scadenza, importo, valuta, stato_pagamento')
+        .eq('azienda_id', currentAziendaId).order('id')
+    })
+    if (rA.error) throw rA.error
+    const rM = await leggiTutto(function () {
+      return sb.from('tm_conta_movimenti_propri')
+        .select('id, data, data_documento, descrizione, ente_fornitore, importo, importo_totale, valuta, stato_pagamento')
+        .eq('azienda_id', currentAziendaId).order('id')
+    })
+    if (rM.error) throw rM.error
+    await loadOfferte(true)
+    // Il contorno: senza pagamenti e note di credito «chiuso» non si può dire.
+    await loadPagamenti(true)
+    await loadNoteCredito(true)
+    try { await loadCantieri() } catch (_) { /* i nomi dei cantieri sono un aiuto */ }
+    await loadMappaCantieri(true)
+
+    archivioVendite = rV.data || []
+    var docs = []
+    archivioVendite.forEach(function (f) {
+      var nota = f.tipo === 'nota_credito'
+      var daRimb = nota ? eccedenzaDaNota(f.id, archivioVendite) : 0
+      docs.push({
+        tipo: nota ? 'nota' : 'vendita', tabella: 'tm_conta_fatture', id: f.id,
+        numero: f.numero || '', data: f.data_emissione || '', controparte: f.cliente_nome || '',
+        importo: safeNum(f.totale), valuta: f.valuta || 'CHF', testo: '',
+        chiuso: venditaChiusa(f, archivioVendite),
+        stato: statoFatturaBadge(f.stato, f.annullata_motivo) +
+          (nota
+            ? (daRimb > 0.005 ? ' ' + badge('warn', '↩️ da rimborsare ' + fmtNumIt(daRimb) + ' CHF') : '')
+            : (f.stato === 'emessa' ? ' ' + badgePagamentoConResiduo('entrata', f.stato_pagamento, 'tm_conta_fatture', f.id, f.totale) : '')),
+        cantieri: cantieriDelDocumento('fattura', f.id)
+      })
+    })
+    ;(rA.data || []).forEach(function (a) {
+      docs.push({
+        tipo: 'acquisto', tabella: 'tm_conta_fatture_acquisto', id: a.id,
+        numero: a.numero_fornitore || '', data: a.data || '', controparte: a.fornitore || '',
+        importo: safeNum(a.importo), valuta: a.valuta || 'CHF', testo: '',
+        chiuso: acquistoChiuso(a), stato: statoEAvvisoAcquisto(a),
+        cantieri: cantieriDelDocumento('acquisto', a.id)
+      })
+    })
+    ;(rM.data || []).forEach(function (m) {
+      var imp = safeNum(m.importo_totale); if (imp == null) imp = safeNum(m.importo)
+      docs.push({
+        tipo: 'movimento', tabella: 'tm_conta_movimenti_propri', id: m.id,
+        numero: '', data: m.data_documento || m.data || '', controparte: m.ente_fornitore || '',
+        importo: imp, valuta: m.valuta || 'CHF', testo: m.descrizione || '',
+        chiuso: movimentoChiuso(m), stato: badgePagamento('uscita', m.stato_pagamento),
+        cantieri: cantieriDelDocumento('proprio', m.id)
+      })
+    })
+    ;(offerteCache || []).forEach(function (o) {
+      docs.push({
+        tipo: 'conferma', tabella: 'tm_conta_offerte', id: o.id,
+        numero: o.riferimento || '', data: o.data || '', controparte: o.fornitore || '',
+        importo: safeNum(o.totale_stampato != null ? o.totale_stampato : o.totale), valuta: o.valuta || 'CHF',
+        testo: tipoDocOff(o).et, chiuso: confermaChiusa(o), stato: badgeStatoOfferta(o),
+        cantieri: [o.cantiere_id || '']
+      })
+    })
+    archivioDocs = docs
+    riempiCantieriArchivio()
+    renderArchivio()
+  } catch (e) {
+    archivioDocs = null
+    html('arch-risultati', '')
+    html('archivio-banner', '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">Archivio non caricato: ' + esc(e.message || e) + '. Non mostro un elenco a metà: riprova.</div></div>')
+  }
+}
+
+function riempiCantieriArchivio() {
+  var sel = el('arch-cantiere')
+  if (!sel) return
+  var prima = sel.value
+  sel.innerHTML = '<option value="">Tutti</option>' +
+    '<option value="__nessuno__">Nessun cantiere (da assegnare)</option>' +
+    cantieriOrdinati().map(function (c) {
+      return '<option value="' + esc(c.id) + '">' + esc(nomeCantiere(c, true)) + '</option>'
+    }).join('')
+  sel.value = prima
+}
+
+// I filtri, letti dal modulo. Un campo vuoto non filtra.
+function filtriArchivio() {
+  var tipi = {}
+  Object.keys(TIPI_ARCHIVIO).forEach(function (k) {
+    var c = el('arch-tipo-' + k); tipi[k] = !c || c.checked
+  })
+  return {
+    testo: String(getVal('arch-testo') || '').toLowerCase().trim(),
+    anno: getVal('arch-anno'), da: getVal('arch-da'), a: getVal('arch-a'),
+    impDa: safeNum(getVal('arch-imp-da')), impA: safeNum(getVal('arch-imp-a')),
+    cantiere: getVal('arch-cantiere'), stato: getVal('arch-stato'), tipi: tipi
+  }
+}
+
+function filtraArchivio(docs, f) {
+  var termini = f.testo ? f.testo.split(/\s+/) : []
+  return docs.filter(function (d) {
+    if (!f.tipi[d.tipo]) return false
+    if (f.stato === 'aperti' && d.chiuso) return false
+    if (f.stato === 'chiusi' && !d.chiuso) return false
+    if (f.anno && String(d.data).slice(0, 4) !== String(f.anno)) return false
+    if (f.da && (!d.data || d.data < f.da)) return false
+    if (f.a && (!d.data || d.data > f.a)) return false
+    var imp = d.importo == null ? null : Math.abs(d.importo)
+    if (f.impDa != null && (imp == null || imp < f.impDa - 0.005)) return false
+    if (f.impA != null && (imp == null || imp > f.impA + 0.005)) return false
+    if (f.cantiere) {
+      var cerca = f.cantiere === '__nessuno__' ? '' : f.cantiere
+      if (d.cantieri.indexOf(cerca) === -1) return false
+    }
+    if (termini.length) {
+      var hay = (d.numero + ' ' + d.controparte + ' ' + d.testo + ' ' +
+        (d.importo != null ? String(d.importo) + ' ' + d.importo.toFixed(2) : '')).toLowerCase()
+      if (!termini.every(function (t) { return hay.indexOf(t) !== -1 })) return false
+    }
+    return true
+  }).sort(function (x, y) {
+    if (x.data !== y.data) return String(y.data || '').localeCompare(String(x.data || ''))
+    return String(y.numero).localeCompare(String(x.numero))
+  })
+}
+
+function onFiltroArchivio() {
+  archivioMostrati = ARCHIVIO_PASSO
+  renderArchivio()
+}
+
+function mostraAltriArchivio() {
+  archivioMostrati += ARCHIVIO_PASSO
+  renderArchivio()
+}
+
+function azzeraArchivio() {
+  ;['arch-testo', 'arch-anno', 'arch-da', 'arch-a', 'arch-imp-da', 'arch-imp-a', 'arch-cantiere', 'arch-stato']
+    .forEach(function (id) { setVal(id, '') })
+  Object.keys(TIPI_ARCHIVIO).forEach(function (k) { var c = el('arch-tipo-' + k); if (c) c.checked = true })
+  onFiltroArchivio()
+}
+
+function renderArchivio() {
+  if (!archivioDocs) return
+  var trovati = filtraArchivio(archivioDocs, filtriArchivio())
+  var chiusi = trovati.filter(function (d) { return d.chiuso }).length
+  html('arch-contatore', '<div class="elenco-contatore-riga"><strong>' + trovati.length + '</strong> ' +
+    (trovati.length === 1 ? 'documento trovato' : 'documenti trovati') +
+    ' <span class="dim">su ' + archivioDocs.length + ' in archivio — ' +
+    (trovati.length - chiusi) + ' aperti · ' + chiusi + ' chiusi</span></div>')
+  if (!trovati.length) {
+    html('arch-risultati', '<div class="cru-vuoto">Nessun documento con questi filtri.</div>')
+    return
+  }
+  var vista = trovati.slice(0, archivioMostrati)
+  var rows = vista.map(function (d) {
+    var t = TIPI_ARCHIVIO[d.tipo]
+    return '<tr class="row-clickable' + (d.chiuso ? ' riga-chiusa' : '') + '" ' +
+      'onclick="apriDaArchivio(\'' + esc(d.tabella) + '\', \'' + esc(d.id) + '\')">' +
+      '<td><span class="off-tipo">' + t.ic + ' ' + esc(t.et) + '</span></td>' +
+      '<td><span class="cod">' + esc(d.numero || '—') + '</span></td>' +
+      '<td class="dim">' + esc(d.data ? fmtDate(d.data) : '—') + '</td>' +
+      '<td>' + esc(d.controparte || '—') +
+        (d.tipo === 'movimento' && d.testo ? '<div class="dim" style="font-size:11px">' + esc(d.testo) + '</div>' : '') + '</td>' +
+      '<td class="num">' + (d.importo != null ? fmtImporto(d.importo, d.valuta) : '—') + '</td>' +
+      '<td>' + d.stato + (d.chiuso ? segnoChiuso() : '') + '</td>' +
+      '<td class="dim">' + esc(nomiCantieri(d.cantieri)) + '</td>' +
+    '</tr>'
+  }).join('')
+  html('arch-risultati', '<div class="table-wrap"><table><thead><tr>' +
+    '<th style="width:150px">Tipo</th><th style="width:110px">Numero</th><th style="width:95px">Data</th>' +
+    '<th>Cliente / fornitore</th><th style="width:120px;text-align:right">Importo</th>' +
+    '<th style="width:190px">Stato</th><th style="width:170px">Cantiere</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    (trovati.length > vista.length
+      ? '<div class="form-actions" style="margin-top:10px"><button type="button" class="btn-secondary" onclick="mostraAltriArchivio()">' +
+          'Mostra altri ' + Math.min(ARCHIVIO_PASSO, trovati.length - vista.length) +
+          ' <span class="dim">(' + vista.length + ' di ' + trovati.length + ')</span></button></div>'
+      : ''))
+}
+
+async function apriDaArchivio(tabella, id) {
+  try {
+    if (tabella === 'tm_conta_offerte') {
+      showPage('offerte')
+      await initOffertePage()
+      await viewOfferta(id)
+      return
+    }
+    await apriDocumentoContabile(tabella, id)
+  } catch (e) {
+    html('archivio-banner', '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">Impossibile aprire il documento: ' + esc(e.message || e) + '</div></div>')
+  }
+}
+
 function renderFattureTable() {
   var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : ''
   // Due filtri distinti: lo stato del DOCUMENTO e lo stato dell'INCASSO.
@@ -3822,6 +4132,11 @@ function renderFattureTable() {
     if (anno && String(f.anno) !== String(anno)) return false
     return true
   })
+  // 78 — i chiusi si vedono se li si chiede: con l'interruttore, con una
+  // ricerca (chi cerca un numero vuole trovarlo), o con un filtro che chiede
+  // proprio uno stato chiuso.
+  var vediChiusi = !!(el('fatture-mostra-chiusi') && el('fatture-mostra-chiusi').checked) ||
+                   !!q || stato === 'annullata' || incasso === 'pagato'
 
   // ricerca testuale DENTRO il risultato filtrato: numero, cliente, totale
   // (case-insensitive, per pezzi di parola; tutti i termini devono combaciare)
@@ -3846,8 +4161,12 @@ function renderFattureTable() {
     return
   }
 
+  // 78 — solo gli aperti, se i chiusi non sono stati chiesti.
+  var diviso = dividiApertiChiusi(fattureList, list, function (f) { return venditaChiusa(f) }, vediChiusi)
+  list = diviso.list
+
   // 59·B — quante, e in che stato. Sempre, anche a elenco vuoto.
-  html('fatture-contatore', contatoreElencoHtml(fattureList, list,
+  html('fatture-contatore', rigaChiusiNascostiHtml(diviso.nascosti) + contatoreElencoHtml(diviso.universo, list,
     { sing: 'fattura', plur: 'fatture' },
     function (f) { return f.stato },
     { emessa: { sing: 'emessa', plur: 'emesse' }, bozza: { sing: 'bozza', plur: 'bozze' },
@@ -3857,13 +4176,14 @@ function renderFattureTable() {
     var filtroAttivo = q || stato || incasso || anno
     var msg = filtroAttivo
       ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.'
-      : 'Nessuna fattura.'
+      : (diviso.nascosti ? 'Nessuna fattura aperta.' : 'Nessuna fattura.')
     html('fatture-table', '<div class="dim" style="padding:10px 0">' + msg + '</div>')
     return
   }
   var rows = list.map(function (f) {
-    return '<tr class="row-clickable" onclick="viewFattura(\'' + f.id + '\')">' +
-      '<td><span class="cod">' + esc(f.numero || '— bozza —') + '</span></td>' +
+    var chiusa = venditaChiusa(f)   // 78
+    return '<tr class="row-clickable' + (chiusa ? ' riga-chiusa' : '') + '" onclick="viewFattura(\'' + f.id + '\')">' +
+      '<td><span class="cod">' + esc(f.numero || '— bozza —') + '</span>' + (chiusa ? segnoChiuso() : '') + '</td>' +
       '<td class="dim">' + esc(fmtDate(f.data_emissione)) + '</td>' +
       // 61c — il badge «Nota credito» qui non c'e' piu': lo dice la colonna
       // Stato, per esteso e con la fattura stornata. Due volte sulla stessa
@@ -6206,6 +6526,7 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
 function acquistiBackToList() { showAcquistiView('list') }
 
 async function initAcquistiPage() {
+  spegniMostraChiusi('acquisti-mostra-chiusi')   // 78
   acquistiBackToList()
   await loadAcquistiList()
 }
@@ -6394,8 +6715,16 @@ function renderAcquistiTable() {
       return termini.every(function (t) { return hay.indexOf(t) !== -1 })
     })
   }
+  // 78 — solo gli aperti, se i chiusi non sono stati chiesti. Quelli «da
+  // confermare» restano sempre: c'è ancora qualcosa da fare.
+  var vediChiusiA = !!(el('acquisti-mostra-chiusi') && el('acquisti-mostra-chiusi').checked) ||
+                    !!qv || stato === 'pagato'
+  var divisoA = dividiApertiChiusi(acquistiList, list,
+    function (a) { return acquistoChiuso(a) && !daConfermare(a) }, vediChiusiA)
+  list = divisoA.list
+
   // 59·B — quante, e come stanno a pagamento.
-  html('acquisti-contatore', contatoreElencoHtml(acquistiList, list,
+  html('acquisti-contatore', rigaChiusiNascostiHtml(divisoA.nascosti) + contatoreElencoHtml(divisoA.universo, list,
     { sing: 'fattura d\'acquisto', plur: 'fatture d\'acquisto' },
     function (a) { return a.stato_pagamento || 'aperto' },
     { aperto: { sing: 'da pagare', plur: 'da pagare' }, parziale: { sing: 'pagata in parte', plur: 'pagate in parte' },
@@ -6420,9 +6749,10 @@ function renderAcquistiTable() {
     var paySub = (a.stato_pagamento === 'pagato' && a.data_pagamento)
       ? '<span class="cell-sub">il ' + esc(fmtDate(a.data_pagamento)) + '</span>'
       : ''
-    return '<tr class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') +
+    var chiusoA = acquistoChiuso(a)   // 78
+    return '<tr class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') + (chiusoA ? ' riga-chiusa' : '') +
       '" onclick="viewAcquisto(\'' + a.id + '\')">' +
-      '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + '</td>' +
+      '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + (chiusoA ? segnoChiuso() : '') + '</td>' +
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
@@ -9720,6 +10050,7 @@ function showOfferteView(which) {
 
 async function initOffertePage() {
   if (!currentAziendaId) { html('offerte-table', '<div class="dim">Accedi per vedere le conferme d’ordine.</div>'); return }
+  spegniMostraChiusi('offerte-mostra-chiusi')   // 78
   showOfferteView('list')
   aggiornaFiltroStatoOfferte()
   html('offerte-table', loadingRow('Caricamento conferme d’ordine…'))
@@ -9821,6 +10152,10 @@ function renderOfferteTable() {
   var q = (getVal('offerte-search') || '').toLowerCase()
   var tipo = getVal('offerte-filtro-tipo')
   var stato = getVal('offerte-filtro-stato')
+  // 78 — i chiusi (fatturate; vecchie offerte scadute o rifiutate) si vedono
+  // se li si chiede.
+  var vediChiusiO = !!(el('offerte-mostra-chiusi') && el('offerte-mostra-chiusi').checked) || !!q ||
+                    stato === 'fatturato' || stato === 'scaduta' || stato === 'rifiutata'
   var list = (offerteList || []).filter(function (o) {
     var t = o.tipo_documento || 'conferma_ordine'
     if (tipo && t !== tipo) return false
@@ -9843,9 +10178,12 @@ function renderOfferteTable() {
     ? '⏳ <strong>' + inGiro + '</strong> ' + (inGiro === 1 ? 'conferma ordinata, non ancora fatturata' : 'conferme ordinate, non ancora fatturate')
     : '✅ Nessuna conferma in attesa di fattura')
 
+  var divisoO = dividiApertiChiusi(offerteList || [], list, confermaChiusa, vediChiusiO)
+  list = divisoO.list
+
   // 59·B — quante, e in che stato. Gli stati delle conferme e delle vecchie
   // offerte sono due elenchi diversi: si mostrano con le loro parole.
-  html('offerte-contatore', contatoreElencoHtml(offerteList || [], list,
+  html('offerte-contatore', rigaChiusiNascostiHtml(divisoO.nascosti) + contatoreElencoHtml(divisoO.universo, list,
     { sing: 'documento', plur: 'documenti' },
     function (o) { return o.stato || 'altro' },
     { ordinato: { sing: 'ordinata', plur: 'ordinate' }, consegnato_parte: { sing: 'consegnata in parte', plur: 'consegnate in parte' },
@@ -9868,14 +10206,16 @@ function renderOfferteTable() {
       ? ' <span title="Il totale stampato sul documento (' + esc(fmtNumIt(c.stampato)) + ') non coincide con la somma delle righe: differenza ' +
         esc(fmtNumIt(c.diff)) + '">⚠️</span>'
       : ''
-    return '<tr class="row-clickable' + (o.tipo_documento === 'offerta' ? ' off-vecchia' : '') + '" onclick="viewOfferta(\'' + esc(o.id) + '\')">' +
+    var chiusaO = confermaChiusa(o)   // 78
+    return '<tr class="row-clickable' + (o.tipo_documento === 'offerta' ? ' off-vecchia' : '') + (chiusaO ? ' riga-chiusa' : '') +
+      '" onclick="viewOfferta(\'' + esc(o.id) + '\')">' +
       '<td class="dim">' + esc(fmtDate(o.data)) + '</td>' +
       '<td><span class="off-tipo" title="' + esc(td.et) + '">' + td.ic + ' ' + esc(td.et) + '</span></td>' +
       '<td>' + esc(o.fornitore || '') +
         (o.riferimento ? '<div class="dim" style="font-size:11px">' + esc(o.riferimento) + '</div>' : '') + '</td>' +
       '<td>' + esc(nomeCantiereDaId(o.cantiere_id) || '—') + '</td>' +
       '<td class="num">' + fmtImporto(o.totale, o.valuta) + segnale + '</td>' +
-      '<td>' + badgeStatoOfferta(o) + '</td>' +
+      '<td>' + badgeStatoOfferta(o) + (chiusaO ? segnoChiuso() : '') + '</td>' +
       '<td class="row-actions">' +
         '<button class="icon-btn" onclick="event.stopPropagation(); viewOfferta(\'' + esc(o.id) + '\')">👁 Apri</button>' +
         (nAll ? '<button class="icon-btn" onclick="event.stopPropagation(); apriAllegatiSolaLettura(\'tm_conta_offerte\', \'' + esc(o.id) +
@@ -16894,10 +17234,12 @@ function eccedenzaFattura(fatturaId, totale) {
 
 // L'eccedenza vista dalla nota di credito: quella della fattura che storna,
 // ma mai più di quanto questa nota può ancora restituire.
-function eccedenzaDaNota(idNota) {
+// 78 — `fatture` facoltativo: l'Archivio passa il suo elenco, che contiene
+// anche le fatture che la pagina Vendite non ha letto.
+function eccedenzaDaNota(idNota, fatture) {
   var n = notaCreditoById(idNota)
   if (!n || !n.rif_fattura_id || n.stato !== 'emessa') return 0
-  var f = (fattureList || []).filter(function (x) { return x.id === n.rif_fattura_id })[0]
+  var f = (fatture || fattureList || []).filter(function (x) { return x.id === n.rif_fattura_id })[0]
   if (!f) return 0
   var ecc = eccedenzaFattura(f.id, f.totale)
   var ancora = round2((safeNum(n.totale) || 0) - rimborsiDiNota(idNota))
@@ -18801,6 +19143,7 @@ function caricaPagina(pageId) {
     if (pageId === 'fatture')     { initFatturePage() }
     if (pageId === 'acquisti')    { initAcquistiPage() }
     if (pageId === 'offerte')     { initOffertePage() }
+    if (pageId === 'archivio')    { initArchivioPage() }   // 78
     if (pageId === 'rubrica')     { initRubricaPage() }
     if (pageId === 'codici')      { initCodiciPage() }
     if (pageId === 'busta')       { initBustaPage() }
@@ -20839,7 +21182,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '77'
+var VERSIONE = '78'
 
 function controllaVersionePagina() {
   try {
@@ -21261,6 +21604,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'fatture')     { initFatturePage() }
       if (pageId === 'acquisti')    { initAcquistiPage() }
       if (pageId === 'offerte')     { initOffertePage() }
+      if (pageId === 'archivio')    { initArchivioPage() }   // 78
       if (pageId === 'rubrica')     { initRubricaPage() }
       if (pageId === 'codici')      { initCodiciPage() }
       if (pageId === 'busta')       { initBustaPage() }
