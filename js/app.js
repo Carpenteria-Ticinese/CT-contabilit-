@@ -5890,6 +5890,14 @@ function formaGiuridicaDaMostrare(nome, forma) {
   return f
 }
 
+// 82·4 — la riga del paese sotto l'indirizzo del cliente: vuota per la
+// Svizzera, il nome per esteso per l'estero (come la busta, FASE 21).
+function paeseEsteroHtml(codice) {
+  var p = String(codice || '').trim().toUpperCase()
+  if (!p || p === 'CH') return ''
+  return '<div>' + esc(paeseValido(p) ? nomePaese(p) : p) + '</div>'
+}
+
 function renderFatturaPrint(f, righe, rifInfo) {
   var a = aziendaInfo || {}
   var v = esc(f.valuta || 'CHF')
@@ -6012,8 +6020,11 @@ function renderFatturaPrint(f, righe, rifInfo) {
   // filter(Boolean) invece teneva. Era il «·» sospeso dopo il telefono.
   var cittaRiga = unisciParti([a.cap, a.citta], ' ')
   if (cittaRiga) addrLines.push(cittaRiga)
-  var contattiLine = unisciParti([(a.telefono ? 'Tel. ' + a.telefono : null), a.email], ' · ')
-  if (contattiLine) addrLines.push(contattiLine)
+  // 82·3 — telefono ed email su due righe. Sulla stessa, separati da « · »,
+  // andavano a capo nella colonna stretta dell'intestazione e il puntino
+  // restava appeso in fondo alla prima riga.
+  if (String(a.telefono || '').trim()) addrLines.push('Tel. ' + String(a.telefono).trim())
+  if (String(a.email || '').trim()) addrLines.push(String(a.email).trim())
   if (ivaOn && a.numero_iva) addrLines.push('IVA ' + a.numero_iva)
   var addrText = addrLines.join('\n')
 
@@ -6041,8 +6052,10 @@ function renderFatturaPrint(f, righe, rifInfo) {
     '<tr><td>Data</td><td>' + esc(fmtDate(f.data_emissione)) + '</td></tr>' +
     (scadenza ? '<tr><td>Scadenza</td><td>' + esc(fmtDate(scadenza)) + '</td></tr>' : '') +
     (isNC ? '<tr><td>Rif.</td><td>Fatt. ' + esc((rifInfo && rifInfo.numero) ? rifInfo.numero : '—') +
-            ((rifInfo && rifInfo.data_emissione) ? ' del ' + esc(fmtDate(rifInfo.data_emissione)) : '') + '</td></tr>' : '') +
-    '<tr><td>Stato</td><td>' + esc(f.stato) + '</td></tr>'
+            ((rifInfo && rifInfo.data_emissione) ? ' del ' + esc(fmtDate(rifInfo.data_emissione)) : '') + '</td></tr>' : '')
+  // 82·2 — «Stato: emessa» non c'e' piu': e' un'informazione interna, e sul
+  // foglio che va al cliente non dice niente. Una fattura annullata lo dice
+  // lo stesso, con la fascia ANNULLATA in cima.
 
   // Blocco pagamento (fattura) OPPURE riferimento alla fattura stornata (nota di credito)
   var payHtml
@@ -6124,7 +6137,9 @@ function renderFatturaPrint(f, righe, rifInfo) {
         '<div class="inv-cliente-lbl">Fatturare a</div>' +
         '<div class="inv-cliente-nome">' + esc(f.cliente_nome || '') + '</div>' +
         (f.cliente_indirizzo ? '<div class="inv-cli-addr">' + esc(f.cliente_indirizzo) + '</div>' : '') +
-        (f.cliente_paese ? '<div>' + esc(f.cliente_paese) + '</div>' : '') +
+        // 82·4 — il paese solo per un cliente estero, e per esteso come sulla
+        // busta: «CH» sotto un indirizzo svizzero non serve a nessuno.
+        paeseEsteroHtml(f.cliente_paese) +
         (f.cliente_iva ? '<div>IVA: ' + esc(f.cliente_iva) + '</div>' : '') +
       '</div>' +
       '<table class="inv-table"><thead><tr>' + righeHead + '</tr></thead><tbody>' + righeHtml + '</tbody></table>' +
@@ -6383,6 +6398,37 @@ function renderDetailActions(f) {
 // FASE 22 — prima di stampare ci si assicura che la polizza sia davvero
 // caricata. Se non lo e', si stampa lo stesso: la fattura senza polizza e'
 // un documento valido, una fattura non stampata no.
+// ══ 82·1 — LA FATTURA STAMPATA STA SU UNA PAGINA ═════════════════════════════
+// In stampa il resto del programma era solo INVISIBILE (visibility: hidden):
+// invisibile ma presente, occupava lo spazio di una scheda lunga, e una fattura
+// di mezza pagina usciva su due fogli — il secondo con il solo piè di pagina.
+// È la trappola della 70·3, che valeva per gli altri quattro fogli ma non per
+// la fattura, perché la fattura sta DENTRO la pagina del programma.
+// Qui si tolgono dal disegno (display: none) tutti i fratelli della fattura,
+// risalendo fino al <body>, e si rimettono com'erano a stampa finita.
+function isolaPerStampa(elemento) {
+  var nascosti = []
+  var nodo = elemento
+  while (nodo && nodo.parentNode && nodo !== document.body) {
+    var fratelli = nodo.parentNode.children
+    for (var i = 0; i < fratelli.length; i++) {
+      var f = fratelli[i]
+      if (f === nodo || /^(SCRIPT|STYLE|LINK)$/.test(f.tagName)) continue
+      nascosti.push({ el: f, prima: f.style.display })
+      f.style.display = 'none'
+    }
+    nodo = nodo.parentNode
+  }
+  document.body.classList.add('stampa-fattura')
+  var fatto = false
+  return function ripristina() {
+    if (fatto) return
+    fatto = true
+    nascosti.forEach(function (x) { x.el.style.display = x.prima })
+    document.body.classList.remove('stampa-fattura')
+  }
+}
+
 async function printFattura() {
   try {
     if (currentDetailFattura && polizzaDi(currentDetailFattura.id)) {
@@ -6396,9 +6442,11 @@ async function printFattura() {
   // FASE 28 — il formato pagina si azzera a stampa finita: un @page lasciato
   // acceso condiziona la stampa dopo, e nessuno collegherebbe le due cose.
   // Stessa rete della busta dalla FASE 23.
+  var rimetti = isolaPerStampa(el('fatture-print'))   // 82·1
   var pulisci = function () {
     document.title = titoloPrimaStampa   // FASE 29
     azzeraPaginaFattura()
+    rimetti()
     window.removeEventListener('afterprint', pulisci)
   }
   window.addEventListener('afterprint', pulisci)
@@ -13230,9 +13278,11 @@ async function scaricaFatturaPDF() {
   document.title = nome
   // Il ripristino va fatto dopo la stampa, non subito: alcuni browser leggono
   // il titolo quando la finestra si è già aperta.
+  var rimetti = isolaPerStampa(el('fatture-print'))   // 82·1 — come in printFattura
   var ripristina = function () {
     document.title = titoloPrima
     azzeraPaginaFattura()      // FASE 28 — come in printFattura
+    rimetti()
     window.removeEventListener('afterprint', ripristina)
   }
   window.addEventListener('afterprint', ripristina)
@@ -17045,6 +17095,23 @@ async function htmlFatturaPerPdf(idFattura) {
   }
 }
 
+// 82·1 — dove finisce davvero il contenuto: l'ultima riga di pixel non bianca,
+// partendo dal fondo. Il bianco sotto non deve diventare una pagina.
+function ultimaRigaPiena(dati, larghezza, altezza) {
+  for (var y = altezza - 1; y >= 0; y--) {
+    for (var x = 0; x < larghezza; x += 4) {
+      var i = (y * larghezza + x) * 4
+      if (dati[i] < 245 || dati[i + 1] < 245 || dati[i + 2] < 245) return y
+    }
+  }
+  return 0
+}
+
+// 82·1 — una fattura corta sta su UN foglio, piè di pagina compreso. Se supera
+// il foglio di poco (fino al 20 %), si rimpicciolisce per starci invece di
+// lasciare due righe su un secondo foglio. Oltre, si taglia in pagine.
+var PDF_TOLLERANZA_UNA_PAGINA = 1.2
+
 // Una tela alta in pagine A4: si taglia a fette dell'altezza di una pagina.
 // Pura, per essere provata senza browser: dice solo DOVE tagliare.
 function fettePagine(larghezzaPx, altezzaPx, margineMm) {
@@ -17071,8 +17138,29 @@ async function generaPdfFattura(idFattura, lib) {
   document.body.appendChild(foglio)
   try {
     var tela = await lib.html2canvas(foglio, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false })
-    var taglio = fettePagine(tela.width, tela.height, PDF_MARGINE_MM)
+    // 82·1 — si misura il contenuto vero: il bianco in fondo non conta.
+    var altezzaPiena = tela.height
+    try {
+      var img = tela.getContext('2d').getImageData(0, 0, tela.width, tela.height)
+      altezzaPiena = Math.min(tela.height, ultimaRigaPiena(img.data, tela.width, tela.height) + 1 + 16)
+    } catch (_) { /* tela non leggibile: si tiene tutta */ }
     var pdf = new lib.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+    var utileL = 210 - 2 * PDF_MARGINE_MM, utileH = 297 - 2 * PDF_MARGINE_MM
+    var altezzaMm = altezzaPiena * utileL / tela.width
+    if (altezzaMm <= utileH * PDF_TOLLERANZA_UNA_PAGINA) {
+      // UNA pagina: a grandezza vera se ci sta, altrimenti un poco più piccola.
+      var fattore = Math.min(1, utileH / altezzaMm)
+      var intero = document.createElement('canvas')
+      intero.width = tela.width; intero.height = altezzaPiena
+      var cx = intero.getContext('2d')
+      cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, intero.width, intero.height)
+      cx.drawImage(tela, 0, 0, tela.width, altezzaPiena, 0, 0, tela.width, altezzaPiena)
+      var larg = utileL * fattore
+      pdf.addImage(intero.toDataURL('image/jpeg', 0.92), 'JPEG',
+                   PDF_MARGINE_MM + (utileL - larg) / 2, PDF_MARGINE_MM, larg, altezzaMm * fattore)
+      return pdf.output('blob')
+    }
+    var taglio = fettePagine(tela.width, altezzaPiena, PDF_MARGINE_MM)
     taglio.fette.forEach(function (fe, i) {
       if (i > 0) pdf.addPage()
       var pezzo = document.createElement('canvas')
@@ -18553,8 +18641,11 @@ function renderRicevutaPrint(d) {
   if (a.indirizzo) addrLines.push(a.indirizzo)
   var cittaRiga = unisciParti([a.cap, a.citta], ' ')
   if (cittaRiga) addrLines.push(cittaRiga)
-  var contattiLine = unisciParti([(a.telefono ? 'Tel. ' + a.telefono : null), a.email], ' · ')
-  if (contattiLine) addrLines.push(contattiLine)
+  // 82·3 — telefono ed email su due righe. Sulla stessa, separati da « · »,
+  // andavano a capo nella colonna stretta dell'intestazione e il puntino
+  // restava appeso in fondo alla prima riga.
+  if (String(a.telefono || '').trim()) addrLines.push('Tel. ' + String(a.telefono).trim())
+  if (String(a.email || '').trim()) addrLines.push(String(a.email).trim())
   if (isSoggettoIva() && a.numero_iva) addrLines.push('IVA ' + a.numero_iva)
 
   var p = d.pagamento
@@ -18896,8 +18987,11 @@ function renderSollecitoPrint(d) {
   if (a.indirizzo) addrLines.push(a.indirizzo)
   var cittaRiga = unisciParti([a.cap, a.citta], ' ')
   if (cittaRiga) addrLines.push(cittaRiga)
-  var contattiLine = unisciParti([(a.telefono ? 'Tel. ' + a.telefono : null), a.email], ' · ')
-  if (contattiLine) addrLines.push(contattiLine)
+  // 82·3 — telefono ed email su due righe. Sulla stessa, separati da « · »,
+  // andavano a capo nella colonna stretta dell'intestazione e il puntino
+  // restava appeso in fondo alla prima riga.
+  if (String(a.telefono || '').trim()) addrLines.push('Tel. ' + String(a.telefono).trim())
+  if (String(a.email || '').trim()) addrLines.push(String(a.email).trim())
 
   var corpo = compilaTestoSollecito(testoSollecito(d.livello), {
     nome: d.apertura,
@@ -21257,16 +21351,15 @@ function altezzaFatturaMm() {
     if (!inv) return null
     var mm = mmPerPixel()
     var copia = inv.cloneNode(true)
-    // Dalla misura si tolgono le cose che in stampa NON occupano spazio in
-    // flusso, altrimenti il conto viene lungo e la polizza finisce sulla
-    // pagina dopo anche quando ci starebbe benissimo:
-    //   - la polizza stessa: e' lei che stiamo collocando;
-    //   - il pie' di pagina: in stampa e' `position: fixed`, sta nella fascia
-    //     dei margini e non spinge giu' niente.
+    // Dalla misura si toglie la polizza stessa: e' lei che stiamo collocando.
+    // 82·1 — il pie' di pagina invece RESTA: non e' piu' `position: fixed`
+    // nel margine, sta nel foglio sopra la polizza e ne occupa lo spazio.
     var qr = copia.querySelector('.inv-qrpage')
     if (qr && qr.parentNode) qr.parentNode.removeChild(qr)
+    // ...e si misura com'e' stampato con la polizza sotto: niente margine
+    // sopra (a schermo 30px) e 2 mm di aria (il CSS di polizza-in-fondo).
     var fo = copia.querySelector('.inv-footer')
-    if (fo && fo.parentNode) fo.parentNode.removeChild(fo)
+    if (fo) { fo.style.marginTop = '0'; fo.style.paddingTop = '2mm' }
     // In stampa il logo e' piu' basso (68px invece di 76): pochi millimetri,
     // ma su una soglia sono quelli che decidono.
     var lg = copia.querySelector('.inv-logo')
@@ -21287,9 +21380,10 @@ function altezzaFatturaMm() {
 function impostaPaginaFattura(conPolizzaInFondo) {
   var st = el('fatture-page-style')
   if (!st) return
+  // 82·1 — con la polizza in fondo la pagina non ha margini: il foglio della
+  // fattura li mette da sé e la polizza arriva ai bordi (vedi il CSS).
   st.textContent = conPolizzaInFondo
-    ? '@media print { @page { size: 210mm 297mm; margin: 15mm 15mm ' +
-      (POLIZZA_ALTEZZA_MM + POLIZZA_ARIA_MM) + 'mm 15mm; } }'
+    ? '@media print { @page fattura { size: 210mm 297mm; margin: 0; } }'
     : ''
 }
 
@@ -21522,7 +21616,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '81'
+var VERSIONE = '82'
 
 function controllaVersionePagina() {
   try {
@@ -23194,8 +23288,11 @@ function renderPianoPrint(c, cantiere) {
   if (a.indirizzo) addrLines.push(a.indirizzo)
   var cittaRiga = unisciParti([a.cap, a.citta], ' ')
   if (cittaRiga) addrLines.push(cittaRiga)
-  var contattiLine = unisciParti([(a.telefono ? 'Tel. ' + a.telefono : null), a.email], ' · ')
-  if (contattiLine) addrLines.push(contattiLine)
+  // 82·3 — telefono ed email su due righe. Sulla stessa, separati da « · »,
+  // andavano a capo nella colonna stretta dell'intestazione e il puntino
+  // restava appeso in fondo alla prima riga.
+  if (String(a.telefono || '').trim()) addrLines.push('Tel. ' + String(a.telefono).trim())
+  if (String(a.email || '').trim()) addrLines.push(String(a.email).trim())
 
   // Il destinatario: il committente del cantiere. Se non c'e', il foglio esce
   // lo stesso — si scrive a mano sulla busta — ma non si inventa un nome.
