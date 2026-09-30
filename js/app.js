@@ -264,7 +264,7 @@ function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
   // 61b — quando a chiudere il conto e' stata una nota di credito, lo si dice:
   // «Incassato» su una fattura incassata a meta' sarebbe incomprensibile.
   var nota = ''
-  if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito') && stornoNoteCredito(id) > 0.005) {
+  if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito') && stornoAncoraDovuto(id) > 0.005) {   // 70·R
     nota = (statoVero === 'pagato' && stato !== 'pagato')
       ? ' — chiusa con nota di credito'
       : ' (al netto della nota di credito)'
@@ -4569,6 +4569,104 @@ async function saveBozza() {
   }
 }
 
+// ══ 72·3 — LA NOTA DI CREDITO NASCE CLASSIFICATA COME LA FATTURA CHE STORNA ══
+// La classificazione sta in tm_conta_classificazioni, tabella sua: scriverla non
+// tocca tm_conta_fatture e il trigger di immutabilità non entra in gioco (su
+// quella tabella ci sono solo updated_at e l'audit, che registra anche gli
+// INSERT: la copia resta nella Storia).
+// Il gruppo forzato (tm_conta_fatture.gruppo_codice) non è fra i campi
+// congelati (SQL_PASSO1): saveClassificazione lo scrive già su documenti emessi.
+//
+//  · la nota ha già righe sue      → non si tocca niente: la scelta fatta vince
+//  · la fattura non è classificata → niente da copiare, e lo si dice
+//  · importi: quelli DELLA NOTA, divisi come le righe della fattura (ripartisci,
+//    l'ultima prende il resto), col segno meno come li scrive «Da classificare»
+//  · stato: 'bozza' resta 'bozza', il resto diventa 'confermato'. Una riga nuova
+//    non nasce mai 'esportato' né 'bloccato'.
+// righeRicaviDi resta come paracadute per le note emesse prima della 73.
+async function copiaClassificazioneDaFattura(idNota) {
+  const { data: nota, error: eN } = await sb.from('tm_conta_fatture')
+    .select('id, tipo, stato, rif_fattura_id, totale_imponibile, totale_iva, gruppo_codice')
+    .eq('id', idNota).eq('azienda_id', currentAziendaId).single()
+  if (eN) throw eN
+  if (nota.tipo !== 'nota_credito' || !nota.rif_fattura_id) return { esito: 'non_nota' }
+  if (nota.stato !== 'emessa') return { esito: 'non_emessa' }
+
+  const { data: proprie, error: eP } = await sb.from('tm_conta_classificazioni')
+    .select('id').eq('azienda_id', currentAziendaId)
+    .eq('origine_tipo', 'fattura').eq('origine_id', nota.id)
+  if (eP) throw eP
+  if ((proprie || []).length) return { esito: 'gia_classificata' }
+
+  const { data: fatt, error: eF } = await sb.from('tm_conta_fatture')
+    .select('id, numero, gruppo_codice')
+    .eq('id', nota.rif_fattura_id).eq('azienda_id', currentAziendaId).single()
+  if (eF) throw eF
+  const { data: orig, error: eO } = await sb.from('tm_conta_classificazioni')
+    .select('conto_id, codice_iva_id, imponibile, iva_importo, iva_inclusa, cantiere_id, note, stato, created_at')
+    .eq('azienda_id', currentAziendaId)
+    .eq('origine_tipo', 'fattura').eq('origine_id', fatt.id)
+  if (eO) throw eO
+  if (!(orig || []).length) return { esito: 'fattura_non_classificata', fattura: fatt.numero }
+
+  // Stesso ordine dell'export, così «1 di 2» corrisponde riga per riga.
+  var classRighe = {}
+  classRighe['fattura:' + fatt.id] = orig
+  var righe = righeExportDi({ classRighe: classRighe }, 'fattura', fatt.id)
+  var qImp = ripartisci(safeNum(nota.totale_imponibile) || 0, righe)
+  var qIva = ripartisci(safeNum(nota.totale_iva) || 0, righe)
+  var nuove = righe.map(function (r, i) {
+    return {
+      azienda_id:    currentAziendaId,
+      origine_tipo:  'fattura',
+      origine_id:    nota.id,
+      conto_id:      r.conto_id,
+      codice_iva_id: r.codice_iva_id,
+      imponibile:    round2(-qImp[i]),
+      iva_importo:   round2(-qIva[i]),
+      iva_inclusa:   r.iva_inclusa,
+      cantiere_id:   r.cantiere_id || null,
+      note:          'Come la fattura ' + (fatt.numero || '') + (r.note ? ' — ' + r.note : ''),
+      stato:         r.stato === 'bozza' ? 'bozza' : 'confermato',
+      created_by:    currentUser ? currentUser.id : null,
+      updated_by:    currentUser ? currentUser.id : null
+    }
+  })
+  const { error: eI } = await sb.from('tm_conta_classificazioni').insert(nuove).select()
+  if (eI) throw eI
+
+  // Il gruppo forzato a mano sulla fattura segue la nota, altrimenti la fattura
+  // andrebbe in un gruppo e il suo storno in un altro. Campo libero, non congelato.
+  var gruppoCopiato = false
+  if (fatt.gruppo_codice && !nota.gruppo_codice) {
+    const { error: eG } = await sb.from('tm_conta_fatture')
+      .update({ gruppo_codice: fatt.gruppo_codice })
+      .eq('id', nota.id).eq('azienda_id', currentAziendaId).select()
+    if (eG) console.warn('Gruppo forzato non copiato sulla nota:', eG.message || eG)
+    else gruppoCopiato = true
+  }
+  classCantiereMap = null; exportDataset = null
+  if (gruppoCopiato) flussiCache = null
+  return { esito: 'copiata', n: nuove.length, fattura: fatt.numero }
+}
+
+// La frase per il banner. Non fa mai fallire l'emissione: il numero è già
+// assegnato, e una classificazione mancata si rimedia dalla scheda.
+async function classificaNotaEmessa(idNota) {
+  try {
+    var r = await copiaClassificazioneDaFattura(idNota)
+    if (r.esito === 'copiata')
+      return { testo: 'Classificata come la fattura ' + (r.fattura || '') + ' (' + r.n + (r.n === 1 ? ' riga' : ' righe') + ').', avviso: false }
+    if (r.esito === 'fattura_non_classificata')
+      return { testo: 'La fattura stornata non è classificata: la nota resta da classificare.', avviso: true }
+    return { testo: '', avviso: false }
+  } catch (e) {
+    console.warn('Copia classificazione nota:', e.message || e)
+    return { testo: 'La classificazione non è stata copiata dalla fattura (' + (e.message || e) +
+                    '): si fa dalla scheda, riquadro «Classificazione».', avviso: true }
+  }
+}
+
 async function emettiFatturaCorrente() {
   // FASE 22 / P5 — le righe-titolo non contano, e il messaggio lo dice.
   //
@@ -4626,6 +4724,9 @@ async function doEmitCorrente() {
     const { data, error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: editorFatturaId })
     if (error) throw error
     var emessa = Array.isArray(data) ? data[0] : data
+    // 72·3 — prima di rileggere: il contatore e la scheda la trovano già classificata.
+    var cls = (emessa && emessa.tipo === 'nota_credito')
+      ? await classificaNotaEmessa(emessa.id) : { testo: '', avviso: false }
     await loadFattureList()
     try { await refreshDaClassificareCount() } catch (_) {}
     if (emessa && emessa.id) {
@@ -4633,10 +4734,16 @@ async function doEmitCorrente() {
       // Prima passava alla scheda senza dire niente: il numero era stato
       // assegnato e nessuno lo diceva. E' l'unico salvataggio che non si puo'
       // rifare, quindi e' quello che va confermato piu' di tutti.
-      showFattureBanner('fatture-detail-banner', 'ok',
+      // 70·R — se la nota rende la fattura sovrapagata, lo si dice SUBITO, nello
+      // stesso banner dell'emissione: è il momento in cui lo si può ancora
+      // sistemare prima di dimenticarlo.
+      var eccEm = emessa.tipo === 'nota_credito' ? testoEccedenzaNota(emessa.id) : ''
+      showFattureBanner('fatture-detail-banner', (eccEm || cls.avviso) ? 'warn' : 'ok',
         (emessa.tipo === 'nota_credito' ? 'Nota di credito' : 'Fattura') +
         (emessa.numero ? ' n. ' + emessa.numero : '') +
-        ' emessa alle ' + oraAdesso() + '. Il numero è assegnato e non cambia più.')
+        ' emessa alle ' + oraAdesso() + '. Il numero è assegnato e non cambia più.' +
+        (cls.testo ? '\n' + (cls.avviso ? '⚠️ ' : '') + cls.testo : '') +
+        (eccEm ? '\n⚠️ ' + eccEm + ' Il bottone è nel riquadro «Rimborsi al cliente» qui sotto.' : ''))
     } else {
       fattureBackToList()
     }
@@ -4670,9 +4777,17 @@ async function doEmitById(id) {
   try {
     const { error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: id })
     if (error) throw error
+    // 72·3 — su una fattura normale torna vuoto dopo una lettura.
+    var cls = await classificaNotaEmessa(id)
     await loadFattureList()
     try { await refreshDaClassificareCount() } catch (_) {}
     await viewFattura(id)
+    // 70·R — stesso avviso dell'altra strada di emissione.
+    var eccEm = testoEccedenzaNota(id)
+    if (eccEm || cls.testo) showFattureBanner('fatture-detail-banner', (eccEm || cls.avviso) ? 'warn' : 'ok',
+      'Nota di credito emessa alle ' + oraAdesso() + '.' +
+      (cls.testo ? '\n' + (cls.avviso ? '⚠️ ' : '') + cls.testo : '') +
+      (eccEm ? '\n⚠️ ' + eccEm + ' Il bottone è nel riquadro «Rimborsi al cliente» qui sotto.' : ''))
   } catch (e) {
     showFattureBanner('fatture-detail-banner', 'err', 'Emissione: ' + friendlyFatturaError(e))
   }
@@ -5086,6 +5201,10 @@ async function viewFattura(id) {
         html('fatture-pagamenti',
           '<div class="card"><div class="card-title">💳 Pagamenti</div>' +
           '<div>Nessuno: su un documento annullato non si registrano pagamenti.</div></div>')
+      } else if (f.tipo === 'nota_credito' && f.stato === 'emessa') {
+        // 70·R — una nota emessa si può rimborsare: il riquadro lo permette, e
+        // se c'è un'eccedenza sulla fattura lo dice in cima.
+        html('fatture-pagamenti', boxRimborsiHtml(f))
       } else if (f.tipo === 'nota_credito') {
         html('fatture-pagamenti',
           '<div class="card"><div class="card-title">↩️ Nota di credito</div>' +
@@ -9936,6 +10055,8 @@ async function initCodiciPage(force) {
     // si ridisegna a ogni apertura della pagina.
     mostraFormConto(false); contoInModifica = undefined
     mostraFormGruppo(false); gruppoInModifica = undefined
+    // 72 — la mappa dei conti condivisi. Se non si legge, la sezione lo dice.
+    try { await loadMappaContoGruppo(true) } catch (eM) { console.warn('Mappa conti non letta:', eM.message || eM) }
     html('codici-banner', '')
     var box = el('codici-gestione')
     if (box) box.style.display = gruppiHaColonneNuove ? 'block' : 'none'
@@ -10100,10 +10221,14 @@ function foglioCodiciHtml() {
             '<button type="button" class="link-btn no-print" onclick="azzeraFiltroCodici()">Togli il filtro</button></div>'
   }
 
-  var gruppiHtml = gruppi.length
-    ? '<table class="cod-tabella">' +
+  // 72·2 — «gruppi di costo e ricavo» era sbagliato: i nove sono di costo.
+  // Adesso due sezioni, e ognuna conta quello che ha sotto. I 9 di sistema
+  // hanno `tipo` NULL finché non si lancia l'UPDATE in fondo a SQL_FASE68: con
+  // «!== 'ricavo'» stanno fra i costi, che è quello che sono.
+  function tabellaGruppi(lista) {
+    return '<table class="cod-tabella">' +
         '<thead><tr><th class="cod-num">Gruppo</th><th>Significato</th></tr></thead>' +
-        '<tbody>' + gruppi.map(function (g) {
+        '<tbody>' + lista.map(function (g) {
           return '<tr>' +
                    '<td class="cod-num">' + esc(g.codice) + '</td>' +
                    '<td><strong>' + esc(g.nome || '') + '</strong>' +
@@ -10112,7 +10237,19 @@ function foglioCodiciHtml() {
                  '</tr>'
         }).join('') + '</tbody>' +
       '</table>'
-    : '<div class="dim">Gruppi non disponibili: rientra e riprova.</div>'
+  }
+  var gruppiCosto  = gruppi.filter(function (g) { return g.tipo !== 'ricavo' })
+  var gruppiRicavo = gruppi.filter(function (g) { return g.tipo === 'ricavo' })
+  var gruppiHtml = gruppi.length
+    ? '<h2 class="cod-sezione">I gruppi di costo ' +
+        '<span class="cod-quanti">(' + gruppiCosto.length + ')</span></h2>' +
+      tabellaGruppi(gruppiCosto) +
+      (gruppiRicavo.length
+        ? '<h2 class="cod-sezione">I gruppi di ricavo ' +
+            '<span class="cod-quanti">(' + gruppiRicavo.length + ')</span></h2>' +
+          tabellaGruppi(gruppiRicavo)
+        : '')
+    : '<h2 class="cod-sezione">I gruppi</h2><div class="dim">Gruppi non disponibili: rientra e riprova.</div>'
 
   // Se un filtro e' acceso, il foglio lo dice: stampato senza, sembrerebbe
   // l'elenco completo.
@@ -10133,8 +10270,6 @@ function foglioCodiciHtml() {
            filtroAttivo +
            '<h2 class="cod-sezione">Piano dei conti</h2>' +
            corpo +
-           '<h2 class="cod-sezione">I gruppi di costo e ricavo ' +
-             '<span class="cod-quanti">(' + gruppi.length + ')</span></h2>' +
            gruppiHtml +
          '</div>'
 }
@@ -10556,6 +10691,210 @@ function renderGestioneCodici() {
 
   html('gest-conti', conti)
   html('gest-gruppi', gruppi)
+  html('gest-mappa-ricavi', mappaRicaviHtml())   // 72
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 72 — IL GRUPPO DEI CONTI CONDIVISI, PER LA MIA AZIENDA, E I RICAVI PER GRUPPO
+//
+// I conti di ricavo del pacchetto svizzero (3000, 3100, 3200…) hanno
+// azienda_id NULL: sono condivisi, l'app non li può modificare e scriverci un
+// gruppo da SQL li farebbe puntare, per tutte le altre aziende, a un gruppo
+// che non vedono. La mappa dice «per ME questo conto è CAR» senza toccarli.
+//
+// LIMITE, e voluto: la mappa vale SOLO per la vista «Ricavi per gruppo».
+// Cruscotto e Cantieri leggono il gruppo da v_conta_flussi, che conosce solo
+// quello scritto sul conto. Per i ricavi va bene — nessun'altra schermata li
+// raggruppa. Per ridare un gruppo diverso a un conto di COSTO del pacchetto
+// andrebbe toccata la vista: decisione a parte (STATO §2).
+// ══════════════════════════════════════════════════════════════════════════════
+
+var mappaContoGruppoCache = null
+var mappaContoGruppoPresente = true      // false se SQL_FASE72 non è stato lanciato
+
+async function loadMappaContoGruppo(force) {
+  if (cacheOk('mappaContoGruppo') && !force) return mappaContoGruppoCache || {}
+  await richiediAccesso('loadMappaContoGruppo')   // 52·B1: mai un elenco vuoto per silenzio
+  const { data, error } = await sb.from('tm_conta_conto_gruppo')
+    .select('conto_id, gruppo_codice').eq('azienda_id', currentAziendaId)
+  if (error) {
+    // Tabella non ancora creata: la mappa è vuota e tutto va come prima —
+    // ogni conto ha il gruppo che ha di suo. Stesso ripiego di `cellulare`.
+    if (/tm_conta_conto_gruppo/.test(String(error.message || ''))) {
+      mappaContoGruppoPresente = false
+      mappaContoGruppoCache = {}
+      return mappaContoGruppoCache
+    }
+    throw error
+  }
+  mappaContoGruppoPresente = true
+  var m = {}
+  ;(data || []).forEach(function (r) { if (r.gruppo_codice) m[r.conto_id] = r.gruppo_codice })
+  mappaContoGruppoCache = m
+  segnaCacheOk('mappaContoGruppo')
+  return m
+}
+
+// Il gruppo di un conto PER QUESTA AZIENDA: prima la mia mappa, poi il gruppo
+// scritto sul conto. Una fonte sola.
+function gruppoDelConto(contoId) {
+  if (!contoId) return null
+  var mio = mappaContoGruppoCache && mappaContoGruppoCache[contoId]
+  if (mio) return mio
+  var c = (contiCache || []).filter(function (x) { return x.id === contoId })[0]
+  return c ? (c.gruppo_codice || null) : null
+}
+
+// Scrive la scelta. «— nessun gruppo —» mette NULL: la riga resta, niente si
+// cancella (regola del progetto), e il conto torna al gruppo che ha di suo.
+async function salvaGruppoContoCondiviso(contoId, gruppo) {
+  try {
+    // updated_at è un ISTANTE (timestamptz): toISOString è giusto qui, come in
+    // annullaDocumento — la regola «mai toISOString» vale per le DATE.
+    const { error } = await sb.from('tm_conta_conto_gruppo')
+      .upsert({ azienda_id: currentAziendaId, conto_id: contoId,
+                gruppo_codice: gruppo || null, updated_at: new Date().toISOString() },
+              { onConflict: 'azienda_id,conto_id' })
+      .select('conto_id')
+    if (error) throw error
+    await loadMappaContoGruppo(true)
+    renderGestioneCodici()
+    showCodiciBanner('ok', 'Gruppo del conto salvato alle ' + oraAdesso() + '.')
+  } catch (e) {
+    showCodiciBanner('err', 'Gruppo NON salvato: ' + messaggioErroreCodici(e))
+  }
+}
+
+// Dove si sceglie: solo i conti di RICAVO del pacchetto, perché è lì — e solo
+// lì — che la mappa ha effetto. I conti tuoi il gruppo lo hanno di loro, e si
+// cambia con «✏️ Modifica» nell'elenco qui sopra.
+function mappaRicaviHtml() {
+  if (!mappaContoGruppoPresente) {
+    return '<div class="dim">Per dare un gruppo ai conti svizzeri serve SQL_FASE72, non ancora lanciato.</div>'
+  }
+  var conti = (contiCache || []).filter(function (c) { return c.azienda_id == null && c.tipo === 'ricavo' })
+  if (!conti.length) return '<div class="dim">Nessun conto di ricavo del pacchetto svizzero.</div>'
+  var gruppiRic = (gruppiCache || []).filter(function (g) { return g.tipo === 'ricavo' && g.attivo !== false })
+  if (!gruppiRic.length) {
+    return '<div class="dim">Crea prima un gruppo di ricavo con «➕ Nuovo gruppo»: poi lo assegni qui ai conti.</div>'
+  }
+  return conti.map(function (c) {
+    var scelto = (mappaContoGruppoCache || {})[c.id] || ''
+    return '<div class="gest-riga">' +
+      '<span class="cod-num">' + esc(String(c.codice_conto)) + '</span>' +
+      '<span>' + esc(c.descrizione || '') + '</span>' +
+      '<select class="form-input" style="flex:0 0 240px" aria-label="Gruppo del conto ' + esc(String(c.codice_conto)) + '"' +
+        ' onchange="salvaGruppoContoCondiviso(\'' + esc(c.id) + '\', this.value)">' +
+        '<option value="">— nessun gruppo —</option>' +
+        gruppiRic.map(function (g) {
+          return '<option value="' + esc(g.codice) + '"' + (g.codice === scelto ? ' selected' : '') + '>' +
+                 esc(g.codice + ' · ' + g.nome) + '</option>'
+        }).join('') +
+      '</select></div>'
+  }).join('')
+}
+
+// ── I ricavi per gruppo ─────────────────────────────────────────────────────
+// Le righe da cui prendere il gruppo di un documento di ricavo. Una nota di
+// credito senza righe di classificazione sue prende quelle della FATTURA CHE
+// STORNA, con le stesse proporzioni: va sotto lo stesso gruppo, mai «Non
+// assegnato». Se non è classificata nemmeno la fattura, la nota la segue anche
+// lì. È un PARACADUTE: alla fonte, all'emissione la nota copia la
+// classificazione della fattura (72·3).
+function righeRicaviDi(ds, f) {
+  var proprie = righeExportDi(ds, 'fattura', f.id)
+  var senzaClassificazione = (proprie.length === 1 && proprie[0] === null)
+  if (f.tipo === 'nota_credito' && senzaClassificazione && f.rif_fattura_id) {
+    var orig = (ds.fatture || []).filter(function (x) { return x.id === f.rif_fattura_id })[0]
+    if (orig) return { righe: righeExportDi(ds, 'fattura', orig.id),
+                       manuale: f.gruppo_codice || orig.gruppo_codice || null }
+  }
+  return { righe: proprie, manuale: f.gruppo_codice || null }
+}
+
+// Stessi documenti e stessa ripartizione di «Costi e ricavi per conto» (60):
+// fatture (+) e note di credito (−) PIENE — un rimborso è cassa, non fatturato.
+// Il gruppo di una riga: quello scelto a mano sulla fattura, se c'è;
+// altrimenti quello del conto, con la mappa della mia azienda. Come la vista.
+function calcolaRicaviPerGruppo(ds, da, a) {
+  var d = docsPeriodo(ds, da, a)
+  var t = totaliSezioni(d)
+  var per = {}
+  function acc(codice, importo, docKey) {
+    var k = codice || '__nessuno__'
+    if (!per[k]) per[k] = { codice: codice || null, importo: 0, docs: {} }
+    per[k].importo += importo
+    per[k].docs[docKey] = true
+  }
+  function doc(f, segno) {
+    var r = righeRicaviDi(ds, f)
+    var q = ripartisci(safeNum(f.totale) || 0, r.righe)
+    for (var i = 0; i < r.righe.length; i++) {
+      var c = r.righe[i]
+      acc(r.manuale || gruppoDelConto(c ? c.conto_id : null), segno * q[i], 'fattura:' + f.id)
+    }
+  }
+  d.vendite.forEach(function (f) { doc(f, 1) })
+  d.note.forEach(function (f) { doc(f, -1) })
+
+  var lista = Object.keys(per).map(function (k) {
+    var g = per[k]
+    return { codice: g.codice, importo: round2(g.importo), nDocs: Object.keys(g.docs).length }
+  })
+  // «Non assegnato» sempre in fondo: non è un gruppo, è un lavoro che manca.
+  lista.sort(function (x, y) {
+    if (!x.codice && y.codice) return 1
+    if (x.codice && !y.codice) return -1
+    return y.importo - x.importo
+  })
+  var totale = round2(lista.reduce(function (s, g) { return s + g.importo }, 0))
+  var atteso = round2(t.vendite + t.note)      // come la 60: le note sono già negative
+  return { gruppi: lista, totale: totale,
+           verifica: { calcolato: totale, atteso: atteso, ok: Math.abs(totale - atteso) < 0.005 } }
+}
+
+function renderRicaviPerGruppo(p) {
+  var cont = el('cru-ricavi-gruppo')
+  if (!cont) return
+  if (!perContoDataset) {
+    cont.innerHTML = '<div class="cru-vuoto">❌ Ricavi non leggibili: ' + esc(perContoErrore || 'dati dell\'export non letti') + '.</div>'
+    return
+  }
+  if (!p.da || !p.a || p.da > p.a) { cont.innerHTML = '<div class="cru-vuoto">Scegli un periodo valido (da / a).</div>'; return }
+  var r = calcolaRicaviPerGruppo(perContoDataset, p.da, p.a)
+  if (!r.gruppi.length) {
+    cont.innerHTML = '<div class="cru-vuoto">Nessun ricavo in questo periodo.</div>'
+    return
+  }
+  var totale = r.totale
+  var righe = r.gruppi.map(function (g) {
+    var perc = totale ? (g.importo / totale * 100) : 0
+    var nonAss = !g.codice
+    var etichetta = nonAss ? 'Non assegnato' : nomeGruppo(g.codice)
+    var larghezza = Math.max(0, Math.min(100, perc))
+    return '<div class="gruppo-riga' + (nonAss ? ' non-assegnato' : '') + '">' +
+      '<span class="gruppo-riga-testa">' +
+        (nonAss ? '' : '<span class="gruppo-cod">' + esc(g.codice) + '</span>') +
+        '<span class="gruppo-nome">' + esc(etichetta) + '</span>' +
+        '<span class="gruppo-importo">' + esc(fmtNumIt(g.importo)) + ' CHF</span>' +
+        '<span class="gruppo-perc">' + esc(fmtNumIt(perc)) + ' %</span>' +
+      '</span>' +
+      '<span class="gruppo-barra-sfondo"><span class="gruppo-barra" style="width:' + larghezza.toFixed(1) + '%"></span></span>' +
+      '<span class="dim" style="font-size:12px">' + g.nDocs + (g.nDocs === 1 ? ' documento' : ' documenti') + '</span>' +
+    '</div>'
+  }).join('')
+  var ver = r.verifica.ok
+    ? '<div class="cant-sub">✅ La somma dei gruppi fa ' + esc(fmtNumIt(r.verifica.calcolato)) +
+      ' CHF, come i ricavi del periodo (fatture meno note di credito).</div>'
+    : '<div class="nota-cruscotto avviso" style="margin:10px 0 0"><span aria-hidden="true">⚠️</span><span>' +
+      'La somma dei gruppi fa ' + esc(fmtNumIt(r.verifica.calcolato)) + ' CHF, i ricavi del periodo sono ' +
+      esc(fmtNumIt(r.verifica.atteso)) + ' CHF: differenza ' +
+      esc(fmtNumIt(round2(r.verifica.calcolato - r.verifica.atteso))) + ' CHF.</span></div>'
+  var mappaAvviso = mappaContoGruppoPresente ? '' :
+    '<div class="cant-sub">ℹ️ SQL_FASE72 non lanciato: i conti svizzeri non hanno ancora un gruppo di ricavo, e compaiono sotto «Non assegnato».</div>'
+  cont.innerHTML = '<div class="cant-sub" style="margin-bottom:8px">Totale ricavi del periodo: <strong>' +
+    esc(fmtNumIt(totale)) + ' CHF</strong>. Documenti emessi, non incassi.</div>' +
+    righe + ver + mappaAvviso
 }
 
 function stampaElencoCodici() {
@@ -11930,15 +12269,21 @@ async function loadFlussi(force) {
   // Senza sessione non si legge niente, ma non e' una lettura riuscita:
   // segnarla tale bloccherebbe ogni tentativo dopo il login.
   await richiediAccesso('loadFlussi')   // 52·B1: mai un elenco vuoto per silenzio
-  const { data, error } = await sb
-    .from('v_conta_flussi')
-    .select('id_origine, tabella_origine, origine_tipo, verso, contatto_id, controparte_nome, descrizione,' +
+  var campiFlussi = 'id_origine, tabella_origine, origine_tipo, verso, contatto_id, controparte_nome, descrizione,' +
             ' data_documento, data_scadenza, importo_totale, importo_iva, stato_pagamento,' +
             ' data_pagamento, conto_codice, conto_descrizione, gruppo_codice, gruppo_manuale,' +
-            ' gruppo_da_conto, stato_conferma, importo_pagato, residuo, prossima_rata')
-    .eq('azienda_id', currentAziendaId)
-  if (error) throw error
-  flussiCache = data || []
+            ' gruppo_da_conto, stato_conferma, importo_pagato, residuo, prossima_rata'
+  function leggiFlussi(campi) {
+    return sb.from('v_conta_flussi').select(campi).eq('azienda_id', currentAziendaId)
+  }
+  // 70·R — `tipo_documento` serve a riconoscere i rimborsi. La vista lo ha
+  // dalla FASE 4b; se mancasse, si rilegge senza e tutto funziona come prima.
+  var resF = await leggiFlussi(campiFlussi + ', tipo_documento')
+  if (resF.error && /tipo_documento/.test(String(resF.error.message || ''))) {
+    resF = await leggiFlussi(campiFlussi)
+  }
+  if (resF.error) throw resF.error
+  flussiCache = resF.data || []
   segnaCacheOk('flussi')
   return flussiCache
 }
@@ -12012,17 +12357,28 @@ function calcolaTotaliCruscotto(righe, da, a) {
 // pagato per 200 muoveva 200, non 400 e nemmeno 0.
 function sommaPagamentiPeriodo(t, pagamenti, righe, da, a) {
   // indice documento -> verso, per sapere se un pagamento e' entrata o uscita
-  var verso = {}, doc = {}
+  var verso = {}, doc = {}, nota = {}
   ;(righe || []).forEach(function (r) {
     if (!confermata(r)) return          // le righe da confermare restano fuori
     verso[r.tabella_origine + ':' + r.id_origine] = r.verso
     doc[r.tabella_origine + ':' + r.id_origine] = r
+    // 70·R — un pagamento su una nota di credito è un RIMBORSO: va nel verso
+    // opposto. Il tipo viene dalla vista (tipo_documento, FASE 4b); se la
+    // colonna non si è letta, le note emesse si riconoscono dalla cache.
+    nota[r.tabella_origine + ':' + r.id_origine] =
+      r.tipo_documento === 'nota_credito' || eNotaDiCredito(r.tabella_origine, r.id_origine)
   })
   ;(pagamenti || []).forEach(function (pg) {
     var k = pg.tabella_origine + ':' + pg.id_origine
     if (!verso[k]) return               // documento non visibile o da confermare
     if (!inPeriodo(pg.data, da, a)) return
     var imp = safeNum(pg.importo) || 0
+    // 70·R — nelle due direzioni:
+    //   nota EMESSA (verso entrata)   → rimborso al cliente:     meno incassato
+    //   nota RICEVUTA (verso uscita)  → rimborso dal fornitore:  meno speso
+    // Il lato fornitori è pronto ma non si accende finché le note ricevute non
+    // hanno il loro JS (STATO §4): oggi non ce n'è nessuna.
+    if (nota[k]) imp = -imp
     if (verso[k] === 'uscita') { t.speso.importo += imp;     t.speso.righe.push(doc[k]) }
     else                       { t.incassato.importo += imp; t.incassato.righe.push(doc[k]) }
   })
@@ -12074,6 +12430,9 @@ async function initCruscottoPage() {
     // resta com'e' e il riquadro dei conti dice perche'.
     try { perContoDataset = await loadExportDataset(true); perContoErrore = null }
     catch (eD) { perContoDataset = null; perContoErrore = eD.message || String(eD) }
+    // 72 — la mappa dei conti per i ricavi per gruppo. Non bloccante: senza,
+    // i conti svizzeri finiscono sotto «Non assegnato» e la vista lo dice.
+    try { await loadMappaContoGruppo(true) } catch (eM) { console.warn('Mappa conti non letta:', eM.message || eM) }
     popolaAnniCruscotto()
     setCruscottoModo('anno')     // default all'apertura: anno in corso
   } catch (e) {
@@ -12124,6 +12483,7 @@ function renderCruscotto() {
   renderDifferenzaIva(p)        // FASE 24 - l'indicatore, sotto la riga IVA
   renderGruppi(t.speso)
   renderPerConto(p)             // 60 — costi e ricavi per conto, stesso periodo
+  renderRicaviPerGruppo(p)      // 72 — i ricavi divisi per gruppo, stesso periodo
   chiudiElencoCruscotto()
 }
 
@@ -12909,7 +13269,7 @@ function calcolaScadenze(righe, oggi, preavviso) {
     // non ci passa): lo storno si toglie qui, con la stessa regola di tutto il
     // resto. Una fattura coperta per intero da una nota esce dalle scadenze.
     if (r.tabella_origine === 'tm_conta_fatture' && cacheOk('noteCredito')) {
-      res = round2(res - stornoNoteCredito(r.id_origine))
+      res = round2(res - stornoAncoraDovuto(r.id_origine))   // 70·R — anche i solleciti leggono da qui
       if (res <= 0.005) continue
     }
     var imp = res
@@ -14219,6 +14579,7 @@ function contiCantiere(cantiereId) {
   var c = {
     fatturato:   { importo: 0, righe: [] },
     incassato:   { importo: 0, righe: [] },
+    rimborsato:  { importo: 0, righe: [] },   // 70·R — soldi restituiti ai clienti
     daIncassare: { importo: 0, righe: [] },
     fornitori:   { importo: 0, righe: [] },
     fornitoriDaPagare: 0,
@@ -14253,6 +14614,10 @@ function contiCantiere(cantiereId) {
       // e' quello che decide il margine, e non cambia con la FASE 8.
       c.fatturato.importo += imp; c.fatturato.righe.push(r)
       if (pagato > 0.005)      { c.incassato.importo += pagato;   c.incassato.righe.push(r) }
+      // 70·R — la vista nega i pagamenti sulle note di credito: un importo
+      // negativo qui è un RIMBORSO. Prima si perdeva (il controllo era solo
+      // «> 0»), adesso ha la sua riga.
+      else if (pagato < -0.005) { c.rimborsato.importo += pagato; c.rimborsato.righe.push(r) }
       if (Math.abs(res) > 0.005) { c.daIncassare.importo += res;  c.daIncassare.righe.push(r) }
     } else {
       c.fornitori.importo += imp; c.fornitori.righe.push(r)
@@ -14778,6 +15143,11 @@ function renderSchedaCantiere() {
   var entrate = '<div class="card cant-blocco"><div class="card-title">💰 Entrate</div>' +
     rigaClic('fatturato',   'Fatturato',    k.fatturato.importo,   k.fatturato.righe.length) +
     rigaClic('incassato',   'Incassato',    k.incassato.importo,   k.incassato.righe.length) +
+    // 70·R — il rimborso sotto l'incassato, col suo segno: si vede quanto è
+    // arrivato E quanto è tornato indietro, non solo la differenza.
+    (Math.abs(k.rimborsato.importo) > 0.005
+      ? rigaClic('rimborsato', 'Rimborsato al cliente', k.rimborsato.importo, k.rimborsato.righe.length)
+      : '') +
     rigaClic('daIncassare', 'Da incassare', k.daIncassare.importo, k.daIncassare.righe.length) +
     // La regia non fatturata NON entra nel margine, ma va detta: senza, un
     // cantiere lavorato in regia sembra in perdita quando non lo e'.
@@ -14881,6 +15251,7 @@ function apriElencoCantiere(chiave) {
 
   if (chiave === 'fatturato')   { righe = k.fatturato.righe;   titolo = '💰 Fatturato' }
   else if (chiave === 'incassato')   { righe = k.incassato.righe;   titolo = '💰 Incassato' }
+  else if (chiave === 'rimborsato')  { righe = k.rimborsato.righe;  titolo = '↩️ Rimborsato al cliente' }
   else if (chiave === 'daIncassare') { righe = k.daIncassare.righe; titolo = '🔵 Da incassare' }
   else if (chiave === 'fornitori')   { righe = k.fornitori.righe;   titolo = '💸 Fatture fornitori' }
   else if (chiave === 'spese')       { righe = k.spese.righe;       titolo = '🧾 Spese di cantiere'; tipo = 'spesa' }
@@ -15751,7 +16122,9 @@ function notaCreditoById(id) {
 // SQL_FASE4b_nota_ricevuta.sql, parte JS non fatta).
 function residuoDocumento(tabella, id, totale) {
   var res = (safeNum(totale) || 0) - totalePagatoDi(tabella, id)
-  if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) res -= stornoNoteCredito(id)
+  // 70·R — quanto deve il cliente: la nota compensa solo la parte non ancora
+  // restituita in contanti. Il fatturato invece la conta sempre piena.
+  if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) res -= stornoAncoraDovuto(id)
   return round2(res)
 }
 
@@ -15761,7 +16134,7 @@ function residuoDocumento(tabella, id, totale) {
 // Non si scrive niente nel database: e' solo la parola che si legge.
 function statoConStorno(tabella, id, totale, statoDb) {
   if (tabella !== 'tm_conta_fatture' || !cacheOk('noteCredito')) return statoDb
-  if (stornoNoteCredito(id) <= 0.005) return statoDb
+  if (stornoAncoraDovuto(id) <= 0.005) return statoDb   // 70·R
   var res = residuoDocumento(tabella, id, totale)
   if (res <= 0.005) return 'pagato'
   return (totalePagatoDi(tabella, id) > 0.005) ? 'parziale' : 'aperto'
@@ -15781,6 +16154,162 @@ function testoNotaStorna(idNota) {
   // stia ancora togliendo qualcosa a un documento che non conta piu'.
   if (f && f.stato === 'annullata') t += ' (annullata: questa nota non storna più nulla)'
   return t
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 70·R — I RIMBORSI AL CLIENTE
+//
+// Il caso: fattura 2026-09-009 da 1'350, pagati 1'150, poi la nota di credito
+// NC-2026-09-002 da 294 (192 di tenda non fornita + 102 di sconto già nel
+// firmato ma non applicato sulle fatture). Dovuti 1'056, pagati 1'150: 94 in
+// più, restituiti alla cliente. Il programma non lo sapeva.
+//
+// DUE DOMANDE DIVERSE, DUE FUNZIONI — e non si scambiano:
+//
+//   stornoNoteCredito(id, campo)   QUANTO LA NOTA STORNA DEL FATTURATO.
+//                                  Sempre pieno: 294. È quello che vale per
+//                                  «già fatturato», fatturato netto, Situazione
+//                                  ed export. Un rimborso è un movimento di
+//                                  cassa, non cambia cosa è stato fatturato.
+//
+//   stornoAncoraDovuto(id)         QUANTO LA NOTA RIDUCE ANCORA IL DEBITO DEL
+//                                  CLIENTE. La parte già restituita in contanti
+//                                  non compensa più niente: è uscita dalla
+//                                  cassa. 294 − 94 = 200. Vale per residuo,
+//                                  badge, riquadro Pagamenti, Scadenze e
+//                                  solleciti.
+//
+// Il rimborso è una riga normale di tm_conta_pagamenti, con id_origine = la
+// nota di credito e importo POSITIVO (il CHECK lo vuole): il segno è una
+// lettura, non un dato. Nessun SQL.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Quanto è stato restituito al cliente su questa nota. Zero se i pagamenti non
+// si sono letti: in quel caso lo storno resta pieno, che per quanto deve il
+// cliente è la cifra prudente (non gli si chiede mai più di quello che deve).
+function rimborsiDiNota(idNota) {
+  if (!cacheOk('pagamenti')) return 0
+  return round2(totalePagatoDi('tm_conta_fatture', idNota))
+}
+
+// La parte della nota che compensa ancora il debito. Mai negativa: un rimborso
+// più grande della nota non deve far CRESCERE quello che il cliente deve.
+function stornoAncoraDovuto(fatturaId) {
+  return round2(noteCreditoDi(fatturaId).reduce(function (s, n) {
+    return s + Math.max(0, round2((safeNum(n.totale) || 0) - rimborsiDiNota(n.id)))
+  }, 0))
+}
+
+// Quanto è stato restituito in tutto su questa fattura, attraverso le sue note.
+// Ogni nota conta al massimo per il suo importo.
+function rimborsatoSullaFattura(fatturaId) {
+  return round2(noteCreditoDi(fatturaId).reduce(function (s, n) {
+    return s + Math.min(safeNum(n.totale) || 0, rimborsiDiNota(n.id))
+  }, 0))
+}
+
+// Quanto il cliente ha pagato IN PIÙ di quello che deve. Zero se niente.
+// È quello che c'è da restituirgli.
+function eccedenzaFattura(fatturaId, totale) {
+  var res = residuoDocumento('tm_conta_fatture', fatturaId, totale)
+  return res < -0.005 ? round2(-res) : 0
+}
+
+// L'eccedenza vista dalla nota di credito: quella della fattura che storna,
+// ma mai più di quanto questa nota può ancora restituire.
+function eccedenzaDaNota(idNota) {
+  var n = notaCreditoById(idNota)
+  if (!n || !n.rif_fattura_id || n.stato !== 'emessa') return 0
+  var f = (fattureList || []).filter(function (x) { return x.id === n.rif_fattura_id })[0]
+  if (!f) return 0
+  var ecc = eccedenzaFattura(f.id, f.totale)
+  var ancora = round2((safeNum(n.totale) || 0) - rimborsiDiNota(idNota))
+  return round2(Math.max(0, Math.min(ecc, ancora)))
+}
+
+// La frase dell'avviso, uguale ovunque compaia: all'emissione e nel riquadro.
+function testoEccedenzaNota(idNota) {
+  var ecc = eccedenzaDaNota(idNota)
+  if (ecc <= 0.005) return ''
+  var n = notaCreditoById(idNota)
+  var f = n && (fattureList || []).filter(function (x) { return x.id === n.rif_fattura_id })[0]
+  return 'Con questa nota la fattura n. ' + ((f && f.numero) || '—') + ' risulta pagata ' +
+    fmtNumIt(ecc) + ' CHF in più. Eccedenza ' + fmtNumIt(ecc) + ' CHF: registra il rimborso al cliente.'
+}
+
+// La finestra del pagamento, aperta in modo RIMBORSO. Il modo si passa come
+// parametro e vive dentro docPagamentoCorrente, che si rifà da capo a ogni
+// apertura e si azzera alla chiusura: non c'è nessuna bandierina che possa
+// restare accesa dopo un «Annulla» o un errore.
+function apriRegistraRimborso(idNota) {
+  var n = notaCreditoById(idNota)
+  if (!n) { window.alert('Nota di credito non trovata: ricarica la pagina.'); return }
+  var f = (fattureList || []).filter(function (x) { return x.id === idNota })[0]
+  var nome = f ? (f.cliente_nome || '') : ''
+  return apriRegistraPagamento('tm_conta_fatture', idNota, safeNum(n.totale) || 0, 'uscita', nome,
+                               { rimborso: true })
+}
+
+// Il riquadro sulla scheda della nota di credito. Sostituisce quello
+// informativo della 61c: la nota continua a NON incassarsi, ma si può
+// rimborsare — l'altra metà della stessa regola.
+function boxRimborsiHtml(nota) {
+  var totale = safeNum(nota.totale) || 0
+  var reso = rimborsiDiNota(nota.id)
+  var lista = pagamentiDi('tm_conta_fatture', nota.id)
+  var ecc = eccedenzaDaNota(nota.id)
+  var avviso = testoEccedenzaNota(nota.id)
+  var righe = lista.length
+    ? lista.map(function (p) {
+        return '<div class="pag-elenco-riga">' +
+          '<span class="pag-data">' + esc(fmtDate(p.data)) + '</span>' +
+          '<span class="pag-imp">' + esc(fmtNumIt(p.importo)) + ' CHF</span>' +
+          '<span class="pag-meta">' + esc([p.metodo, p.riferimento].filter(Boolean).join(' · ') || '—') + '</span>' +
+          '<button type="button" class="azione-rapida" onclick="apriModificaPagamento(\'' + esc(p.id) + '\')">✏️ Modifica</button>' +
+          '<button type="button" class="azione-rapida" onclick="eliminaPagamento(\'' + esc(p.id) + '\', \'' +
+            esc(fmtNumIt(p.importo)) + '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>' +
+        '</div>'
+      }).join('')
+    : '<div class="cru-vuoto">Nessun rimborso registrato.</div>'
+  return '<div class="card">' +
+    '<div class="card-title">↩️ Rimborsi al cliente</div>' +
+    '<div>' + esc(testoNotaStorna(nota.id)) + '.</div>' +
+    (avviso
+      ? '<div class="nota-cruscotto avviso" style="margin:10px 0"><span aria-hidden="true">⚠️</span><span>' +
+          esc(avviso) + '</span></div>'
+      : '') +
+    '<div class="pag-sommario" style="margin-top:10px">' +
+      rigaPag('Nota di credito', totale) +
+      rigaPag('Già rimborsato al cliente', reso) +
+      (ecc > 0.005 ? rigaPag('Da rimborsare (eccedenza sulla fattura)', ecc, true) : '') +
+    '</div>' +
+    righe +
+    '<div class="form-actions" style="margin-top:12px">' +
+      '<button type="button" class="btn-primary" onclick="apriRegistraRimborso(\'' + esc(nota.id) + '\')">' +
+        '➕ Registra un rimborso</button>' +
+    '</div>' +
+    '<div class="form-hint" style="margin-top:6px">' +
+      'Una nota di credito non si incassa: riduce quanto il cliente deve sulla fattura che storna. ' +
+      'Si rimborsa solo la parte che il cliente aveva GIÀ pagato in più.' +
+    '</div>' +
+  '</div>'
+}
+
+// I rimborsi di un contratto, per il riassunto e il piano: una frase ciascuno.
+function frasiRimborsiContratto(c) {
+  if (!cacheOk('pagamenti') || !cacheOk('noteCredito')) return []
+  var out = []
+  ;(c.acconti || []).forEach(function (a) {
+    if (accontoAnnullato(a) || !a.fattura || !a.fattura.id) return
+    noteCreditoDi(a.fattura.id).forEach(function (n) {
+      pagamentiDi('tm_conta_fatture', n.id).forEach(function (p) {
+        out.push('Rimborsato il ' + fmtDate(p.data) + ': ' + fmtNumIt(p.importo) + ' CHF' +
+                 (p.metodo ? ' in ' + String(p.metodo).toLowerCase() : '') +
+                 ' (nota di credito n. ' + (n.numero || '—') + ')')
+      })
+    })
+  })
+  return out
 }
 
 function totalePagatoDi(tabella, id) {
@@ -15806,11 +16335,16 @@ function invalidaCachePagamenti() {
 var pagamentoInModifica = null
 
 // Rimette la finestra come la trova chi registra un pagamento nuovo.
-function vestiFinestraPagamento(inModifica) {
+// 70·R — il modo rimborso arriva come parametro, non da uno stato condiviso:
+// ogni chiamata dice lei cosa mostrare, e la finestra non può ricordarsi del
+// rimborso di prima.
+function vestiFinestraPagamento(inModifica, rimborso) {
   var t = el('pag-title')
-  if (t) t.textContent = inModifica ? '✏️ Modifica pagamento' : '💳 Registra pagamento'
+  if (t) t.textContent = rimborso
+    ? (inModifica ? '✏️ Modifica rimborso' : '↩️ Registra un rimborso al cliente')
+    : (inModifica ? '✏️ Modifica pagamento' : '💳 Registra pagamento')
   var b = el('pag-salva-btn')
-  if (b) b.textContent = inModifica ? '💾 Salva le correzioni' : '💾 Registra'
+  if (b) b.textContent = inModifica ? '💾 Salva le correzioni' : (rimborso ? '💾 Registra il rimborso' : '💾 Registra')
 }
 
 // Apre la finestra sui valori di un pagamento gia' registrato.
@@ -15826,8 +16360,12 @@ async function apriModificaPagamento(idPagamento) {
     var importoDoc = doc ? safeNum(doc.importo != null ? doc.importo : doc.totale) : null
     var verso = pg.tabella_origine === 'tm_conta_fatture' ? 'entrata' : 'uscita'
     var nome = doc ? (doc.fornitore || doc.cliente_nome || doc.descrizione || '') : ''
+    // 70·R — un pagamento su una nota di credito È un rimborso: lo si ricava
+    // dal documento, perché qui non c'è un chiamante che possa dirlo.
+    var rimborso = !!(doc && doc.tipo === 'nota_credito')
 
-    await apriRegistraPagamento(pg.tabella_origine, pg.id_origine, importoDoc || 0, verso, nome)
+    await apriRegistraPagamento(pg.tabella_origine, pg.id_origine, importoDoc || 0, verso, nome,
+                                { rimborso: rimborso })
 
     // I valori attuali prendono il posto delle proposte.
     pagamentoInModifica = pg.id
@@ -15835,7 +16373,7 @@ async function apriModificaPagamento(idPagamento) {
     setVal('pag-importo', pg.importo == null ? '' : pg.importo)
     setVal('pag-metodo', pg.metodo || '')
     setVal('pag-riferimento', pg.riferimento || '')
-    vestiFinestraPagamento(true)
+    vestiFinestraPagamento(true, rimborso)
 
     // La rata: se questo pagamento ne salda una, il collegamento resta com'e'.
     // Non si cambia da qui — spostare un pagamento da una rata all'altra e'
@@ -15858,11 +16396,15 @@ async function apriModificaPagamento(idPagamento) {
   }
 }
 
-async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
+async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzioni) {
+  // 70·R — `rimborso` vive DENTRO docPagamentoCorrente, che si ricostruisce da
+  // capo a ogni apertura e si azzera alla chiusura: una chiamata senza opzioni
+  // è sempre un pagamento normale, qualunque cosa sia successa prima.
+  var rimborso = !!(opzioni && opzioni.rimborso)
   pagamentoInModifica = null
-  vestiFinestraPagamento(false)
+  vestiFinestraPagamento(false, rimborso)
   docPagamentoCorrente = { tabella: tabella, id: id, importo: safeNum(importoDoc) || 0,
-                           verso: verso || 'uscita', nome: nome || '' }
+                           verso: verso || 'uscita', nome: nome || '', rimborso: rimborso }
   try {
     await loadPagamenti(true)
     await loadRate(true)
@@ -15879,16 +16421,30 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome) {
   var gia = totalePagatoDi(tabella, id)
   // 61b — lo stesso residuo dell'elenco e della scheda, note di credito
   // comprese: l'importo proposto qui non puo' dire un'altra cifra.
-  var storno = (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) ? stornoNoteCredito(id) : 0
   var residuo = residuoDocumento(tabella, id, docPagamentoCorrente.importo)
 
-  html('pag-riepilogo',
-    rigaPag('Importo del documento', docPagamentoCorrente.importo) +
-    rigaPag('Già ' + etichettaPagamento(docPagamentoCorrente.verso, 'pagato').testo.toLowerCase(), gia) +
-    rigaPag('Residuo', residuo, true))
+  // 70·R — su un rimborso il conto è un altro: quanto vale la nota, quanto è
+  // già stato restituito, e quanto il cliente ha pagato IN PIÙ sulla fattura.
+  // Si propone l'eccedenza, non il totale della nota: si restituisce solo
+  // quello che il cliente aveva già versato di troppo.
+  var proposta
+  if (rimborso) {
+    var eccR = eccedenzaDaNota(id)
+    html('pag-riepilogo',
+      rigaPag('Nota di credito', docPagamentoCorrente.importo) +
+      rigaPag('Già rimborsato al cliente', gia) +
+      rigaPag('Eccedenza da rimborsare', eccR, true))
+    proposta = eccR
+  } else {
+    html('pag-riepilogo',
+      rigaPag('Importo del documento', docPagamentoCorrente.importo) +
+      rigaPag('Già ' + etichettaPagamento(docPagamentoCorrente.verso, 'pagato').testo.toLowerCase(), gia) +
+      rigaPag('Residuo', residuo, true))
+    proposta = residuo
+  }
 
   setVal('pag-data', oggiISO())
-  setVal('pag-importo', residuo > 0 ? residuo.toFixed(2) : '')
+  setVal('pag-importo', proposta > 0 ? proposta.toFixed(2) : '')
   setVal('pag-metodo', '')
   setVal('pag-riferimento', '')
   html('pag-banner', '')
@@ -16132,7 +16688,23 @@ async function scriviPagamento(d, valori, idModifica, opzioni) {
       .select('id, totale')
       .eq('tipo', 'nota_credito').eq('stato', 'emessa').eq('rif_fattura_id', d.id)
     if (eNote) throw new Error('Non riesco a leggere le note di credito di questa fattura, quindi NON scrivo: ' + (eNote.message || eNote))
-    stornato = (notes || []).reduce(function (sum, n) { return sum + (safeNum(n.totale) || 0) }, 0)
+    // 70·R — i rimborsi già fatti su quelle note, letti anche loro dal
+    // database: la parte restituita non compensa più il debito. Se non si
+    // leggono, non si scrive — come per i pagamenti.
+    var resiPerNota = {}
+    var idsNote = (notes || []).map(function (n) { return n.id })
+    if (idsNote.length) {
+      const { data: resi, error: eResi } = await sb.from('tm_conta_pagamenti')
+        .select('id_origine, importo')
+        .eq('tabella_origine', 'tm_conta_fatture').in('id_origine', idsNote)
+      if (eResi) throw new Error('Non riesco a leggere i rimborsi sulle note di credito, quindi NON scrivo: ' + (eResi.message || eResi))
+      ;(resi || []).forEach(function (r) {
+        resiPerNota[r.id_origine] = (resiPerNota[r.id_origine] || 0) + (safeNum(r.importo) || 0)
+      })
+    }
+    stornato = (notes || []).reduce(function (sum, n) {
+      return sum + Math.max(0, (safeNum(n.totale) || 0) - (resiPerNota[n.id] || 0))
+    }, 0)
   }
   if (!senzaTotale) {
     var totaleNetto = round2(totaleDoc - stornato)
@@ -16142,7 +16714,7 @@ async function scriviPagamento(d, valori, idModifica, opzioni) {
       var cifre = testoCifrePagamento(totaleNetto, giaPagato, residuo, imp, eccedenza) +
         (stornato > 0.005
           ? '\n(totale del documento ' + fmtNumIt(totaleDoc) + ' CHF, meno ' +
-            fmtNumIt(stornato) + ' CHF di note di credito)'
+            fmtNumIt(stornato) + ' CHF di note di credito non ancora rimborsate)'
           : '')
       if (eccedenza > SOGLIA_ECCEDENZA_CHF) {
         throw new Error('Pagamento NON registrato: supera il totale del documento.\n\n' + cifre)
@@ -16232,7 +16804,8 @@ async function salvaPagamento() {
     // gli elenchi sono stati riletti (datiRicevuta legge da li'). Solo su un
     // incasso nuovo di una fattura di vendita: correggere un pagamento non e'
     // un incasso, e su un acquisto la ricevuta la fa il fornitore.
-    if (creato && creato.id && d.tabella === 'tm_conta_fatture') {
+    // 70·R — a un rimborso non segue una ricevuta DI PAGAMENTO: è il contrario.
+    if (creato && creato.id && d.tabella === 'tm_conta_fatture' && !d.rimborso) {
       try { await chiediRicevuta(creato.id) } catch (eRic) {
         console.warn('Ricevuta non stampata:', eRic.message || eRic)
       }
@@ -17271,11 +17844,28 @@ function ripristinaTestiSolleciti() {
 
 // ── Il riquadro completo «Pagamenti e rate» per la scheda del documento ─────
 
+// 72·1 — una riga col segno scritto. Nel riquadro Pagamenti la colonna si
+// legge dall'alto e si somma fino al residuo: ogni riga dice cosa fa al totale.
+// `fisso` = '=' per il risultato; un residuo negativo si scrive «= − 94,00».
+function rigaPagSegno(etichetta, importo, forte, fisso) {
+  var n = safeNum(importo) || 0
+  var testo = fisso === '='
+    ? '= ' + (n < 0 ? '− ' : '') + fmtNumIt(Math.abs(n))
+    : (n < 0 ? '− ' : '+ ') + fmtNumIt(Math.abs(n))
+  return '<div class="pag-riga' + (forte ? ' forte' : '') + '">' +
+    '<span>' + esc(etichetta) + '</span>' +
+    '<span>' + esc(testo) + ' CHF</span></div>'
+}
+
 function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
   var gia = totalePagatoDi(tabella, id)
   // 61b — lo storno delle note di credito emesse entra nel residuo, qui come
   // nell'elenco e nelle scadenze: una sola regola, residuoDocumento().
+  // 70·R — la riga «Note di credito» mostra la nota PIENA, e il rimborso sta
+  // su una riga sua: 1.350 − 1.150 − 294 + 94 = 0, e ogni numero si ritrova
+  // sul documento da cui viene. Il residuo è quello di residuoDocumento.
   var storno = (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) ? stornoNoteCredito(id) : 0
+  var rimborsato = (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) ? rimborsatoSullaFattura(id) : 0
   var residuo = residuoDocumento(tabella, id, importoDoc)
   var rate = rateDi(tabella, id)
   var e = etichettaPagamento(verso, (gia + storno) <= 0.005 ? 'aperto' : (residuo > 0.005 ? 'parziale' : 'pagato'))
@@ -17285,12 +17875,15 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
   return '<div class="card">' +
     '<div class="card-title">💳 Pagamenti</div>' +
     '<div class="pag-sommario">' +
+      // 72·1 — la prima riga è il punto di partenza e resta senza segno; tutte
+      // le altre dicono cosa fanno al totale, e il residuo è il risultato «=».
       rigaPag('Importo del documento', safeNum(importoDoc) || 0) +
-      rigaPag(etichettaPagamento(verso, 'pagato').testo, gia) +
+      rigaPagSegno(etichettaPagamento(verso, 'pagato').testo, -gia) +
       // 61b — la riga compare solo se c'e' davvero uno storno: su una fattura
       // senza note di credito uno «− 0,00» sarebbe solo una domanda in piu'.
-      (storno > 0.005 ? rigaPag('Note di credito', -storno) : '') +
-      rigaPag('Residuo', residuo, true) +
+      (storno > 0.005 ? rigaPagSegno('Note di credito', -storno) : '') +
+      (rimborsato > 0.005 ? rigaPagSegno('Rimborsato al cliente', rimborsato) : '') +
+      rigaPagSegno('Residuo', residuo, true, '=') +
       '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + e.testo) + '</div>' +
     '</div>' +
     elencoPagamentiHtml(tabella, id, verso) +
@@ -17628,7 +18221,12 @@ function movimentoPerClassificare(tabella, doc) {
   if (tabella === 'tm_conta_fatture') {
     return {
       origine_tipo: 'fattura', origine_id: doc.id,
-      data: doc.data_emissione, importo: safeNum(doc.totale),
+      // 73 — una nota di credito è uno storno: importo NEGATIVO, come la scrive
+      // «Da classificare». Prima dalla scheda nasceva positiva, e nel riepilogo
+      // per conto dell'export si sommava ai ricavi invece di sottrarsi.
+      data: doc.data_emissione,
+      importo: (doc.tipo === 'nota_credito' && safeNum(doc.totale) != null)
+        ? -safeNum(doc.totale) : safeNum(doc.totale),
       // FASE 27 — il cantiere della registrazione precompila la classificazione.
       valuta: doc.valuta || 'CHF', cantiere_id: doc.cantiere_id || null,
       descrizione: (doc.tipo === 'nota_credito' ? 'Nota di credito ' : 'Fattura ') +
@@ -19556,7 +20154,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '70'
+var VERSIONE = '73'
 
 function controllaVersionePagina() {
   try {
@@ -20588,6 +21186,11 @@ function accontiHtml(c, t) {
       rigaStornoContrattoHtml(c) +
       // 62e — quanto e' arrivato davvero, e quanto e' fatturato ma fermo.
       rigaPag('Già incassato', inc.incassato) +
+      // 70·R — quanto è tornato al cliente, e il netto. Tre righe e non una:
+      // «2.256» da solo non dice che sono arrivati 2.350 e ne sono tornati 94.
+      (inc.rimborsato > 0.005
+        ? rigaPag('Rimborsato al cliente', -inc.rimborsato) + rigaPag('Incassato netto', inc.incassatoNetto)
+        : '') +
       rigaPag('Fatturato non ancora incassato', inc.daIncassare) +
       // 67·4 — due cose diverse che prima erano una sola riga: le rate scritte
       // che aspettano una fattura, e la parte di contratto per cui una rata
@@ -20959,15 +21562,22 @@ function testoIncassoRata(a) {
 // Le due cifre nuove del riepilogo. Solo sulle rate fatturate e non annullate:
 // una rata ancora da fatturare non ha niente da incassare.
 function totaliIncassoContratto(c) {
-  var incassato = 0, daIncassare = 0, leggibile = true
+  var incassato = 0, rimborsato = 0, daIncassare = 0, leggibile = true
   ;(c.acconti || []).forEach(function (a) {
     if (accontoAnnullato(a) || a.stato !== 'fatturata') return
     var i = incassoDiRata(a)
     if (!i) { leggibile = false; return }
     incassato += i.pagato
-    daIncassare += Math.max(0, i.residuo)
+    // 70·R — il residuo VERO, anche negativo. Il Math.max(0, …) di prima
+    // nascondeva i 94 pagati in più sulla 2026-09-009: il totale diceva 1.932
+    // invece di 1.838 e non tornava più con «resta da incassare».
+    daIncassare += i.residuo
+    if (cacheOk('noteCredito')) rimborsato += rimborsatoSullaFattura(a.fattura.id)
   })
-  return { incassato: round2(incassato), daIncassare: round2(daIncassare), leggibile: leggibile }
+  incassato = round2(incassato); rimborsato = round2(rimborsato)
+  return { incassato: incassato, rimborsato: rimborsato,
+           incassatoNetto: round2(incassato - rimborsato),
+           daIncassare: round2(daIncassare), leggibile: leggibile }
 }
 
 
@@ -21080,6 +21690,12 @@ function renderPianoPrint(c, cantiere) {
         ? '<div class="inv-note piano-storno"><strong>Note di credito emesse a Suo favore:</strong><br>' +
           esc(frasiStornoPiano(c).join('\n')) + '</div>'
         : '') +
+      // 70·R — il rimborso in parole: è quello che la cliente ha in mano, e
+      // senza questa riga il «totale pagato» non torna con il suo estratto.
+      (frasiRimborsiContratto(c).length
+        ? '<div class="inv-note piano-storno"><strong>Rimborsi a Lei:</strong><br>' +
+          esc(frasiRimborsiContratto(c).join('\n')) + '</div>'
+        : '') +
       '<div class="inv-note">Tutti gli importi sono <strong>IVA esclusa</strong>.</div>' +
       (varHtml ? '<div class="ro-section">Le varianti</div>' + varHtml : '') +
 
@@ -21090,11 +21706,14 @@ function renderPianoPrint(c, cantiere) {
           ? rigaRicevuta('Fatturato, al netto delle note di credito', fmtNumIt(t.fatturato) + ' CHF')
           : '') +
         rigaRicevuta('Totale pagato', fmtNumIt(inc.incassato) + ' CHF') +
+        (inc.rimborsato > 0.005
+          ? rigaRicevuta('Rimborsato a Lei', '− ' + fmtNumIt(inc.rimborsato) + ' CHF')
+          : '') +
         // 70·1 — come sul riassunto: lo storno NON si sottrae qui. E' gia'
         // dentro il contratto aggiornato, e toglierlo due volte mostrava alla
         // cliente un debito residuo piu' basso di quello vero.
         rigaRicevuta('Resta da pagare',
-                     fmtNumIt(round2(t.aggiornato - inc.incassato)) + ' CHF', true) +
+                     fmtNumIt(round2(t.aggiornato - inc.incassatoNetto)) + ' CHF', true) +
       '</div>' +
       (inc.leggibile ? '' :
         '<div class="inv-note">Nota: alcuni pagamenti non erano leggibili quando il foglio è stato stampato.</div>') +
@@ -21323,7 +21942,13 @@ function renderCartellaPrint(c, cantiere) {
     : ''
 
   var storni = storniContratto(c)
-  var noteHtml = storni.length
+  // 70·R — i rimborsi al cliente, in parole, sotto le note.
+  var rimborsiCartella = frasiRimborsiContratto(c)
+  var noteHtml = (rimborsiCartella.length
+      ? '<div class="inv-note piano-storno"><strong>Rimborsi al cliente:</strong><br>' +
+        esc(rimborsiCartella.join('\n')) + '</div>'
+      : '') +
+    (storni.length
     ? sez('Note di credito emesse') +
       '<table class="inv-table"><thead><tr><th style="width:150px">Numero</th><th style="width:90px">Data</th>' +
       '<th>Storna la fattura</th><th class="num" style="width:120px">Importo</th></tr></thead><tbody>' +
@@ -21331,7 +21956,7 @@ function renderCartellaPrint(c, cantiere) {
         return '<tr><td>' + esc(x.nota) + '</td><td>' + esc(x.dataNota ? fmtDate(x.dataNota) : '—') + '</td>' +
           '<td>n. ' + esc(x.fattura) + '</td><td class="num">− ' + esc(fmtNumIt(x.importo)) + '</td></tr>'
       }).join('') + '</tbody></table>'
-    : ''
+    : '')
 
   // ── Le rate, con fattura e incasso ──────────────────────────────────────
   var rate = (c.acconti || []).filter(function (x) { return !accontoAnnullato(x) })
@@ -21369,13 +21994,18 @@ function renderCartellaPrint(c, cantiere) {
       rigaRicevuta('Fatturato netto' + (t.stornato > 0.005 ? ' (note di credito detratte)' : ''),
                    fmtNumIt(t.fatturato) + ' CHF') +
       rigaRicevuta('Incassato', fmtNumIt(inc.incassato) + ' CHF') +
+      (inc.rimborsato > 0.005
+        ? rigaRicevuta('Rimborsato al cliente', '− ' + fmtNumIt(inc.rimborsato) + ' CHF') +
+          rigaRicevuta('Incassato netto', fmtNumIt(inc.incassatoNetto) + ' CHF')
+        : '') +
       rigaRicevuta('Resta da fatturare', fmtNumIt(round2(t.aggiornato - t.fatturato)) + ' CHF') +
       // 70·1 — NIENTE storno qui. La nota di credito e' gia' dentro il
       // contratto aggiornato (la variante che l'ha generata, e lo sconto gia'
       // applicato al firmato): toglierla una seconda volta faceva sparire 294
       // franchi che la cliente deve ancora. Resta da incassare = contratto
       // aggiornato meno quello che e' arrivato, e basta.
-      rigaRicevuta('Resta da incassare', fmtNumIt(round2(t.aggiornato - inc.incassato)) + ' CHF', true) +
+      // 70·R — sul NETTO: i 94 restituiti sono di nuovo da incassare.
+      rigaRicevuta('Resta da incassare', fmtNumIt(round2(t.aggiornato - inc.incassatoNetto)) + ' CHF', true) +
     '</div>' +
     (t.stornoLeggibile ? '' :
       '<div class="inv-note">⚠️ Le note di credito non sono state lette: «fatturato netto» potrebbe essere al lordo.</div>') +
