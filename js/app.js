@@ -3915,7 +3915,7 @@ async function initArchivioPage() {
     if (rV.error) throw rV.error
     const rA = await leggiTutto(function () {
       return sb.from('tm_conta_fatture_acquisto')
-        .select('id, fornitore, numero_fornitore, data, scadenza, importo, valuta, stato_pagamento')
+        .select('id, fornitore, numero_fornitore, data, scadenza, importo, valuta, stato_pagamento, imponibile, codice_iva_id, offerta_id')
         .eq('azienda_id', currentAziendaId).order('id')
     })
     if (rA.error) throw rA.error
@@ -5678,7 +5678,7 @@ async function loadAziendaInfo() {
 function datiDittaMancanti() { return aziendaInfo === null || !aziendaInfo.nome }
 function aziendaNome() {
   var a = aziendaInfo || {}
-  return a.nome || a.ragione_sociale || a.denominazione || a.name || 'Carpenteria Ticinese Sàgl'
+  return a.nome || a.ragione_sociale || a.denominazione || a.name || 'Carpenteria Ticinese Sagl'
 }
 function aziendaDettagli() {
   var a = aziendaInfo || {}
@@ -6409,6 +6409,8 @@ async function viewAcquisto(id) {
     // si apre lo stesso e lo dice, invece di sparire per una tabella in piu'.
     var righe = [], erroreRighe = null
     try { righe = await leggiRigheAcquisto(id) } catch (eR) { erroreRighe = eR.message || String(eR) }
+    try { await loadOfferte() } catch (_) { /* senza, l'avviso della conferma non c'è */ }   // 79·1
+    html('acquisti-confronto-ai', '')   // 79·2 — il confronto di un'altra fattura non resta qui
     renderAcquistoDetail(data, righe, erroreRighe)
   } catch (e) {
     html('acquisti-detail-body', '<p style="color:var(--err)">Errore: ' + esc(e.message || e) + '</p>')
@@ -6510,6 +6512,9 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
     html('acquisti-detail-conferma', '')
   }
 
+  // 79·1 — l'avviso della conferma, in cima alla scheda.
+  html('acquisti-avviso-conferma', bloccoAvvisoConferma(a))
+
   // Azioni: Modifica sempre consentita sugli acquisti
   html('acquisti-detail-actions',
     '<div class="form-actions" style="margin-top:0">' +
@@ -6519,6 +6524,8 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
       '<button class="btn-primary" onclick="apriRegistraPagamento(\'tm_conta_fatture_acquisto\', \'' +
         a.id + '\', ' + (safeNum(a.importo) || 0) + ', \'uscita\', \'' +
         esc(String(a.fornitore || '').replace(/'/g, '')) + '\')">➕ Registra pagamento</button>' +
+      // 79·2 — il confronto letto dall'AI
+      '<button class="btn-secondary" onclick="confrontaConConfermaEBolle(\'' + a.id + '\')">🔍 Confronta con conferma e bolle</button>' +
       '<button class="btn-secondary" onclick="deleteAcquisto(\'' + a.id + '\')">🗑️ Elimina</button>' +
       '<button class="btn-secondary" onclick="acquistiBackToList()">← Indietro</button>' +
     '</div>')
@@ -6538,7 +6545,7 @@ async function loadAcquistiList() {
     await richiediAccesso('lettura delle fatture d\'acquisto')
     const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id, origine, stato_conferma')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id, origine, stato_conferma, offerta_id')   // 79·1: offerta_id
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false }).order('id') })
     if (error) throw error
@@ -6553,6 +6560,8 @@ async function loadAcquistiList() {
     try { await refreshDaConfermareCount() } catch (eC) { contorno.push('da confermare: ' + (eC.message || eC)) }
     // FASE 6A — il cantiere di ogni fattura sta nelle classificazioni.
     try { await loadCantieri(); await loadMappaCantieri(true) } catch (eK) { contorno.push('cantieri: ' + (eK.message || eK)) }
+    // 79·1 — le conferme servono all'avviso «più alta della conferma».
+    try { await loadOfferte() } catch (eO) { contorno.push('conferme d\'ordine: ' + (eO.message || eO)) }
     riempiFiltroCantieriAcquisti()
     renderAcquistiTable()
     if (contorno.length) showFattureBanner('acquisti-list-banner', 'warn',
@@ -6560,6 +6569,76 @@ async function loadAcquistiList() {
   } catch (e) {
     html('acquisti-table', '<p style="color:var(--err)">❌ Elenco non caricato: ' + esc(e.message || e) + '</p>')
   }
+}
+
+// ══ 79·1 — LA FATTURA PIÙ ALTA DELLA CONFERMA ══════════════════════════════
+// Un avviso, non uno stato: la fattura resta nei conti (Situazione, Scadenze,
+// Cantieri) e l'avviso sparisce da solo quando la differenza non c'è più.
+// Si vede nel modulo, nella scheda, nell'elenco e nella finestra del pagamento.
+//
+// Il confronto è fra cifre dello STESSO tipo:
+//   · la conferma ha il totale stampato → si usa quello, con o senza IVA come
+//     è segnato, contro l'importo della fattura (con IVA) o il suo netto;
+//   · altrimenti la somma delle righe, che è SENZA IVA, contro il netto.
+// Il netto della fattura è l'imponibile; se manca, l'importo diviso per
+// l'aliquota del suo codice IVA (8,1 % se il codice non c'è).
+// Sotto 1 CHF non è un avviso: arrotondamenti e IVA fanno ballare i centesimi.
+var SOGLIA_CONFERMA_CHF = 1
+
+function nettoAcquisto(a) {
+  var imp = safeNum(a.imponibile)
+  if (imp != null) return imp
+  var tot = safeNum(a.importo)
+  if (tot == null) return null
+  // L'aliquota del codice IVA, se l'elenco dei codici è caricato; altrimenti
+  // quella normale. Mai 0 per «non so»: un netto uguale al lordo farebbe
+  // scattare l'avviso per niente.
+  var cod = a.codice_iva_id ? (ivaCache || []).filter(function (x) { return x.id === a.codice_iva_id })[0] : null
+  var al = cod ? safeNum(cod.aliquota) : ALIQUOTA_IVA_PREDEFINITA
+  if (al == null) al = ALIQUOTA_IVA_PREDEFINITA
+  return round2(tot / (1 + al / 100))
+}
+
+function confrontoConConferma(a, o) {
+  if (!a || !o) return null
+  var stampato = safeNum(o.totale_stampato)
+  var conIva = stampato != null && o.totale_stampato_iva_inclusa === true
+  var conferma = stampato != null ? stampato : safeNum(o.totale)
+  var fattura = conIva ? safeNum(a.importo) : nettoAcquisto(a)
+  if (conferma == null || fattura == null) return null
+  return { diff: round2(fattura - conferma), conIva: conIva, fattura: fattura, conferma: conferma }
+}
+
+// L'avviso, se c'è: null se la fattura non è collegata, se la conferma non si
+// legge, o se la differenza non supera la soglia.
+function avvisoConfermaAcquisto(a) {
+  if (!a || !a.offerta_id) return null
+  var o = (offerteCache || []).filter(function (x) { return x.id === a.offerta_id })[0]
+  var c = confrontoConConferma(a, o)
+  return (c && c.diff > SOGLIA_CONFERMA_CHF) ? c : null
+}
+
+function testoAvvisoConferma(c, breve) {
+  return 'Fattura più alta della conferma di CHF ' + fmtNumIt(c.diff) +
+    (breve ? '' : ' — controlla prima di pagare') +
+    (breve ? '' : ' (confronto ' + (c.conIva ? 'IVA inclusa' : 'IVA esclusa') + ': fattura ' +
+      fmtNumIt(c.fattura) + ', conferma ' + fmtNumIt(c.conferma) + ')')
+}
+
+function bloccoAvvisoConferma(a) {
+  var c = avvisoConfermaAcquisto(a)
+  if (!c) return ''
+  return '<div class="fase-banner warn avviso-conferma-alta" role="status">' +
+    '<span class="icon" aria-hidden="true">⚠️</span><div class="msg">' + esc(testoAvvisoConferma(c)) + '</div></div>'
+}
+
+// Nel modulo, mentre si scrive: si legge dai campi, non dal database.
+function aggiornaAvvisoConfermaModulo() {
+  html('a-avviso-conferma', bloccoAvvisoConferma({
+    offerta_id: getVal('a-offerta') || null,
+    importo: getVal('a-importo'), imponibile: getVal('a-imponibile'),
+    codice_iva_id: getVal('a-codice-iva') || null
+  }))
 }
 
 // 75·3 — l'avviso accanto allo stato di una fattura fornitore non pagata.
@@ -6579,8 +6658,10 @@ function avvisoScadenzaFornitore(scadenza, statoVero) {
 function statoEAvvisoAcquisto(a) {
   var statoVero = statoConStorno('tm_conta_fatture_acquisto', a.id, a.importo, a.stato_pagamento)
   var av = avvisoScadenzaFornitore(a.scadenza, statoVero)
+  var cf = avvisoConfermaAcquisto(a)   // 79·1
   return badgePagamentoConResiduo('uscita', a.stato_pagamento, 'tm_conta_fatture_acquisto', a.id, a.importo) +
-    (av ? ' ' + av : '')
+    (av ? ' ' + av : '') +
+    (cf ? ' ' + badge('err', '⚠️ ' + testoAvvisoConferma(cf, true)) : '')
 }
 
 function statoAcquistoBadge(stato) {
@@ -6797,6 +6878,7 @@ function onAcquistoIvaCodeChange() { recalcAcquistoIva() }
 
 function onAcquistoImportoChange() {
   if (getVal('a-offerta') && typeof onOffertaCollegataChange === 'function') onOffertaCollegataChange()   // FASE 29
+  aggiornaAvvisoConfermaModulo()   // 79·1
   if (!acquistoIvaManuale) recalcAcquistoIva()
   else updateAcquistoIvaSummary()
 }
@@ -6804,6 +6886,7 @@ function onAcquistoImportoChange() {
 function onAcquistoIvaManual() {
   acquistoIvaManuale = true                     // l'utente comanda: teniamo i suoi valori
   updateAcquistoIvaSummary()
+  aggiornaAvvisoConfermaModulo()   // 79·1 — l'imponibile cambia il netto
 }
 
 function updateAcquistoIvaSummary() {
@@ -7319,6 +7402,9 @@ async function newAcquisto() {
   // La lettura automatica vale solo su un documento nuovo: rileggere una
   // fattura gia' corretta a mano sovrascriverebbe il lavoro fatto, e non si
   // saprebbe piu' quali campi erano stati sistemati.
+  // 79·3 — l'indirizzo del Worker si rilegge PRIMA di decidere: subito dopo il
+  // login poteva non essere ancora arrivato, e il bottone spariva.
+  try { await loadImpostazioniConta() } catch (_) { /* senza, la riga dice perché */ }
   mostraBottoneLettura(true)
   html('a-classificazione-riga', '')   // documento nuovo: niente da classificare
   // FASE 2: nessun contatto collegato su un documento nuovo
@@ -10395,8 +10481,16 @@ function impostaModuloPerTipo(tipo) {
 var letturaConfermaInCorso = false
 
 function mostraLetturaConferma(nuovo) {
+  // 79·3 — il riquadro si vede sempre; se il bottone non c'è, dice perché.
+  var attiva = nuovo && letturaAutomaticaAttiva()
   var card = el('conf-lettura')
-  if (card) card.style.display = (nuovo && letturaAutomaticaAttiva()) ? '' : 'none'
+  if (card) card.style.display = ''
+  var btn = el('btn-lettura-conf')
+  if (btn) btn.style.display = attiva ? '' : 'none'
+  var spiega = el('conf-lettura-spiega')
+  if (spiega) spiega.style.display = attiva ? '' : 'none'
+  var perche = motivoNienteLettura(nuovo, 'una conferma')
+  html('conf-lettura-perche', perche ? '<div class="form-hint">ℹ️ ' + esc(perche) + '</div>' : '')
   html('conf-lettura-banner', '')
   html('conf-lettura-note', '')
   html('conf-lettura-costo', '')
@@ -10551,6 +10645,7 @@ async function newOfferta() {
   onTotaleStampatoChange()
   svuotaCodaFile('off-allegato')   // 59·A
   impostaModuloPerTipo('conferma_ordine')
+  try { await loadImpostazioniConta() } catch (_) { /* senza, la riga dice perché */ }   // 79·3
   mostraLetturaConferma(true)   // 75·11
   showOfferteView('edit')
   try { await loadCantieri() } catch (e) { /* non bloccante */ }
@@ -10844,6 +10939,7 @@ async function onOffertaCollegataChange() {
   var id = getVal('a-offerta')
   var box = el('a-offerta-confronto')
   if (!box) return
+  aggiornaAvvisoConfermaModulo()   // 79·1
   if (!id) { box.innerHTML = ''; return }
   box.innerHTML = loadingRow('Leggo il documento…')
   try {
@@ -10866,7 +10962,13 @@ function confrontoOffertaHtml(o, righe) {
   var totOff = safeNum(o.totale) != null ? safeNum(o.totale)
              : round2(righe.reduce(function (s, r) { return s + (safeNum(r.importo_riga) || 0) }, 0))
   var totFat = safeNum(getVal('a-importo'))
-  var diff = (totFat != null) ? round2(totFat - totOff) : null
+  // 79·1 — la differenza si calcola come l'avviso: cifre dello stesso tipo
+  // (con IVA contro con IVA, senza contro senza). Prima si confrontava il
+  // totale con IVA della fattura con le righe senza IVA, e la fattura
+  // risultava sempre «più alta».
+  var cfr = confrontoConConferma({ importo: getVal('a-importo'), imponibile: getVal('a-imponibile'),
+                                   codice_iva_id: getVal('a-codice-iva') || null }, o)
+  var diff = cfr ? cfr.diff : null
   var segno = diff == null ? '' : (diff > 0 ? '+' : '')
   var che = td.et.toLowerCase()
   var giudizio = diff == null ? '<span class="dim">scrivi l’importo della fattura per vedere la differenza</span>'
@@ -10894,7 +10996,9 @@ function confrontoOffertaHtml(o, righe) {
     '<div class="off-diff">' + giudizio +
       (diff != null && Math.abs(diff) >= 0.005 ? ' <span class="dim">(' + segno + fmtNum2(diff) + ' CHF)</span>' : '') +
       '<div class="dim" style="font-size:11px;margin-top:3px">Si confrontano i totali: la somma delle righe del documento è escl. IVA, il totale della fattura di solito no. ' +
-      'La composizione può essere diversa (ordinati cinque articoli, fatturati tre): giudichi tu.</div>' +
+      'La composizione può essere diversa (ordinati cinque articoli, fatturati tre): giudichi tu.' +
+      (cfr ? ' Differenza calcolata ' + (cfr.conIva ? 'IVA inclusa' : 'IVA esclusa') + ': fattura ' +
+        esc(fmtNumIt(cfr.fattura)) + ', ' + esc(che) + ' ' + esc(fmtNumIt(cfr.conferma)) + '.' : '') + '</div>' +
     '</div>' +
   '</div>'
 }
@@ -17455,6 +17559,18 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
       rigaPag('Eccedenza da rimborsare', eccR, true))
     proposta = eccR
   } else {
+    // 79·1 — su una fattura d'acquisto, l'avviso della conferma. Si rilegge
+    // dal database: la finestra si apre anche da elenchi che non l'hanno.
+    html('pag-avviso-conferma', '')
+    if (tabella === 'tm_conta_fatture_acquisto') {
+      try {
+        await loadOfferte()
+        const { data: aPag } = await sb.from('tm_conta_fatture_acquisto')
+          .select('id, importo, imponibile, codice_iva_id, offerta_id')
+          .eq('id', id).eq('azienda_id', currentAziendaId).maybeSingle()
+        html('pag-avviso-conferma', bloccoAvvisoConferma(aPag))
+      } catch (_) { /* senza avviso, ma il pagamento si registra */ }
+    }
     html('pag-riepilogo',
       rigaPag('Importo del documento', docPagamentoCorrente.importo) +
       rigaPag('Già ' + etichettaPagamento(docPagamentoCorrente.verso, 'pagato').testo.toLowerCase(), gia) +
@@ -21182,7 +21298,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '78'
+var VERSIONE = '79'
 
 function controllaVersionePagina() {
   try {
@@ -21368,6 +21484,216 @@ async function chiediLetturaAlWorker(file, prompt) {
   return dati
 }
 
+// ══ 79·2 — IL CONFRONTO FATTURA / CONFERMA / BOLLE, LETTO DALL'AI ═════════
+// Il pulsante nella scheda della fattura d'acquisto. Il programma scarica gli
+// allegati — la «Fattura» dell'acquisto, i documenti della conferma collegata,
+// le «Bolle» dell'una e dell'altra — e li manda INSIEME al Worker, ognuno con
+// la sua etichetta. La risposta sono le differenze in parole.
+// NIENTE SI SALVA: il risultato resta a schermo finché si chiude la scheda.
+// È un aiuto, non una prova: fa fede il documento.
+// Serve il Worker della 79 (worker/ISTRUZIONI_WORKER_79.md): quello di prima
+// riceve un file solo, e lo si riconosce dalla risposta.
+var TIMEOUT_CONFRONTO_MS = 120000
+var LIMITE_CONFRONTO_MB = 20
+var MAX_DOCUMENTI_CONFRONTO = 8
+var confrontoInCorso = false
+
+function tipoMediaAllegato(nome, tipoBlob) {
+  var t = String(tipoBlob || '').toLowerCase()
+  if (t === 'application/pdf' || /^image\/(jpeg|png|gif|webp)$/.test(t)) return t
+  var n = String(nome || '').toLowerCase()
+  if (/\.pdf$/.test(n)) return 'application/pdf'
+  if (/\.jpe?g$/.test(n)) return 'image/jpeg'
+  if (/\.png$/.test(n)) return 'image/png'
+  if (/\.webp$/.test(n)) return 'image/webp'
+  if (/\.gif$/.test(n)) return 'image/gif'
+  return null
+}
+
+// Quali allegati entrano nel confronto, e con che etichetta.
+function documentiPerConfronto(a) {
+  var docs = []
+  var propri = allegatiDi('tm_conta_fatture_acquisto', a.id)
+  propri.filter(function (x) { return x.tipo === 'fattura' })
+    .forEach(function (x) { docs.push({ ruolo: 'FATTURA', allegato: x }) })
+  if (a.offerta_id) {
+    allegatiDi('tm_conta_offerte', a.offerta_id).forEach(function (x) {
+      if (x.tipo === 'polizza_qr' || x.tipo === 'ricevuta') return
+      docs.push({ ruolo: x.tipo === 'bolla' ? 'BOLLA' : 'CONFERMA D\'ORDINE', allegato: x })
+    })
+  }
+  propri.filter(function (x) { return x.tipo === 'bolla' })
+    .forEach(function (x) { docs.push({ ruolo: 'BOLLA', allegato: x }) })
+  return docs
+}
+
+// Cosa manca per poter confrontare; null se si può.
+function mancaPerConfronto(docs) {
+  var ha = function (r) { return docs.some(function (d) { return d.ruolo === r }) }
+  if (!ha('FATTURA')) return 'Manca il PDF della fattura: allegalo alla fattura d\'acquisto con il tipo «Fattura».'
+  if (!ha('CONFERMA D\'ORDINE') && !ha('BOLLA')) {
+    return 'Non c\'è niente con cui confrontarla: collega una conferma d\'ordine con il suo PDF, ' +
+      'oppure allega una bolla (tipo «Bolla») alla fattura o alla conferma.'
+  }
+  if (docs.length > MAX_DOCUMENTI_CONFRONTO) {
+    return 'Troppi documenti (' + docs.length + '): al massimo ' + MAX_DOCUMENTI_CONFRONTO + ' per confronto.'
+  }
+  return null
+}
+
+function testoPromptConfronto() {
+  return 'Hai davanti i documenti di uno stesso acquisto, ognuno preceduto dalla sua\n' +
+    'etichetta: la FATTURA del fornitore, la CONFERMA D\'ORDINE e le BOLLE di consegna\n' +
+    '(non sempre ci sono tutti). Confrontali articolo per articolo e rispondi SOLO con\n' +
+    'un oggetto JSON, senza testo prima o dopo, senza backtick:\n\n' +
+    '{\n' +
+    '  "esito": "nessuna_differenza" oppure "differenze",\n' +
+    '  "articoli_mancanti": [ { "articolo": "codice e descrizione", "dettaglio": "es. confermati 10, non consegnati e non fatturati" } ],\n' +
+    '  "prezzi_diversi": [ { "articolo": "...", "conferma": "prezzo unitario netto in conferma", "fattura": "prezzo unitario netto in fattura", "dettaglio": "..." } ],\n' +
+    '  "quantita_diverse": [ { "articolo": "...", "ordinato": "...", "consegnato": "...", "fatturato": "...", "dettaglio": "..." } ],\n' +
+    '  "altro": [ "una frase per ogni altra differenza: trasporto, sconti, articoli in più" ],\n' +
+    '  "note_lettura": "cosa non si legge bene o quale documento manca, o null"\n' +
+    '}\n\n' +
+    'REGOLE:\n' +
+    '- Confronta per codice articolo quando c\'e\', altrimenti per descrizione.\n' +
+    '- Prezzi: il prezzo unitario NETTO, dopo gli sconti. Scrivi le cifre come sono stampate.\n' +
+    '- Un articolo fatturato ma mai confermato o consegnato va in "altro".\n' +
+    '- Se un documento manca (per esempio nessuna bolla), confronta quelli che ci sono\n' +
+    '  e dillo in note_lettura. Non inventare mai un valore.\n' +
+    '- Scrivi in italiano, frasi brevi.\n'
+}
+
+async function chiediConfrontoAlWorker(file, prompt) {
+  var url = urlWorkerLettura()
+  if (!url) throw new Error('Lettura automatica non attiva: imposta l\'indirizzo del Worker in «Impostazioni ditta» → «Lettura automatica delle fatture».')
+  var controllo = new AbortController()
+  var scaduto = false
+  var orologio = setTimeout(function () { scaduto = true; controllo.abort() }, TIMEOUT_CONFRONTO_MS)
+  var risposta
+  try {
+    risposta = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: file, prompt: prompt, max_tokens: 4000 }),
+      signal: controllo.signal
+    })
+  } catch (e) {
+    if (scaduto) throw new Error('Il confronto ha superato i due minuti di attesa e si è fermato. Riprova, magari con meno documenti.')
+    throw new Error('Non sono riuscito a contattare il Worker. Controlla l\'indirizzo in «Impostazioni ditta».')
+  } finally {
+    clearTimeout(orologio)
+  }
+  var dati = null
+  try { dati = await risposta.json() } catch (_) { /* sotto */ }
+  if (!dati) throw new Error('Il Worker ha risposto in un formato che non riesco a leggere.')
+  if (!dati.ok) {
+    // Il Worker di prima della 79 non conosce `files` e risponde così.
+    if (/Manca il file da leggere/.test(String(dati.errore || ''))) {
+      throw new Error('Il Worker su Cloudflare non è ancora aggiornato alla versione 79: legge un file alla volta. ' +
+        'Segui worker/ISTRUZIONI_WORKER_79.md, poi riprova.')
+    }
+    throw new Error(dati.errore || 'Il Worker ha rifiutato la richiesta.')
+  }
+  if (!String(dati.testo || '').trim()) throw new Error('Il Worker non ha restituito nessun testo. Riprova.')
+  return dati
+}
+
+function elencoConfrontoHtml(titolo, voci, riga) {
+  if (!Array.isArray(voci) || !voci.length) return ''
+  return '<div class="confronto-sezione"><strong>' + esc(titolo) + '</strong><ul>' +
+    voci.map(function (v) { return '<li>' + riga(v || {}) + '</li>' }).join('') + '</ul></div>'
+}
+
+function testoVoce(v) { return String(v == null ? '' : v).trim() }
+
+// La risposta in parole. Valida prima di mostrare: un JSON rotto non diventa
+// «nessuna differenza».
+function risultatoConfrontoHtml(dati) {
+  var mancanti = elencoConfrontoHtml('Articoli mancanti', dati.articoli_mancanti, function (v) {
+    return esc(testoVoce(v.articolo) || 'articolo') + (v.dettaglio ? ': ' + esc(testoVoce(v.dettaglio)) : '')
+  })
+  var prezzi = elencoConfrontoHtml('Prezzi diversi', dati.prezzi_diversi, function (v) {
+    return esc(testoVoce(v.articolo) || 'articolo') + ': in conferma ' + esc(testoVoce(v.conferma) || '—') +
+      ', in fattura ' + esc(testoVoce(v.fattura) || '—') + (v.dettaglio ? ' (' + esc(testoVoce(v.dettaglio)) + ')' : '')
+  })
+  var quantita = elencoConfrontoHtml('Quantità diverse', dati.quantita_diverse, function (v) {
+    var pezzi = []
+    if (testoVoce(v.ordinato)) pezzi.push('ordinati ' + esc(testoVoce(v.ordinato)))
+    if (testoVoce(v.consegnato)) pezzi.push('consegnati ' + esc(testoVoce(v.consegnato)))
+    if (testoVoce(v.fatturato)) pezzi.push('fatturati ' + esc(testoVoce(v.fatturato)))
+    return esc(testoVoce(v.articolo) || 'articolo') + ': ' + (pezzi.join(', ') || '—') +
+      (v.dettaglio ? ' (' + esc(testoVoce(v.dettaglio)) + ')' : '')
+  })
+  var altro = elencoConfrontoHtml('Altro', dati.altro, function (v) { return esc(typeof v === 'string' ? v : testoVoce(v.dettaglio || JSON.stringify(v))) })
+  var corpo = mancanti + prezzi + quantita + altro
+  var testa = corpo
+    ? '<div class="fase-banner warn" role="status"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">Differenze trovate: controllale sui documenti prima di pagare.</div></div>'
+    : '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span><div class="msg">Nessuna differenza trovata.</div></div>'
+  var nota = dati.note_lettura
+    ? '<div class="lettura-nota"><span aria-hidden="true">🔎</span><span><strong>La lettura segnala:</strong> ' + esc(testoVoce(dati.note_lettura)) + '</span></div>'
+    : ''
+  return testa + corpo + nota
+}
+
+async function confrontaConConfermaEBolle(idAcquisto) {
+  if (confrontoInCorso) return
+  var box = 'acquisti-confronto-ai'
+  function scheda(interno) {
+    html(box, '<div class="card confronto-ai"><div class="card-title">🔍 Confronto con conferma e bolle</div>' + interno + '</div>')
+  }
+  confrontoInCorso = true
+  try {
+    try { await loadImpostazioniConta() } catch (_) { /* sotto lo dice chiediConfrontoAlWorker */ }
+    if (!letturaAutomaticaAttiva()) {
+      throw new Error('Lettura automatica non attiva: imposta l\'indirizzo del Worker in «Impostazioni ditta» → «Lettura automatica delle fatture».')
+    }
+    scheda(loadingRow('Preparo i documenti…'))
+    const { data: a, error } = await sb.from('tm_conta_fatture_acquisto')
+      .select('id, offerta_id').eq('id', idAcquisto).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    await loadAllegati(true)
+    var docs = documentiPerConfronto(a)
+    var manca = mancaPerConfronto(docs)
+    if (manca) throw new Error(manca)
+
+    var file = [], totale = 0
+    for (var i = 0; i < docs.length; i++) {
+      var al = docs[i].allegato
+      var nome = al.nome_file || allegatoNomeFile(al.path)
+      const { data: blob, error: eD } = await sb.storage.from(STORAGE_BUCKET).download(al.path)
+      if (eD || !blob) throw new Error('«' + nome + '» non si scarica: ' + ((eD && eD.message) || 'file non trovato'))
+      var tipo = tipoMediaAllegato(nome, blob.type)
+      if (!tipo) throw new Error('«' + nome + '» non è un PDF né una foto: il confronto non lo sa leggere.')
+      totale += blob.size
+      if (totale / (1024 * 1024) > LIMITE_CONFRONTO_MB) {
+        throw new Error('I documenti pesano più di ' + LIMITE_CONFRONTO_MB + ' MB in tutto: togli qualche bolla o rifalle più leggere.')
+      }
+      file.push({ file_base64: await fileInBase64(blob), media_type: tipo, etichetta: docs[i].ruolo + ' (' + nome + ')' })
+    }
+
+    scheda(loadingRow('Confronto in corso: ' + docs.length + ' documenti. Può volerci fino a un minuto…'))
+    var risposta = await chiediConfrontoAlWorker(file, testoPromptConfronto())
+    var dati
+    try { dati = estraiJson(risposta.testo) }
+    catch (eJ) { throw new Error('La risposta del confronto non si legge (' + (eJ.message || eJ) + '). Riprova.') }
+
+    var chf = costoStimatoChf(risposta.input_tokens, risposta.output_tokens)
+    scheda('<div class="form-hint" style="margin:0 0 10px">Documenti letti: ' +
+        docs.map(function (d) { return esc(d.ruolo.toLowerCase() + ' «' + (d.allegato.nome_file || allegatoNomeFile(d.allegato.path)) + '»') }).join(', ') + '.</div>' +
+      risultatoConfrontoHtml(dati) +
+      '<div class="form-hint" style="margin-top:10px">È un aiuto, non una prova: fa fede il documento. ' +
+        'Il confronto non si salva: resta qui finché chiudi la scheda.</div>' +
+      '<div class="lettura-costo">ℹ️ Costo stimato <strong>' + esc(costoLeggibile(chf)) + '</strong>' +
+        '<span class="dim"> (' + esc(String(risposta.input_tokens || 0)) + ' token letti, ' +
+        esc(String(risposta.output_tokens || 0)) + ' scritti)</span></div>')
+  } catch (e) {
+    scheda('<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">' + esc(e.message || String(e)) + '</div></div>')
+  } finally {
+    confrontoInCorso = false
+  }
+}
+
 // ── Il bottone «Leggi da PDF o foto» ─────────────────────────────────────────
 var letturaInCorso = false
 
@@ -21429,9 +21755,21 @@ async function leggiFatturaDaFile(input) {
 // Il bottone c'e' solo dove serve: su un documento nuovo, e solo se
 // l'indirizzo del Worker e' stato configurato. Senza indirizzo non comparirebbe
 // altro che un errore, e il ponte manuale funziona lo stesso.
+// 79·3 — quando il bottone non c'è, una riga dice perché. Prima spariva e
+// basta, e non si capiva se era un guasto.
+var LETTURA_NON_ATTIVA = 'Lettura automatica non attiva: imposta l\'indirizzo del Worker in «Impostazioni ditta» → «Lettura automatica delle fatture».'
+
+function motivoNienteLettura(nuovo, cosa) {
+  if (!letturaAutomaticaAttiva()) return LETTURA_NON_ATTIVA
+  if (!nuovo) return 'La lettura dal PDF si fa solo su ' + cosa + ' nuova: su una già salvata correggi i campi a mano.'
+  return ''
+}
+
 function mostraBottoneLettura(nuovo) {
   var btn = el('btn-lettura-ai')
   if (btn) btn.style.display = (nuovo && letturaAutomaticaAttiva()) ? '' : 'none'
+  var perche = motivoNienteLettura(nuovo, 'una fattura')
+  html('lettura-perche', perche ? '<div class="form-hint">ℹ️ ' + esc(perche) + '</div>' : '')   // 79·3
   html('lettura-costo', '')
 }
 
@@ -23631,3 +23969,7 @@ async function disegnaBoxAcconto(f) {
 
 // 75·5 — all'avvio il modulo del movimento e' vuoto: niente da salvare.
 moduloPulito('movimento')
+
+// 79·4 — in fondo al menu la versione VERA, dalla stessa costante del
+// programma: prima c'era scritto «v1 · Giugno 2026» a mano, da sempre.
+;(function () { var v = el('sidebar-versione'); if (v) v.textContent = 'Versione ' + VERSIONE })()
