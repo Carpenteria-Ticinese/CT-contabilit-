@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=70" />
+  <link rel="stylesheet" href="css/style.css?v=73" />
 </head>
-<body data-versione="70">
+<body data-versione="73">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -302,6 +302,12 @@
       <div class="card" id="cru-per-conto-card">
         <div class="card-title">🧾 Costi e ricavi per conto</div>
         <div id="cru-per-conto"></div>
+      </div>
+
+      <!-- ── 72: i ricavi divisi per gruppo, stesso periodo e stessi documenti ── -->
+      <div class="card" id="cru-ricavi-gruppo-card">
+        <div class="card-title">💰 Ricavi per gruppo</div>
+        <div id="cru-ricavi-gruppo"></div>
       </div>
 
       <!-- ── Elenco filtrato (si apre cliccando un riquadro o un gruppo) ── -->
@@ -1023,6 +1029,15 @@
         <div class="form-actions" style="margin-top:10px">
           <button type="button" class="btn-primary" id="gruppo-nuovo-btn" onclick="apriNuovoGruppo()">➕ Nuovo gruppo</button>
         </div>
+
+        <!-- 72 — il gruppo di ricavo dei conti svizzeri, solo per questa azienda -->
+        <div class="gest-titolo" style="margin-top:20px">Gruppo di ricavo dei conti svizzeri</div>
+        <div class="form-hint" style="margin-bottom:6px">
+          I conti del pacchetto sono condivisi e non si modificano: qui dici a quale dei
+          <strong>tuoi</strong> gruppi appartengono, solo per te. Vale per la vista
+          «Ricavi per gruppo» della Situazione.
+        </div>
+        <div id="gest-mappa-ricavi"></div>
 
         <div id="gruppo-form" style="display:none">
           <div class="card-title" id="gruppo-form-titolo">Nuovo gruppo</div>
@@ -3220,7 +3235,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=70"></script>
+<script src="js/app.js?v=73"></script>
 
 </body>
 </html>
