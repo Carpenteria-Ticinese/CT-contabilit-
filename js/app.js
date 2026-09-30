@@ -4256,14 +4256,10 @@ function renderFattureTable() {
           : (f.stato === 'emessa'
               ? ' ' + badgePagamentoConResiduo('entrata', f.stato_pagamento, 'tm_conta_fatture', f.id, f.totale)
               : '')) +
-        // FASE 7 — la spia dice a quali fatture manca il documento NEL
-        // PACCHETTO per il commercialista. 61d — non «PDF mancante»: il PDF lo
-        // genera il programma dai dati, non manca da nessuna parte. Quello che
-        // manca e' un file allegato, e il pacchetto si costruisce dagli
-        // allegati: senza, il commercialista riceve uno ZIP senza la fattura.
-        (f.stato === 'emessa' && f.tipo !== 'nota_credito' && !contaAllegati('tm_conta_fatture', f.id)
-          ? ' <span class="pdf-mancante">📎 PDF non nel pacchetto</span>'
-          : '') + '</td>' +
+        // 81 — la spia «PDF non nel pacchetto» non c'e' piu': il pacchetto
+        // genera da se' il PDF di ogni fattura di vendita che non ne ha uno
+        // allegato (generaPdfFattura). Il commercialista riceve sempre la fattura.
+        '</td>' +
       '<td class="row-actions">' + fattureRowActions(f) + '</td>' +
     '</tr>'
   }).join('')
@@ -16702,6 +16698,14 @@ async function raccogliDocumentiPacchetto(da, a) {
   voci.forEach(function (v) {
     v.files = []
     var lista = v.allegati || []
+    // 81 — una fattura di vendita o nota di credito SENZA un allegato di tipo
+    // «Fattura» riceve il PDF generato dal programma. Il nome è quello del
+    // documento, senza suffisso, ed è il primo: gli altri allegati (la polizza
+    // QR, le bolle) gli stanno accanto con il loro suffisso, come sempre.
+    if (v.sezione === 'vendite' && !lista.some(function (al) { return al.tipo === 'fattura' })) {
+      v.files.push({ genera: true, idFattura: v.id,
+                     nomeNelloZip: nomeUnico(usati, v.sezione, nomeFilePacchetto(v.data, v.chi, v.importo, 'pdf')) })
+    }
     if (!lista.length) return
 
     // L'allegato di tipo «fattura» viene per primo: e' il documento, gli altri
@@ -16785,8 +16789,13 @@ async function aggiornaAnteprimaPacchetto() {
         'Caricalo su Google Drive oppure dividilo in periodi più corti.</span></div>'
     }
 
+    // 81 — quanti PDF di fattura farà il programma.
+    var daGenerare = 0
+    r.voci.forEach(function (v) { v.files.forEach(function (fl) { if (fl.genera) daGenerare++ }) })
     box.innerHTML =
       '<div class="exp-riga"><span>Documenti nel periodo</span><span><strong>' + r.voci.length + '</strong></span></div>' +
+      (daGenerare ? '<div class="exp-riga"><span>PDF di fattura che il programma genera (fatture senza PDF allegato)</span><span><strong>' +
+        daGenerare + '</strong></span></div>' : '') +
       '<div class="exp-riga"><span>Giustificativi da allegare</span><span><strong>' +
         conAllegato.reduce(function (n, v) { return n + v.files.length }, 0) + '</strong></span></div>' +
       '<div class="exp-riga' + (senza ? ' exp-vuoto' : '') + '"><span>' +
@@ -16853,6 +16862,8 @@ async function generaPacchetto() {
     var zip = new JSZipLib()
     var conAllegato = r.voci.filter(function (v) { return v.files.length })
     var scaricati = 0
+    var generati = 0          // 81 — i PDF di fattura fatti dal programma
+    var librerie = null       // si caricano solo se c'è almeno un PDF da generare
 
     // ── Gli allegati, uno per uno ──────────────────────────────────────────
     // try/catch INTORNO A OGNI FILE: un allegato che non si scarica finisce
@@ -16870,6 +16881,23 @@ async function generaPacchetto() {
       var fl = daScaricare[i].fl
       mostraProgressoPacchetto('Scarico allegato ' + (i + 1) + ' di ' + daScaricare.length + '…',
                                5 + Math.round((i / daScaricare.length) * 80))
+      // 81 — il PDF della fattura generato dal programma.
+      if (fl.genera) {
+        mostraProgressoPacchetto('Genero il PDF della fattura ' + (i + 1) + ' di ' + daScaricare.length + '…',
+                                 5 + Math.round((i / daScaricare.length) * 80))
+        try {
+          if (!librerie) librerie = await caricaLibreriePdf()
+          zip.file(fl.nomeNelloZip, await generaPdfFattura(fl.idFattura, librerie))
+          generati++
+        } catch (eGen) {
+          // Come un allegato che non si scarica: il pacchetto si fa lo stesso,
+          // e la fattura finisce fra i mancanti con il motivo.
+          fl.nomeNelloZip = null
+          mancanti.push({ data: v.data, chi: v.chi, importo: v.importo,
+                          motivo: 'PDF della fattura non generato (' + (eGen.message || eGen) + ')' })
+        }
+        continue
+      }
       try {
         var bucket = v.bucket || STORAGE_BUCKET
         const { data: blob, error } = await sb.storage.from(bucket).download(fl.path)
@@ -16909,7 +16937,7 @@ async function generaPacchetto() {
 
     // ── I due file di testo ────────────────────────────────────────────────
     mostraProgressoPacchetto('Scrittura del riepilogo…', 92)
-    zip.file('00_LEGGIMI.txt', await testoLeggimi(r, da, a, scaricati, mancanti.length))
+    zip.file('00_LEGGIMI.txt', await testoLeggimi(r, da, a, scaricati, mancanti.length, generati))
     if (mancanti.length) zip.file('DOCUMENTI_MANCANTI.txt', testoDocumentiMancanti(mancanti))
 
     // ── Lo ZIP ─────────────────────────────────────────────────────────────
@@ -16925,6 +16953,7 @@ async function generaPacchetto() {
     var msg = '<strong>Pacchetto creato.</strong> ' + r.voci.length +
       (r.voci.length === 1 ? ' documento' : ' documenti') + ', ' + scaricati +
       (scaricati === 1 ? ' giustificativo allegato' : ' giustificativi allegati') +
+      (generati ? ', ' + generati + (generati === 1 ? ' PDF di fattura generato' : ' PDF di fattura generati') + ' dal programma' : '') +
       (mancanti.length ? ', ' + mancanti.length + ' senza file (elencati in DOCUMENTI_MANCANTI.txt)' : '') + '.' +
       '<br><button type="button" class="link-btn" onclick="proponiConsegna()">Hai consegnato il pacchetto? Segna il periodo come consegnato</button>'
     bannerPacchetto(mancanti.length ? 'warn' : 'ok', msg)
@@ -16937,6 +16966,125 @@ async function generaPacchetto() {
     if (btn) { btn.disabled = false; btn.textContent = '📦 Genera pacchetto completo (ZIP)' }
     if (btnAnn) btnAnn.style.display = 'none'
     if (pacchettoAnnullato) mostraProgressoPacchetto('', 0)
+  }
+}
+
+// ══ 81 — IL PDF DELLA FATTURA, GENERATO DAL PROGRAMMA ══════════════════════
+// Il pacchetto per il commercialista si costruiva solo dagli allegati: una
+// fattura di vendita fatta nel programma e mai allegata come PDF non c'era.
+// Adesso, per ogni fattura di vendita o nota di credito senza un allegato di
+// tipo «Fattura», il pacchetto ne genera il PDF da sé: lo STESSO foglio della
+// stampa (renderFatturaPrint), fotografato con html2canvas e messo in pagine
+// A4 da jsPDF. È un PDF immagine (circa 150–400 KB a pagina): si legge e si
+// stampa, il testo non si seleziona.
+// La polizza QR non entra nel PDF generato: se è allegata, è già nel pacchetto
+// come file suo, accanto alla fattura.
+// Le due librerie si scaricano solo quando servono, come JSZip, con un tempo
+// massimo: un CDN che non risponde non deve lasciare il pacchetto appeso.
+var HTML2CANVAS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'
+var JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
+var TIMEOUT_LIBRERIA_MS = 20000
+var PDF_MARGINE_MM = 10
+var PDF_LARGHEZZA_PX = 794           // un A4 a 96 punti per pollice
+
+function caricaScriptUnaVolta(url, pronto, nome) {
+  return new Promise(function (risolvi, rifiuta) {
+    if (pronto()) { risolvi(pronto()); return }
+    var finito = false
+    var orologio = setTimeout(function () {
+      if (finito) return
+      finito = true
+      rifiuta(new Error('La libreria ' + nome + ' non risponde. Controlla il collegamento a internet.'))
+    }, TIMEOUT_LIBRERIA_MS)
+    var s = document.createElement('script')
+    s.src = url
+    s.onload = function () {
+      if (finito) return
+      finito = true; clearTimeout(orologio)
+      if (pronto()) risolvi(pronto())
+      else rifiuta(new Error('Libreria ' + nome + ' caricata ma non disponibile.'))
+    }
+    s.onerror = function () {
+      if (finito) return
+      finito = true; clearTimeout(orologio)
+      rifiuta(new Error('Non riesco a scaricare la libreria ' + nome + '. Serve internet.'))
+    }
+    document.head.appendChild(s)
+  })
+}
+
+async function caricaLibreriePdf() {
+  var h2c = await caricaScriptUnaVolta(HTML2CANVAS_URL, function () { return window.html2canvas }, 'html2canvas')
+  var jsPDF = await caricaScriptUnaVolta(JSPDF_URL, function () { return window.jspdf && window.jspdf.jsPDF }, 'jsPDF')
+  return { html2canvas: h2c, jsPDF: jsPDF }
+}
+
+// Il foglio di stampa di una fattura, come HTML. renderFatturaPrint scrive nel
+// riquadro della scheda: si prende quello che scrive e si rimette com'era, così
+// una scheda aperta non cambia sotto gli occhi.
+async function htmlFatturaPerPdf(idFattura) {
+  const { data: f, error } = await sb.from('tm_conta_fatture').select('*')
+    .eq('id', idFattura).eq('azienda_id', currentAziendaId).single()
+  if (error) throw error
+  const { data: righe, error: eR } = await sb.from('tm_conta_fatture_righe').select('*')
+    .eq('fattura_id', idFattura).order('ordine')
+  if (eR) throw eR
+  var rifInfo = null
+  if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
+    const { data: rif } = await sb.from('tm_conta_fatture').select('numero, data_emissione')
+      .eq('id', f.rif_fattura_id).eq('azienda_id', currentAziendaId).maybeSingle()
+    rifInfo = rif || null
+  }
+  var box = el('fatture-print')
+  var prima = box ? box.innerHTML : ''
+  try {
+    renderFatturaPrint(f, righe || [], rifInfo)
+    return box ? box.innerHTML : ''
+  } finally {
+    if (box) box.innerHTML = prima
+  }
+}
+
+// Una tela alta in pagine A4: si taglia a fette dell'altezza di una pagina.
+// Pura, per essere provata senza browser: dice solo DOVE tagliare.
+function fettePagine(larghezzaPx, altezzaPx, margineMm) {
+  var utileMmL = 210 - 2 * margineMm, utileMmH = 297 - 2 * margineMm
+  var pxPerMm = larghezzaPx / utileMmL
+  var paginaPx = Math.floor(utileMmH * pxPerMm)
+  var fette = []
+  for (var y = 0; y < altezzaPx; y += paginaPx) {
+    var h = Math.min(paginaPx, altezzaPx - y)
+    fette.push({ y: y, h: h, mmH: h / pxPerMm })
+  }
+  return { fette: fette, mmL: utileMmL }
+}
+
+// Il PDF di una fattura, come Blob.
+async function generaPdfFattura(idFattura, lib) {
+  var contenuto = await htmlFatturaPerPdf(idFattura)
+  var foglio = document.createElement('div')
+  foglio.setAttribute('aria-hidden', 'true')
+  foglio.style.cssText = 'position:fixed;left:-20000px;top:0;width:' + PDF_LARGHEZZA_PX + 'px;background:#fff;'
+  foglio.innerHTML = contenuto
+  // Il posto della polizza resta fuori: la polizza, se c'è, è già nel pacchetto.
+  var qr = foglio.querySelector('#fatture-qrpage'); if (qr) qr.parentNode.removeChild(qr)
+  document.body.appendChild(foglio)
+  try {
+    var tela = await lib.html2canvas(foglio, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false })
+    var taglio = fettePagine(tela.width, tela.height, PDF_MARGINE_MM)
+    var pdf = new lib.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+    taglio.fette.forEach(function (fe, i) {
+      if (i > 0) pdf.addPage()
+      var pezzo = document.createElement('canvas')
+      pezzo.width = tela.width; pezzo.height = fe.h
+      var ctx = pezzo.getContext('2d')
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, pezzo.width, pezzo.height)
+      ctx.drawImage(tela, 0, fe.y, tela.width, fe.h, 0, 0, tela.width, fe.h)
+      pdf.addImage(pezzo.toDataURL('image/jpeg', 0.92), 'JPEG', PDF_MARGINE_MM, PDF_MARGINE_MM, taglio.mmL, fe.mmH)
+    })
+    return pdf.output('blob')
+  } finally {
+    document.body.removeChild(foglio)
   }
 }
 
@@ -16986,7 +17134,7 @@ function costruisciWorkbookPacchetto(r, mappa, da, a) {
 
 // ── 00_LEGGIMI.txt ──────────────────────────────────────────────────────────
 
-async function testoLeggimi(r, da, a, allegatiInclusi, allegatiMancanti) {
+async function testoLeggimi(r, da, a, allegatiInclusi, allegatiMancanti, pdfGenerati) {
   var t = totaliSezioni(r.d)
   var az = aziendaInfo || {}
   var nome = (az.nome || 'CARPENTERIA TICINESE SAGL').toUpperCase()
@@ -17023,6 +17171,13 @@ async function testoLeggimi(r, da, a, allegatiInclusi, allegatiMancanti) {
     '  Allegati inclusi:   ' + allegatiInclusi + ' file',
     '  Allegati mancanti:  ' + allegatiMancanti + ' file'
   ]
+  // 81 — i PDF delle fatture di vendita fatti dal programma.
+  if (pdfGenerati) {
+    righe.push('  PDF generati:       ' + pdfGenerati + ' file')
+    righe.push('    -> fatture di vendita senza PDF allegato: il PDF l\'ha fatto il')
+    righe.push('       programma, uguale alla fattura stampata (senza la polizza QR,')
+    righe.push('       che se c\'e\' e\' nel pacchetto come file a parte).')
+  }
   if (allegatiMancanti) righe.push('    -> vedi DOCUMENTI_MANCANTI.txt')
 
   righe.push('', 'NOTE')
@@ -21367,7 +21522,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '80'
+var VERSIONE = '81'
 
 function controllaVersionePagina() {
   try {
