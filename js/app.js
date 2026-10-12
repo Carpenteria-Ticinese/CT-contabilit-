@@ -1,4 +1,4 @@
-// TimberMaster — Pre-Contabilità
+// CT Pre-contabilità
 // app.js — Logica principale (Fase 1 + Fase 2)
 // Stack: HTML/JS vanilla + Supabase JS v2
 
@@ -655,12 +655,26 @@ async function loadCanalA() {
   canalAErrori = []   // 86
 
   // spese: id, data, descrizione, importo, valuta, cantiere_id, note
+  // 88 — e il giustificativo: foto_path (il file nel bucket cantiere-spese),
+  // tipo_doc (scontrino, bolla, fattura) e documento (la scelta dell'operaio:
+  // foto / cartaceo / nessuno). `documento` è della P3 dell'App Cantieri: se
+  // nel database non c'è ancora si rilegge senza, e senza foto_path come prima.
   try {
-    const { data, error } = await leggiTutto(function () { return sb
-      .from('spese')
-      .select('id, data, descrizione, importo, valuta, cantiere_id, note')
-      .order('data', { ascending: false }).order('id') })
-    if (error) throw error
+    var COLONNE_SPESE = [
+      'id, data, descrizione, importo, valuta, cantiere_id, note, foto_path, tipo_doc, documento',
+      'id, data, descrizione, importo, valuta, cantiere_id, note, foto_path, tipo_doc',
+      'id, data, descrizione, importo, valuta, cantiere_id, note']
+    var datiSpese = null, erroreSpese = null
+    for (var cs = 0; cs < COLONNE_SPESE.length; cs++) {
+      var rSp = await leggiTutto(function () { return sb
+        .from('spese')
+        .select(COLONNE_SPESE[cs])
+        .order('data', { ascending: false }).order('id') })
+      datiSpese = rSp.data; erroreSpese = rSp.error
+      if (!erroreSpese) break
+    }
+    if (erroreSpese) throw erroreSpese
+    var data = datiSpese
     for (var i = 0; i < (data || []).length; i++) {
       var s = data[i]
       movimenti.push({
@@ -675,6 +689,9 @@ async function loadCanalA() {
         extra:        s.cantiere_id ? 'Cantiere ' + s.cantiere_id : null,
         _sorgente:    'App Cantieri',
         _tipo_label:  'Spesa',
+        _foto_path:   s.foto_path || null,   // 88 — il giustificativo nell'App Cantieri
+        _tipo_doc:    s.tipo_doc || null,
+        _documento:   s.documento || null,
         _icon:        '📦',
         _match_field: 'desc',
         _match_value: s.descrizione || null
@@ -883,6 +900,7 @@ async function loadDaClassificare() {
 
   // Carica le classificazioni già esistenti per questa azienda (riga completa)
   var classMap = {}   // "origine_tipo:origine_id" -> riga classificazione
+  var totClass = {}   // 88 — "tipo:id" -> { tot, consegnata }: la cifra classificata del documento
   if (currentAziendaId) {
     try {
       const { data, error } = await leggiTutto(function () { return sb
@@ -891,8 +909,15 @@ async function loadDaClassificare() {
         .eq('azienda_id', currentAziendaId).order('id') })
       if (error) throw error
       for (var k = 0; k < (data || []).length; k++) {
-        classMap[data[k].origine_tipo + ':' + data[k].origine_id] = data[k]
+        var kc = data[k].origine_tipo + ':' + data[k].origine_id
+        classMap[kc] = data[k]
+        if (!totClass[kc]) totClass[kc] = { tot: 0, consegnata: false }
+        totClass[kc].tot = round2(totClass[kc].tot + (safeNum(data[k].imponibile) || 0) + (safeNum(data[k].iva_importo) || 0))
+        if (data[k].stato === 'bloccato' || data[k].stato === 'esportato') totClass[kc].consegnata = true
       }
+      // 88·3 — le quote per documento: la stessa mappa della pagina Cantieri,
+      // da cui quoteSpesaCantieri prende cifra e cantiere delle spese.
+      classCantiereMap = mappaQuoteDa(data)
     } catch (e) {
       errori.push('Classificazioni: ' + e.message)
     }
@@ -908,6 +933,13 @@ async function loadDaClassificare() {
   try { await loadScarti(true) } catch (eSc) { errori.push('Scarti: ' + (eSc.message || eSc)) }
   try { await loadCantieri() } catch (_) { /* i nomi dei cantieri sono un aiuto */ }   // 86 — per l'avviso delle orfane
   var giornate = await chiaviGiornateRegia()
+  // 88 — le copie dei giustificativi (allegati delle spese) e lo storico delle
+  // classificazioni tolte. Senza allegati letti non si dice «solo nell'App
+  // Cantieri»: potrebbe non essere vero.
+  try { await loadAllegati(true); allegatiDaClassLetti = true }
+  catch (eAl) { allegatiDaClassLetti = false; errori.push('Allegati: ' + (eAl.message || eAl)) }
+  try { await loadClassTolte() } catch (eTo) { errori.push('Classificazioni tolte: ' + (eTo.message || eTo)) }
+  speseDaClassPerId = {}
 
   // Separa non classificati / già classificati (86: gli scartati escono)
   var daClass = []
@@ -915,8 +947,10 @@ async function loadDaClassificare() {
   for (var t = 0; t < tutti.length; t++) {
     var mm = tutti[t]
     mm._senzaGiornata = regiaSenzaGiornata(mm, giornate)
+    if (mm.origine_tipo === 'spesa') speseDaClassPerId[String(mm.origine_id)] = mm   // 88
     var cls = classMap[mm.origine_tipo + ':' + mm.origine_id]
-    if (cls) { mm._class = cls; classificati.push(mm) }
+    var tc = totClass[mm.origine_tipo + ':' + mm.origine_id]   // 88
+    if (cls) { mm._class = cls; mm._totClass = tc ? tc.tot : null; mm._consegnata = !!(tc && tc.consegnata); classificati.push(mm) }
     else if (scartoAttivo('scarto', mm.origine_tipo, mm.origine_id)) { /* scartata: sta nello storico */ }
     else { daClass.push(mm) }
   }
@@ -993,9 +1027,10 @@ function renderListeDaClassificare() {
   var fidD = leggiFiltroID('daclass')
   var passaD = function (m) {
     var pag = m.origine_tipo === 'proprio' ? pagamentiDi('tm_conta_movimenti_propri', m.origine_id) : []
-    if (!corrispondeTesto(fidD.testo, [m.descrizione || '', m.extra || '', m._sorgente || '', m._tipo_label || ''],
-          [m.importo].concat(pag.map(function (p) { return p.importo })))) return false
-    return corrispondeImportoData(fidD, { importo: m.importo, date: { documento: m.data }, pagamenti: pag })
+    // 88 — per le spese la cifra e il cantiere della regola (importoRiga, testoExtraRiga)
+    if (!corrispondeTesto(fidD.testo, [m.descrizione || '', testoExtraRiga(m) || '', m._sorgente || '', m._tipo_label || ''],
+          [importoRiga(m)].concat(pag.map(function (p) { return p.importo })))) return false
+    return corrispondeImportoData(fidD, { importo: importoRiga(m), date: { documento: m.data }, pagamenti: pag })
   }
   var cercando = fidD.attivo || !!fidD.testo
   var daClass = cercando ? daClassTutti.filter(passaD) : daClassTutti
@@ -1045,6 +1080,11 @@ function renderListeDaClassificare() {
       var isProprio = m.origine_tipo === 'proprio'
       var azioni =
         '<button class="icon-btn classify" onclick="event.stopPropagation(); openClassifyPanel(' + i + ')">🏷 Classifica</button>'
+      // 88 — la foto c'è: si legge con l'AI, dentro la finestra «Classifica».
+      if (m.origine_tipo === 'spesa' && (m._foto_path || copiaGiustificativoDi(m.origine_id))) {
+        azioni += '<button class="icon-btn" title="Apre «Classifica» e legge la foto: propone, non scrive" ' +
+          'onclick="event.stopPropagation(); classificaELeggi(' + i + ')">🤖 Leggi lo scontrino</button>'
+      }
       // 86 — una riga dell'App Cantieri si scarta (qui), non si elimina (là resta).
       if (m.origine_tipo === 'spesa' || m.origine_tipo === 'regia') {
         azioni += '<button class="icon-btn danger" title="Toglierla da qui: nell\'App Cantieri non cambia niente" ' +
@@ -1063,10 +1103,11 @@ function renderListeDaClassificare() {
           '<td class="dim num" style="white-space:nowrap">' + esc(fmtDate(m.data)) + '</td>' +
           '<td>' +
             '<div class="mov-desc">' + esc(m.descrizione) + '</div>' +
-            (m.extra ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(m.extra) + '</div>' : '') +
+            (testoExtraRiga(m) ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(testoExtraRiga(m)) + '</div>' : '') +
             avvisoSenzaGiornataHtml(m) +   // 86
+            giustificativoRigaHtml(m, false) +   // 88
           '</td>' +
-          '<td class="num">' + fmtImporto(m.importo, m.valuta) + '</td>' +
+          '<td class="num">' + fmtImporto(importoRiga(m), m.valuta) + '</td>' +
           '<td>' + etichettaOrigineHtml(m) + '</td>' +   // 86 — la provenienza, scritta
           '<td class="row-actions">' + azioni + '</td>' +
         '</tr>'
@@ -1116,16 +1157,21 @@ function renderListeDaClassificare() {
       } else {
         azioniCls += '<button class="icon-btn classify" title="Riclassifica" onclick="openRiclassifica(' + j + ')">✏️ Riclassifica</button>'
       }
+      // 88 — togliere una classificazione: torna fra quelle da classificare,
+      // e la classificazione va nello storico. Consegnata: con una conferma in più.
+      azioniCls += '<button class="icon-btn danger" title="La riga torna fra quelle da classificare; la classificazione resta, con lo stato «tolta»" ' +
+        'onclick="togliClassificazione(' + j + ')">↩️ Togli la classificazione</button>'
       crows += (
         '<tr class="' + classeOrigine(cm) + '">' +   // 86
           '<td class="dim num" style="white-space:nowrap">' + esc(fmtDate(cm.data)) + '</td>' +
           '<td>' +
             '<div class="mov-desc">' + esc(cm.descrizione) + '</div>' +
-            (cm.extra ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(cm.extra) + '</div>' : '') +
+            (testoExtraRiga(cm) ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(testoExtraRiga(cm)) + '</div>' : '') +
             '<div style="margin-top:4px">' + etichettaOrigineHtml(cm) + '</div>' +   // 86
             avvisoSenzaGiornataHtml(cm) +
+            giustificativoRigaHtml(cm, true) +   // 88
           '</td>' +
-          '<td class="num">' + fmtImporto(cm.importo, cm.valuta) + '</td>' +
+          '<td class="num">' + fmtImporto(importoRiga(cm), cm.valuta) + importoAppCantieriHtml(cm) + '</td>' +
           '<td><span class="cod">' + esc(contoLabel(cc.conto_id)) + '</span></td>' +
           '<td>' + esc(ivaLabel(cc.codice_iva_id)) + '</td>' +
           '<td>' + statoBadge(cc.stato) + '</td>' +
@@ -1148,11 +1194,13 @@ function renderListeDaClassificare() {
           '</tr></thead>' +
           '<tbody>' + crows + '</tbody>' +
         '</table></div>' +
-        '<div class="sql-tip">🕐 «Storia» mostra chi ha cambiato cosa e quando (audit automatico a livello database). «Riclassifica» riapre la proposta, modificabile.</div>' +
+        '<div class="sql-tip">🕐 «Storia» mostra chi ha cambiato cosa e quando (audit automatico a livello database). «Riclassifica» riapre la proposta, modificabile. ' +
+          '«↩️ Togli la classificazione» rimette la riga fra quelle da classificare: la classificazione non si cancella, resta con lo stato «tolta» (storico in fondo alla pagina).</div>' +
       '</div>'
   }
 
-  html('movimenti-lista', sezioneOrfane + sezioneDaClass + sezioneClassificati + sezioneScarti)
+  html('movimenti-lista', sezioneOrfane + boxGiustificativiDaCopiareHtml() + sezioneDaClass + sezioneClassificati +
+    sezioneScarti + storicoTolteHtml())   // 88
 }
 
 // ══ 86 · I DATI CHE ARRIVANO DALL'APP CANTIERI ════════════════════════════════
@@ -1360,7 +1408,7 @@ function boxOrfaneHtml() {
     var c = o.cls
     var consegnata = c.stato === 'esportato' || c.stato === 'bloccato'
     return '<tr class="riga-orig-cantieri">' +
-      '<td>' + esc(o.origine_tipo === 'regia' ? '🏗️ Regia' : '🏗️ Spesa') + '</td>' +
+      '<td>' + esc(o.origine_tipo === 'regia' ? '🏗️ Regia' : '🏗️ Spesa') + giustificativoOrfanaHtml(o) + '</td>' +
       '<td class="num">' + esc(fmtNumIt(o.importo)) + ' CHF</td>' +
       '<td><span class="cod">' + esc(contoLabel(c.conto_id)) + '</span></td>' +
       '<td>' + esc(c.cantiere_id ? nomeCantiereDaId(c.cantiere_id) || '' : '—') + '</td>' +
@@ -1403,6 +1451,698 @@ function storicoScartiHtml() {
       'queste righe non sono state toccate.</div>' +
     '<div class="table-wrap"><table><thead><tr><th>Cosa</th><th>Descrizione</th><th>Data</th><th style="text-align:right">Importo</th>' +
       '<th>Motivo</th><th></th></tr></thead><tbody>' + righe + '</tbody></table></div>' +
+  '</details>'
+}
+
+// ══ 88 · IL GIUSTIFICATIVO DELL'APP CANTIERI DIVENTA NOSTRO, POI L'AI ════════
+// La foto di una spesa sta nel bucket «cantiere-spese» dell'App Cantieri
+// (spese.foto_path). Fino alla 86 qui non si vedeva, e lo scontrino si
+// ricaricava a mano come fattura d'acquisto: due righe per la stessa spesa.
+//  · LA COPIA. La prima volta che serve («🤖 Leggi lo scontrino» o la
+//    conferma della classificazione) il file si COPIA nel nostro bucket
+//    «conta-allegati» (<azienda>/spese/<id spesa>/…) e diventa un allegato
+//    qualunque (tm_conta_allegati, tabella_origine 'spese', origine_path =
+//    l'originale). L'originale non si tocca. Una spesa con la foto si
+//    classifica SOLO con la copia riuscita; senza foto si classifica, con
+//    «⚠️ nessun giustificativo digitale» sulla riga, anche dopo.
+//  · LE GIÀ CLASSIFICATE senza copia: avviso e «📎 Copia ora l'allegato»,
+//    finché il file là esiste.
+//  · L'AI legge la COPIA e PROPONE importo, fornitore, data e conto. Se la
+//    cifra letta è diversa da quella dell'operaio si mostrano tutte e due e si
+//    sceglie: il programma non corregge da solo.
+// SQL: SQL_FASE88_giustificativi_e_togli.sql. Nell'App Cantieri non si scrive.
+var BUCKET_SPESE_APP = 'cantiere-spese'
+var allegatiDaClassLetti = true      // gli allegati si sono letti: si può dire «solo nell'App Cantieri»
+var speseDaClassPerId = {}           // id spesa -> movimento (per aprire la foto da una riga)
+var importoSceltoClassifica = null   // null = la cifra dell'App Cantieri (m.importo)
+var letturaScontrino = null          // l'ultima lettura AI nella finestra «Classifica»
+var letturaScontrinoInCorso = false
+var LATO_SCONTRINO_PX = 1600         // la foto si rimpicciolisce prima di partire: costa uguale, viaggia leggera
+var MSG_SQL88 = 'manca l\'SQL della 88 (sql/da_applicare/SQL_FASE88_giustificativi_e_togli.sql): lancialo nel SQL Editor di Supabase, poi riprova'
+
+function copiaGiustificativoDi(spesaId) {
+  return allegatiDi('spese', spesaId)[0] || null
+}
+function ricordaAllegato(a) {
+  if (!a) return
+  if (!allegatiCache) allegatiCache = []
+  if (!allegatiCache.some(function (x) { return x.id && x.id === a.id })) allegatiCache.push(a)
+}
+// Il tipo dell'allegato dal tipo di documento scelto nell'App Cantieri.
+function tipoAllegatoDaTipoDoc(t) {
+  var s = String(t || '').toLowerCase()
+  if (s.indexOf('fattura') !== -1) return 'fattura'
+  if (s.indexOf('bolla') !== -1) return 'bolla'
+  return 'ricevuta'
+}
+function sqlFase88Mancante(e) {
+  var m = String((e && (e.message || e.details || e.hint)) || e || '')
+  return /origine_path|tabella_origine_check|tm_conta_classificazioni_tolte|tm_conta_togli_classificazione|tolta_motivo/.test(m)
+}
+
+// La copia: c'è già (la si chiede al database, non alla cache: un'altra
+// finestra può averla appena fatta) o si fa adesso. Torna l'allegato, null se
+// la spesa non ha foto; lancia con un motivo leggibile se non riesce.
+async function assicuraCopiaAllegatoSpesa(m) {
+  if (!m || m.origine_tipo !== 'spesa') return null
+  if (!currentAziendaId) throw new Error('sessione non attiva: rientra e riprova')
+  var COL = 'id, tabella_origine, id_origine, tipo, path, nome_file, dimensione, created_at'
+  async function giaCopiata() {
+    const { data, error } = await sb.from('tm_conta_allegati').select(COL)
+      .eq('azienda_id', currentAziendaId).eq('tabella_origine', 'spese').eq('id_origine', m.origine_id)
+      .order('created_at').limit(1)
+    if (error) throw new Error('non riesco a controllare se è già copiato (' + (error.message || error) + ')')
+    return (data && data[0]) || null
+  }
+  var gia = await giaCopiata()
+  if (gia) { ricordaAllegato(gia); return gia }
+  if (!m._foto_path) return null
+
+  // 1. L'originale, dall'App Cantieri (sola lettura).
+  const { data: blob, error: eD } = await sb.storage.from(BUCKET_SPESE_APP).download(m._foto_path)
+  if (eD || !blob) {
+    var md = String((eD && (eD.message || eD.error)) || '')
+    var st = String((eD && (eD.statusCode || eD.status)) || '')
+    if (st === '404' || /not.?found/i.test(md)) {
+      throw new Error('il file della foto nell\'App Cantieri non c\'è più: questo giustificativo non si recupera')
+    }
+    throw new Error('la foto nell\'App Cantieri non si scarica (' + (md || 'file vuoto') + ')')
+  }
+  // 2. La copia, nella cartella dell'azienda (la policy guarda il primo pezzo).
+  var nomeOrig = String(m._foto_path).split('/').pop() || 'spesa.jpg'
+  var nome = (m.data || 'senza-data') + '_' + nomeOrig.replace(/^\d{10,}_/, '')
+  var path = currentAziendaId + '/spese/' + m.origine_id + '/' + Date.now() + '_' + nome.replace(/[^a-zA-Z0-9._-]/g, '_')
+  var opzioni = { upsert: false }
+  var tipoMedia = tipoMediaAllegato(nomeOrig, blob.type)
+  if (tipoMedia) opzioni.contentType = tipoMedia
+  const { error: eU } = await sb.storage.from(STORAGE_BUCKET).upload(path, blob, opzioni)
+  if (eU) throw new Error('la copia non si carica nella Pre-contabilità (' + (eU.message || eU) + ')')
+  // 3. La riga dell'allegato. Se non si scrive, il file copiato si toglie.
+  var riga = {
+    azienda_id: currentAziendaId, tabella_origine: 'spese', id_origine: m.origine_id,
+    tipo: tipoAllegatoDaTipoDoc(m._tipo_doc), path: path, nome_file: nome,
+    dimensione: blob.size, origine_path: m._foto_path,
+    created_by: currentUser ? currentUser.id : null
+  }
+  const { data: nuova, error: eI } = await sb.from('tm_conta_allegati').insert(riga).select(COL)
+  if (eI) {
+    try { await deleteAllegatoStorage(path) } catch (_) { /* resta un file in più, non un dato sbagliato */ }
+    if (String(eI.code) === '23505') {          // copiata intanto da un'altra finestra
+      var altra = await giaCopiata()
+      if (altra) { ricordaAllegato(altra); return altra }
+    }
+    if (sqlFase88Mancante(eI) || /check constraint/i.test(String(eI.message || ''))) throw new Error(MSG_SQL88)
+    throw new Error('la copia non si registra (' + (eI.message || eI) + ')')
+  }
+  var a = (nuova && nuova[0]) || riga
+  ricordaAllegato(a)
+  exportDataset = null      // il pacchetto deve rileggere
+  return a
+}
+
+// Il giustificativo di una spesa: copia | solo_app | app_non_verificata | nessuno
+function statoGiustificativo(m) {
+  if (!m || m.origine_tipo !== 'spesa') return null
+  var copia = copiaGiustificativoDi(m.origine_id)
+  if (copia) return { tipo: 'copia', copia: copia }
+  if (m._foto_path) return { tipo: allegatiDaClassLetti ? 'solo_app' : 'app_non_verificata' }
+  return { tipo: 'nessuno' }
+}
+function testoSenzaGiustificativo(m) {
+  return '⚠️ nessun giustificativo digitale' +
+    (m._documento === 'cartaceo' ? ' · l\'operaio l\'ha consegnato su carta in ufficio'
+      : m._documento === 'nessuno' ? ' · l\'operaio ha segnato «nessun documento»' : '')
+}
+function giustificativoRigaHtml(m, classificata) {
+  var g = statoGiustificativo(m)
+  if (!g) return ''
+  var id = esc(String(m.origine_id))
+  var apri = '<button type="button" class="icon-btn" onclick="event.stopPropagation(); apriGiustificativoSpesa(\'' + id + '\')">📎 Scontrino</button>'
+  if (g.tipo === 'copia') return '<div class="giust-riga">' + apri + '<span class="dim">conservato nella Pre-contabilità</span></div>'
+  if (g.tipo === 'nessuno') return '<div class="giust-riga giust-manca">' + esc(testoSenzaGiustificativo(m)) + '</div>'
+  if (g.tipo === 'app_non_verificata') return '<div class="giust-riga">' + apri + '<span class="dim">nell\'App Cantieri</span></div>'
+  if (!classificata) {
+    return '<div class="giust-riga">' + apri + '<span class="dim">nell\'App Cantieri: si copia qui alla lettura o alla classificazione</span></div>'
+  }
+  return '<div class="giust-riga giust-manca">' + apri + '<span>⚠️ Giustificativo solo nell\'App Cantieri</span>' +
+    '<button type="button" class="icon-btn" onclick="event.stopPropagation(); copiaOraGiustificativo(\'' + id + '\')">📎 Copia ora l\'allegato</button></div>'
+}
+// Sotto l'importo di una spesa classificata (che è quello della classificazione,
+// 88·3), la cifra dell'App Cantieri se è un'altra: si vede perché non coincidono.
+function importoAppCantieriHtml(m) {
+  if (m.origine_tipo !== 'spesa' || !spesaClassificata(m) || m.importo == null) return ''
+  if (Math.abs(importoSpesa(m) - (safeNum(m.importo) || 0)) < 0.005) return ''
+  return '<div class="importo-classificato">🏗️ nell\'App Cantieri ' + esc(fmtNumIt(m.importo)) + '</div>'
+}
+function giustificativoOrfanaHtml(o) {
+  if (o.origine_tipo !== 'spesa') return ''
+  var c = copiaGiustificativoDi(o.origine_id)
+  if (!c) return '<div class="dim" style="font-size:11px">giustificativo non conservato qui</div>'
+  return '<div style="font-size:11px">📎 giustificativo conservato ' +
+    '<button type="button" class="icon-btn" onclick="openAllegato(\'' + esc(c.path) + '\', \'movimenti-banner\')">Apri</button></div>'
+}
+
+// Il link temporaneo alla foto: la copia, se c'è, altrimenti l'originale.
+async function urlGiustificativo(m) {
+  var g = statoGiustificativo(m)
+  var bucket, path
+  if (g && g.tipo === 'copia') { bucket = STORAGE_BUCKET; path = g.copia.path }
+  else if (m && m._foto_path) { bucket = BUCKET_SPESE_APP; path = m._foto_path }
+  else return null
+  const { data, error } = await sb.storage.from(bucket).createSignedUrl(path, 3600)
+  if (error || !data || !data.signedUrl) {
+    throw new Error('la foto non si apre (' + ((error && error.message) || 'link non ricevuto') + ')')
+  }
+  return { url: data.signedUrl, pdf: /\.pdf$/i.test(path), daCopia: bucket === STORAGE_BUCKET }
+}
+function anteprimaGiustificativoHtml(u, grande) {
+  if (u.pdf) return '<iframe class="giust-pdf' + (grande ? ' grande' : '') + '" src="' + esc(u.url) + '" title="Giustificativo della spesa (PDF)"></iframe>'
+  return '<img class="giust-img' + (grande ? ' grande' : '') + '" src="' + esc(u.url) + '" alt="Foto del giustificativo della spesa">'
+}
+function spesaDaId(id) {
+  var m = speseDaClassPerId[String(id)]
+  if (m) return m
+  var t = classifyTargets[0]
+  return (t && String(t.origine_id) === String(id)) ? t : null
+}
+async function apriGiustificativoSpesa(id) {
+  var m = spesaDaId(id)
+  if (!m) return
+  html('scontrino-sotto', esc(fmtDate(m.data) + ' · ' + (m.descrizione || '') + ' · ' + fmtNumIt(m.importo) + ' ' + (m.valuta || 'CHF')))
+  html('scontrino-corpo', loadingRow('Apro il giustificativo…'))
+  var o = el('scontrino-overlay')
+  if (o) { o.style.display = 'flex'; registraAperturaModale('scontrino-overlay') }
+  try {
+    var u = await urlGiustificativo(m)
+    html('scontrino-corpo', u
+      ? anteprimaGiustificativoHtml(u, true) + '<div class="form-hint" style="margin-top:8px">' +
+          (u.daCopia ? '📎 Copia conservata nella Pre-contabilità.' : '📎 Originale nell\'App Cantieri: non è ancora copiato qui.') +
+          ' <a href="' + esc(u.url) + '" target="_blank" rel="noopener">Apri in una scheda nuova</a></div>'
+      : '<div class="cru-vuoto">' + esc(testoSenzaGiustificativo(m)) + '</div>')
+  } catch (e) {
+    html('scontrino-corpo', '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">' + esc(e.message || String(e)) + '</div></div>')
+  }
+}
+function chiudiScontrinoOverlay() {
+  var o = el('scontrino-overlay'); if (o) o.style.display = 'none'
+  html('scontrino-corpo', '')
+}
+
+// Nella finestra «Classifica»: la foto accanto al modulo, o l'avviso.
+async function disegnaDocumentoClassifica(m) {
+  var box = el('cls-documento')
+  if (!box) return
+  if (classifyMode !== 'single' || !m || m.origine_tipo !== 'spesa') { box.innerHTML = ''; return }
+  var g = statoGiustificativo(m)
+  if (g.tipo === 'nessuno') {
+    box.innerHTML = '<div class="cls-doc-box senza"><div class="giust-manca">' + esc(testoSenzaGiustificativo(m)) + '</div>' +
+      '<div class="form-hint">La classificazione si salva lo stesso. L\'avviso resta sulla riga anche dopo, così sai quali ' +
+      'documenti esistono solo su carta.</div></div>'
+    return
+  }
+  try { await loadImpostazioniConta() } catch (_) { /* sotto: lettura non attiva */ }
+  if (classifyTargets[0] !== m) return
+  var id = esc(String(m.origine_id))
+  var aiOn = letturaAutomaticaAttiva()
+  var stato = g.tipo === 'copia'
+    ? '📎 <strong>Giustificativo conservato nella Pre-contabilità.</strong>'
+    : '📎 <strong>Giustificativo nell\'App Cantieri.</strong> Alla lettura o alla conferma se ne fa una copia qui: ' +
+      'senza la copia la classificazione non si salva. L\'originale non si tocca.'
+  box.innerHTML = '<div class="cls-doc-box">' +
+    '<div class="cls-doc-anteprima" id="cls-doc-anteprima" title="Apri grande" onclick="apriGiustificativoSpesa(\'' + id + '\')">' +
+      loadingRow('Foto…') + '</div>' +
+    '<div class="cls-doc-testo"><div>' + stato + '</div>' +
+      (aiOn ? '' : '<div class="form-hint">🤖 Lettura automatica non attiva: imposta l\'indirizzo del Worker in ' +
+        '«Impostazioni ditta» → «Lettura automatica delle fatture».</div>') +
+      '<div class="form-actions" style="margin-top:8px">' +
+        '<button type="button" class="btn-secondary" onclick="apriGiustificativoSpesa(\'' + id + '\')">🔍 Apri grande</button>' +
+        (aiOn ? '<button type="button" class="btn-secondary" id="cls-ai-btn" onclick="leggiScontrinoSpesa()">🤖 Leggi lo scontrino</button>' : '') +
+      '</div></div></div>'
+  try {
+    var u = await urlGiustificativo(m)
+    if (classifyTargets[0] === m) html('cls-doc-anteprima', u ? anteprimaGiustificativoHtml(u, false) : '')
+  } catch (e) {
+    if (classifyTargets[0] === m) html('cls-doc-anteprima', '<span class="giust-manca">❌ ' + esc(e.message || String(e)) + '</span>')
+  }
+}
+// In blocco: quante foto si copieranno, quante spese non hanno giustificativo.
+function notaGiustificativiBloccoHtml(lista) {
+  var spese = (lista || []).filter(function (m) { return m.origine_tipo === 'spesa' })
+  if (!spese.length) return ''
+  var daCopiare = spese.filter(function (m) { var g = statoGiustificativo(m); return g.tipo === 'solo_app' || g.tipo === 'app_non_verificata' }).length
+  var senza = spese.filter(function (m) { return statoGiustificativo(m).tipo === 'nessuno' }).length
+  var pezzi = []
+  if (daCopiare) pezzi.push('📎 ' + daCopiare + (daCopiare === 1 ? ' foto si copia' : ' foto si copiano') + ' nella Pre-contabilità alla conferma: una spesa la cui copia non riesce resta da classificare, e lo dico')
+  if (senza) pezzi.push('⚠️ ' + senza + (senza === 1 ? ' spesa senza' : ' spese senza') + ' giustificativo digitale: si classificano lo stesso')
+  if (!pezzi.length) return ''
+  return '<div class="cls-doc-box senza">' + pezzi.map(function (p) { return '<div>' + esc(p) + '</div>' }).join('') + '</div>'
+}
+
+// ── La cifra da classificare ────────────────────────────────────────────────
+function importoDiClassifica(m) {
+  if (classifyMode === 'single' && m && classifyTargets[0] === m && importoSceltoClassifica != null) return importoSceltoClassifica
+  return m ? m.importo : null
+}
+// Le cifre fra cui scegliere: quella dell'operaio, quella già classificata
+// (in riclassifica), quella letta dallo scontrino. Le uguali sono una sola.
+function candidatiImporto(m) {
+  var c = [{ importo: safeNum(m.importo), et: 'scritto dall\'operaio nell\'App Cantieri' }]
+  if (m._class && spesaClassificata(m)) c.push({ importo: importoSpesa(m), et: 'quello classificato adesso' })
+  if (letturaScontrino && letturaScontrino.letto != null) c.push({ importo: letturaScontrino.letto, et: 'letto dallo scontrino' })
+  var out = []
+  c.forEach(function (x) {
+    if (x.importo == null) return
+    var k = round2(x.importo).toFixed(2)
+    var gia = out.filter(function (o) { return o.k === k })[0]
+    if (gia) { gia.et += ' = ' + x.et; return }
+    out.push({ k: k, importo: round2(x.importo), et: x.et })
+  })
+  return out
+}
+function disegnaSceltaImporto() {
+  var box = el('cls-importo-scelta')
+  if (!box) return
+  var m = classifyTargets[0]
+  if (classifyMode !== 'single' || !m || m.origine_tipo !== 'spesa') { box.innerHTML = ''; return }
+  var cand = candidatiImporto(m)
+  if (cand.length < 2) { box.innerHTML = ''; return }
+  var attuale = round2(safeNum(importoDiClassifica(m)) || 0).toFixed(2)
+  box.innerHTML = '<div class="importo-scelta" role="radiogroup" aria-label="Quale importo classificare">' +
+    '<div class="importo-scelta-titolo">⚠️ Due cifre diverse per la stessa spesa: scegli quale classificare</div>' +
+    cand.map(function (x) {
+      return '<label class="importo-scelta-opz"><input type="radio" name="cls-importo-scelta" value="' + x.k + '"' +
+        (x.k === attuale ? ' checked' : '') + ' onchange="scegliImportoClassifica(' + x.k + ')"> <strong>' +
+        esc(fmtNumIt(x.importo) + ' ' + (m.valuta || 'CHF')) + '</strong> — ' + esc(x.et) + '</label>'
+    }).join('') +
+    '<div class="form-hint">Si classifica la cifra scelta. Nell\'App Cantieri resta quella dell\'operaio: là non si scrive.</div></div>'
+}
+function scegliImportoClassifica(v) {
+  var m = classifyTargets[0]
+  if (!m) return
+  var n = safeNum(v)
+  var operaio = safeNum(m.importo)
+  importoSceltoClassifica = (n == null || (operaio != null && Math.abs(n - operaio) < 0.005)) ? null : round2(n)
+  // La differenza si scrive nella nota (proposta: si può cancellare prima di
+  // confermare). Dalla sola classificazione non si capirebbe perché le due
+  // cifre non coincidono.
+  var nota = el('cls-note')
+  if (nota && importoSceltoClassifica != null && operaio != null && nota.value.indexOf('nell\'App Cantieri ') === -1) {
+    nota.value = (nota.value.trim() ? nota.value.trim() + ' · ' : '') + 'Classificata per ' + fmtNumIt(importoSceltoClassifica) +
+      ' (nell\'App Cantieri ' + fmtNumIt(operaio) + ')'
+  }
+  recalcIvaDisplay()
+  if (divisioneAttiva) aggiornaQuadratura()
+  if (letturaScontrino) disegnaPropostaScontrino()
+}
+
+// ── «🤖 Leggi lo scontrino» ─────────────────────────────────────────────────
+async function classificaELeggi(i) {
+  await openClassifyPanel(i)
+  await leggiScontrinoSpesa()
+}
+function contiPerScontrino() {
+  return (contiCache || []).filter(function (c) { return c.tipo === 'costo' && c.attivo !== false })
+}
+function contoDaCodice(codice) {
+  var k = String(codice == null ? '' : codice).trim()
+  if (!k) return null
+  return contiPerScontrino().filter(function (c) { return String(c.codice_conto) === k })[0] || null
+}
+function testoPromptScontrino(conti) {
+  return 'Hai davanti la foto (o il PDF) del giustificativo di una spesa di cantiere in Svizzera:\n' +
+    'uno scontrino, una ricevuta, una bolla o una fattura. Leggilo e rispondi SOLO con un oggetto JSON,\n' +
+    'senza testo prima o dopo, senza backtick:\n\n' +
+    '{\n' +
+    '  "importo_totale": il TOTALE pagato, IVA compresa, come numero con il punto (es. 100.02), o null,\n' +
+    '  "valuta": "CHF" o "EUR" o null,\n' +
+    '  "fornitore": "il nome del negozio o della ditta" o null,\n' +
+    '  "data": "AAAA-MM-GG" o null,\n' +
+    '  "aliquota_iva": il numero dell\'aliquota stampata (es. 8.1) o null,\n' +
+    '  "conto_codice": "il codice di UNO dei conti qui sotto, il più adatto" o null,\n' +
+    '  "conto_perche": "una frase: cosa è stato comprato e perché quel conto",\n' +
+    '  "note_lettura": "cosa non si legge bene, o null"\n' +
+    '}\n\n' +
+    'REGOLE:\n' +
+    '- L\'importo è il totale finale pagato: non un subtotale, non il contante dato, non il resto.\n' +
+    '- Non inventare: quello che non si legge è null.\n' +
+    '- Il conto si sceglie SOLO da questo elenco (codice · descrizione):\n' +
+    conti.map(function (c) { return '  ' + c.codice_conto + ' · ' + c.descrizione }).join('\n') + '\n'
+}
+// La foto si rimpicciolisce (lato lungo LATO_SCONTRINO_PX, JPEG): il modello
+// la legge uguale, e il costo non sale con la dimensione del file.
+async function rimpicciolisciImmagine(blob, lato) {
+  var url = URL.createObjectURL(blob)
+  try {
+    var img = await new Promise(function (ok, ko) {
+      var i = new Image()
+      i.onload = function () { ok(i) }
+      i.onerror = function () { ko(new Error('la foto non si apre nel browser')) }
+      i.src = url
+    })
+    var w = img.naturalWidth, h = img.naturalHeight
+    var s = Math.min(1, lato / Math.max(w, h))
+    if (s >= 1 && blob.type === 'image/jpeg') return blob
+    var cv = document.createElement('canvas')
+    cv.width = Math.max(1, Math.round(w * s)); cv.height = Math.max(1, Math.round(h * s))
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height)
+    var piccola = await new Promise(function (ok) { cv.toBlob(ok, 'image/jpeg', 0.85) })
+    return piccola || blob
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+function numeroLetto(v) {
+  if (v == null || v === '') return null
+  if (typeof v === 'number') return isFinite(v) ? round2(v) : null
+  var n = parseImportoIt(String(v))
+  return (n == null || isNaN(n)) ? null : round2(n)
+}
+async function leggiScontrinoSpesa() {
+  if (letturaScontrinoInCorso) return
+  var m = classifyTargets[0]
+  if (classifyMode !== 'single' || !m || m.origine_tipo !== 'spesa') return
+  letturaScontrinoInCorso = true
+  var btn = el('cls-ai-btn')
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Lettura…' }
+  try {
+    try { await loadImpostazioniConta() } catch (_) { /* sotto lo dice */ }
+    if (!letturaAutomaticaAttiva()) {
+      throw new Error('Lettura automatica non attiva: imposta l\'indirizzo del Worker in «Impostazioni ditta» → «Lettura automatica delle fatture».')
+    }
+    // Prima la copia: si legge il NOSTRO file, e da qui in poi è conservato.
+    html('cls-ai', loadingRow('Copio il giustificativo nella Pre-contabilità…'))
+    var copia
+    try { copia = await assicuraCopiaAllegatoSpesa(m) }
+    catch (eC) { throw new Error('Il giustificativo non si è copiato nella Pre-contabilità — ' + (eC.message || eC) + '. Non ho letto niente.') }
+    if (!copia) throw new Error('Questa spesa non ha un giustificativo digitale: non c\'è niente da leggere.')
+    if (classifyTargets[0] !== m) return
+    disegnaDocumentoClassifica(m)
+    html('cls-ai', loadingRow('Leggo lo scontrino… (qualche secondo)'))
+    const { data: blob, error: eD } = await sb.storage.from(STORAGE_BUCKET).download(copia.path)
+    if (eD || !blob) throw new Error('La copia non si scarica: ' + ((eD && eD.message) || 'file vuoto'))
+    var tipo = tipoMediaAllegato(copia.nome_file || copia.path, blob.type)
+    if (!tipo) throw new Error('Il giustificativo non è una foto né un PDF: la lettura non lo sa leggere.')
+    var file = /^image\//.test(tipo) ? await rimpicciolisciImmagine(blob, LATO_SCONTRINO_PX) : new Blob([blob], { type: tipo })
+    if (!file.type) file = new Blob([file], { type: tipo })
+    if (file.size / (1024 * 1024) > LIMITE_LETTURA_MB) throw new Error('Il file pesa più di ' + LIMITE_LETTURA_MB + ' MB: la lettura non parte.')
+    await ensureContiIva()
+    var risposta = await chiediLetturaAlWorker(file, testoPromptScontrino(contiPerScontrino()))
+    var dati
+    try { dati = estraiJson(risposta.testo) }
+    catch (eJ) { throw new Error('La risposta non si legge (' + (eJ.message || eJ) + '). Riprova.') }
+    if (classifyTargets[0] !== m) return      // la finestra è stata chiusa o cambiata intanto
+    letturaScontrino = {
+      dati: dati || {}, letto: numeroLetto(dati && dati.importo_totale),
+      chf: costoStimatoChf(risposta.input_tokens, risposta.output_tokens),
+      input: risposta.input_tokens || 0, output: risposta.output_tokens || 0, nome: copia.nome_file || ''
+    }
+    disegnaSceltaImporto()
+    disegnaPropostaScontrino()
+  } catch (e) {
+    html('cls-ai', '<div class="fase-banner err" role="alert" style="margin-bottom:14px"><span class="icon" aria-hidden="true">❌</span>' +
+      '<div class="msg">' + esc(e.message || String(e)) + '</div></div>')
+  } finally {
+    letturaScontrinoInCorso = false
+    var b2 = el('cls-ai-btn')
+    if (b2) { b2.disabled = false; b2.textContent = '🤖 Leggi lo scontrino' }
+  }
+}
+function disegnaPropostaScontrino() {
+  var m = classifyTargets[0], L = letturaScontrino
+  if (!m || !L) { html('cls-ai', ''); return }
+  var d = L.dati || {}
+  var operaio = safeNum(m.importo)
+  var righe = []
+  if (L.letto == null) {
+    righe.push('⚠️ L\'importo non si legge sullo scontrino: resta quello dell\'operaio, ' + esc(fmtNumIt(operaio)) + ' ' + esc(m.valuta || 'CHF') + '.')
+  } else if (operaio != null && Math.abs(L.letto - operaio) < 0.005) {
+    righe.push('✅ Importo letto <strong>' + esc(fmtNumIt(L.letto)) + '</strong>: uguale a quello scritto dall\'operaio.')
+  } else {
+    righe.push('⚠️ Importo letto <strong>' + esc(fmtNumIt(L.letto)) + '</strong>, l\'operaio ha scritto <strong>' +
+      esc(fmtNumIt(operaio)) + '</strong>. Scegli qui sopra quale classificare: non correggo niente da solo.')
+  }
+  var valLetta = String(d.valuta || '').trim().toUpperCase()
+  if (valLetta && valLetta !== String(m.valuta || 'CHF').toUpperCase()) {
+    righe.push('⚠️ Sullo scontrino la valuta è <strong>' + esc(valLetta) + '</strong>, nell\'App Cantieri ' + esc(m.valuta || 'CHF') + '.')
+  }
+  var conto = contoDaCodice(d.conto_codice)
+  var contoScelto = el('cls-conto') ? el('cls-conto').value : ''
+  if (conto) {
+    righe.push('🏷 Conto proposto <strong>' + esc(conto.codice_conto + ' · ' + conto.descrizione) + '</strong>' +
+      (d.conto_perche ? ' — ' + esc(testoVoce(d.conto_perche)) : '') + ' ' +
+      (contoScelto === conto.id ? '<span class="dim">(è quello scelto)</span>'
+        : '<button type="button" class="icon-btn" onclick="usaContoScontrino(\'' + esc(conto.id) + '\')">Usa questo conto</button>'))
+  } else if (testoVoce(d.conto_codice)) {
+    righe.push('🏷 Conto proposto «' + esc(testoVoce(d.conto_codice)) + '»: non è fra i conti di costo attivi, non lo propongo.')
+  }
+  var dataLetta = validaData(d.data)
+  var pezzi = []
+  if (testoVoce(d.fornitore)) pezzi.push('fornitore <strong>' + esc(testoVoce(d.fornitore)) + '</strong>')
+  if (dataLetta) {
+    pezzi.push('data <strong>' + esc(fmtDate(dataLetta)) + '</strong>' +
+      (m.data && dataLetta !== m.data ? ' <span class="giust-manca">⚠️ nell\'App Cantieri è il ' + esc(fmtDate(m.data)) + '</span>' : ''))
+  }
+  if (pezzi.length) {
+    righe.push('🧾 Sullo scontrino: ' + pezzi.join(' · ') +
+      ' <button type="button" class="icon-btn" onclick="aggiungiScontrinoAllaNota()">📝 Aggiungi alla nota</button>')
+  }
+  if (testoVoce(d.note_lettura) && testoVoce(d.note_lettura) !== 'null') righe.push('🔎 ' + esc(testoVoce(d.note_lettura)))
+  html('cls-ai', '<div class="cls-ai-box"><div class="cls-ai-titolo">🤖 Letto dallo scontrino — è una proposta</div>' +
+    righe.map(function (r) { return '<div class="cls-ai-riga">' + r + '</div>' }).join('') +
+    '<div class="form-hint">Niente è cambiato da solo: decidi tu, poi «✅ Conferma classificazione».</div>' +
+    '<div class="lettura-costo">ℹ️ Costo stimato <strong>' + esc(costoLeggibile(L.chf)) + '</strong>' +
+      '<span class="dim"> (' + esc(String(L.input)) + ' token letti, ' + esc(String(L.output)) + ' scritti)</span></div></div>')
+}
+function usaContoScontrino(id) {
+  if (!el('cls-conto')) return
+  el('cls-conto').innerHTML = buildContoOptions('', id)
+  aggiornaGruppoDaConto(true)
+  recalcIvaDisplay()
+  if (divisioneAttiva) showClsBanner('warn', 'Il documento è diviso: il conto si sceglie riga per riga, qui sotto.')
+  disegnaPropostaScontrino()
+}
+function aggiungiScontrinoAllaNota() {
+  var L = letturaScontrino, nota = el('cls-note')
+  if (!L || !nota) return
+  var d = L.dati || {}
+  var pezzi = []
+  if (testoVoce(d.fornitore)) pezzi.push(testoVoce(d.fornitore))
+  var dl = validaData(d.data)
+  if (dl) pezzi.push(fmtDate(dl))
+  if (!pezzi.length) return
+  var t = 'Scontrino: ' + pezzi.join(', ')
+  if (nota.value.indexOf(t) !== -1) return
+  nota.value = (nota.value.trim() ? nota.value.trim() + ' · ' : '') + t
+}
+
+// ── Le già classificate senza copia ─────────────────────────────────────────
+function speseDaCopiare() {
+  if (!allegatiDaClassLetti) return []
+  return (classificatiTutti || []).filter(function (m) {
+    var g = statoGiustificativo(m)
+    return g && g.tipo === 'solo_app'
+  })
+}
+function boxGiustificativiDaCopiareHtml() {
+  var lista = speseDaCopiare()
+  if (!lista.length) return ''
+  return '<div class="fase-banner warn" role="status" style="margin-bottom:16px"><span class="icon" aria-hidden="true">⚠️</span>' +
+    '<div class="msg">' + lista.length + (lista.length === 1 ? ' spesa classificata ha' : ' spese classificate hanno') +
+      ' il giustificativo solo nell\'App Cantieri.' +
+      '<small>Finché il file là esiste si copia qui con un clic; se venisse cancellato là, il giustificativo andrebbe perso. ' +
+      'L\'originale non si tocca.</small>' +
+      '<div style="margin-top:8px"><button type="button" class="btn-secondary" onclick="copiaTuttiGiustificativi()">📎 Copia tutti (' +
+        lista.length + ')</button></div></div></div>'
+}
+async function copiaOraGiustificativo(id) {
+  var m = spesaDaId(id)
+  if (!m) return
+  try {
+    await richiediSessione('il giustificativo NON è stato copiato')
+    await assicuraCopiaAllegatoSpesa(m)
+    await loadDaClassificare()
+    html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
+      '<div class="msg">Giustificativo copiato: «' + esc(m.descrizione) + '» è conservato nella Pre-contabilità. L\'originale non è stato toccato.</div></div>')
+  } catch (e) {
+    window.alert('Giustificativo NON copiato: ' + (e.message || e))
+  }
+}
+async function copiaTuttiGiustificativi() {
+  var lista = speseDaCopiare()
+  if (!lista.length) return
+  try { await richiediSessione('i giustificativi NON sono stati copiati') } catch (e) { window.alert(e.message || e); return }
+  var fatti = 0, falliti = []
+  for (var i = 0; i < lista.length; i++) {
+    html('movimenti-banner', '<div class="fase-banner warn" role="status"><span class="icon" aria-hidden="true">⏳</span>' +
+      '<div class="msg">Copio il giustificativo ' + (i + 1) + ' di ' + lista.length + '…</div></div>')
+    try { await assicuraCopiaAllegatoSpesa(lista[i]); fatti++ }
+    catch (e) { falliti.push('«' + lista[i].descrizione + '» del ' + fmtDate(lista[i].data) + ' (' + (e.message || e) + ')') }
+  }
+  await loadDaClassificare()
+  html('movimenti-banner', '<div class="fase-banner ' + (falliti.length ? 'warn' : 'ok') + '" role="status">' +
+    '<span class="icon" aria-hidden="true">' + (falliti.length ? '⚠️' : '✅') + '</span><div class="msg">' +
+    fatti + (fatti === 1 ? ' giustificativo copiato' : ' giustificativi copiati') + ' nella Pre-contabilità.' +
+    (falliti.length ? '<small>NON copiati: ' + esc(falliti.join(' · ')) + '</small>' : '') + '</div></div>')
+}
+// Dopo «Conferma classificazione»: cosa è successo, detto.
+function messaggioDopoClassifica(modo, salvati, esclusi, primo) {
+  if (esclusi && esclusi.length) {
+    html('movimenti-banner', '<div class="fase-banner warn" role="alert"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">' +
+      'Classificate ' + salvati.length + '. NON classificate ' + esclusi.length + ', perché il giustificativo non si è copiato ' +
+      'nella Pre-contabilità: restano qui sotto, da classificare.<small>' +
+      esc(esclusi.map(function (x) { return '«' + x.m.descrizione + '»: ' + x.motivo }).join(' · ')) + '</small></div></div>')
+    return
+  }
+  if (modo === 'single' && primo && primo.origine_tipo === 'spesa') {
+    var g = statoGiustificativo(primo)
+    html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span><div class="msg">' +
+      'Classificata «' + esc(primo.descrizione) + '». ' + (g && g.tipo === 'copia'
+        ? '📎 Il giustificativo è conservato nella Pre-contabilità.'
+        : esc(testoSenzaGiustificativo(primo)) + ': l\'avviso resta sulla riga.') + '</div></div>')
+  }
+}
+
+// ══ 88 · «↩️ TOGLI LA CLASSIFICAZIONE» ═══════════════════════════════════════
+// La riga torna fra quelle da classificare (e, se è dell'App Cantieri, da lì si
+// può scartare). La classificazione RESTA in tm_conta_classificazioni, con lo
+// stato 'tolta', il motivo e la data — come le fatture annullate e gli
+// stralci: la funzione del database tm_conta_togli_classificazione cambia lo
+// stato di tutte le righe del documento insieme. Esce da somme, elenchi ed
+// export perché la policy di lettura non mostra le righe 'tolta' (un punto
+// solo: anche la vista dei flussi, che è security_invoker). Lo storico si
+// legge con tm_conta_classificazioni_tolte(). Dal SQL Editor le righe si vedono.
+// Già consegnata al commercialista: avviso con la data della consegna e una
+// conferma in più (anche il database la pretende).
+var classTolteCache = [], classTolteSenzaTabella = false
+
+async function loadClassTolte() {
+  if (!currentAziendaId) return []
+  const { data, error } = await sb.rpc('tm_conta_classificazioni_tolte')
+  if (error) {
+    var msg = String(error.message || error) + ' ' + String(error.code || '')
+    if (/tm_conta_classificazioni_tolte/.test(msg) || /PGRST202/.test(msg)) {
+      classTolteCache = []; classTolteSenzaTabella = true   // SQL della 88 non ancora lanciato
+      return classTolteCache
+    }
+    throw error
+  }
+  classTolteSenzaTabella = false
+  classTolteCache = raggruppaTolte(data || [])
+  return classTolteCache
+}
+// Le righe tolte (una per riga di classificazione) diventano una voce per
+// documento e per volta: le righe di un documento diviso si tolgono insieme.
+function raggruppaTolte(righe) {
+  var perVoce = {}, ordine = []
+  righe.forEach(function (r) {
+    var k = r.origine_tipo + ':' + r.origine_id + ':' + r.tolta_il
+    if (!perVoce[k]) {
+      perVoce[k] = { origine_tipo: r.origine_tipo, origine_id: r.origine_id, righe: [], importo: 0,
+        descrizione: r.tolta_descrizione || null, data_origine: r.tolta_data_origine || null,
+        motivo: r.tolta_motivo || '', tolta_il: r.tolta_il,
+        era_consegnata: r.tolta_stato_prima === 'bloccato' || r.tolta_stato_prima === 'esportato',
+        consegnata_il: r.tolta_consegnata_il || null }
+      ordine.push(k)
+    }
+    var v = perVoce[k]
+    v.righe.push(r)
+    v.importo = round2(v.importo + (safeNum(r.imponibile) || 0) + (safeNum(r.iva_importo) || 0))
+    if (r.tolta_stato_prima === 'bloccato' || r.tolta_stato_prima === 'esportato') v.era_consegnata = true
+  })
+  return ordine.map(function (k) { var v = perVoce[k]; v.n_righe = v.righe.length; return v })
+}
+
+// Quando è stato consegnato il periodo di questa data (l'ultimo «Segna come
+// consegnato» che la comprende). null se non si sa.
+async function dataConsegnaDi(dataDoc) {
+  if (!dataDoc || !currentAziendaId) return null
+  try {
+    const { data, error } = await sb.from('tm_conta_export_log').select('created_at')
+      .eq('azienda_id', currentAziendaId).lte('periodo_da', dataDoc).gte('periodo_a', dataDoc)
+      .order('created_at', { ascending: false }).limit(1)
+    if (error) throw error
+    return (data && data[0]) ? data[0].created_at : null
+  } catch (_) { return null }
+}
+
+function messaggioTogli(e) {
+  var m = String((e && e.message) || e || '')
+  if (sqlFase88Mancante(e) || /PGRST202|Could not find the function/i.test(m + ' ' + String((e && e.code) || ''))) {
+    return MSG_SQL88 + '. Non è cambiato niente.'
+  }
+  return m
+}
+
+async function togliClassificazione(j) {
+  var m = classificatiList[j]
+  if (!m || !m._class) return
+  try {
+    await richiediSessione('la classificazione NON è stata tolta')
+    var tot = m.origine_tipo === 'spesa' ? importoSpesa(m) : (m._totClass != null ? m._totClass : null)
+    var riassunto = '«' + m.descrizione + '» · ' + fmtDate(m.data) + (tot != null ? ' · ' + fmtNumIt(tot) + ' CHF' : '') +
+      '\nConto: ' + contoLabel(m._class.conto_id)
+    if (m._consegnata) {
+      var quando = await dataConsegnaDi(m.data)
+      var ok = window.confirm('⚠️ GIÀ CONSEGNATA AL COMMERCIALISTA' + (quando ? ' il ' + fmtDateTime(quando) : '') + '.\n\n' +
+        riassunto + '\n\nSe la togli, i tuoi conti non sono più uguali a quelli che ha lui: andrà avvisato.\n' +
+        'La classificazione resta nel database con lo stato «tolta»: si potrà sempre confrontare con la sua.\n\nToglierla lo stesso?')
+      if (!ok) return
+    }
+    var motivo = window.prompt('Togliere la classificazione di questa riga?\n\n' + riassunto + '\n\n' +
+      'La riga torna fra quelle da classificare' + ((m.origine_tipo === 'spesa' || m.origine_tipo === 'regia') ? ' (da lì si può anche scartare)' : '') + '.\n' +
+      'La classificazione NON si cancella: resta nel database con lo stato «tolta», il motivo e la data, ed esce da somme, ' +
+      'elenchi ed export. La trovi nello storico «↩️ Classificazioni tolte», in fondo alla pagina.\n\n' +
+      'Scrivi PERCHÉ la togli (obbligatorio):', '')
+    if (motivo === null) return
+    motivo = String(motivo).trim()
+    if (motivo.length < 5) { window.alert('Non tolta: il motivo è obbligatorio (almeno 5 caratteri).'); return }
+    const { error } = await sb.rpc('tm_conta_togli_classificazione', {
+      p_origine_tipo: m.origine_tipo, p_origine_id: m.origine_id, p_motivo: motivo,
+      p_descrizione: m.descrizione || null, p_data_origine: m.data || null,
+      p_conferma_consegnata: !!m._consegnata
+    })
+    if (error) throw error
+    classCantiereMap = null
+    exportDataset = null
+    await loadDaClassificare()
+    await refreshDaClassificareCount()
+    html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
+      '<div class="msg">Classificazione tolta: «' + esc(m.descrizione) + '» è di nuovo fra quelle da classificare.' +
+      '<small>La classificazione di prima resta nel database con lo stato «tolta»: è nello storico «↩️ Classificazioni tolte», in fondo alla pagina.' +
+      (m._consegnata ? ' Era già consegnata al commercialista: avvisalo.' : '') + '</small></div></div>')
+  } catch (e) {
+    window.alert('Classificazione NON tolta: ' + messaggioTogli(e))
+  }
+}
+
+function nomeTipoOrigine(t) {
+  return { spesa: '🏗️ Spesa (App Cantieri)', regia: '🏗️ Regia (App Cantieri)', proprio: '✍️ Movimento inserito a mano',
+           acquisto: '📥 Fattura d\'acquisto', fattura: '🧾 Fattura emessa' }[t] || t
+}
+function storicoTolteHtml() {
+  var lista = (classTolteCache || []).slice().reverse()
+  if (!lista.length) return ''
+  var righe = lista.map(function (s) {
+    var conti = (Array.isArray(s.righe) ? s.righe : []).map(function (r) { return contoLabel(r.conto_id) })
+    return '<tr>' +
+      '<td>' + esc(s.descrizione || '—') + '<div style="margin-top:4px" class="dim">' + esc(nomeTipoOrigine(s.origine_tipo)) + '</div></td>' +
+      '<td class="dim">' + esc(s.data_origine ? fmtDate(s.data_origine) : '—') + '</td>' +
+      '<td class="num">' + (s.importo != null ? esc(fmtNumIt(s.importo)) + ' CHF' : '—') + '</td>' +
+      '<td>' + esc(conti.join(', ') || '—') + (s.n_righe > 1 ? ' <span class="dim">(' + s.n_righe + ' righe)</span>' : '') + '</td>' +
+      '<td>«' + esc(s.motivo) + '»<div class="dim" style="font-size:11px">tolta il ' + esc(fmtDateTime(s.tolta_il)) + '</div></td>' +
+      '<td>' + (s.era_consegnata
+        ? '<strong>⚠️ era già consegnata' + (s.consegnata_il ? ' (' + esc(fmtDateTime(s.consegnata_il)) + ')' : '') + '</strong>'
+        : '<span class="dim">non consegnata</span>') + '</td>' +
+    '</tr>'
+  }).join('')
+  return '<details class="card storico-tolte"><summary class="card-title">↩️ Classificazioni tolte ' +
+      badge('info', lista.length + '') + '</summary>' +
+    '<div class="form-hint">Le classificazioni tolte con «↩️ Togli la classificazione». Restano nel database (stato «tolta») ' +
+      'con conto, importi, cantiere, motivo e data: non si cambiano e non si cancellano, ma non contano più in somme, ' +
+      'elenchi ed export. Il documento, se c\'è ancora, è tornato fra quelli da classificare.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>Documento</th><th>Data</th><th style="text-align:right">Importo</th>' +
+      '<th>Conto</th><th>Motivo</th><th>Consegna</th></tr></thead><tbody>' + righe + '</tbody></table></div>' +
   '</details>'
 }
 
@@ -1751,11 +2491,12 @@ function recalcIvaDisplay() {
   var alq = getSelectedAliquota()
   if (classifyMode === 'single') {
     var m = classifyTargets[0]
-    if (!m || m.importo == null) {
+    var impScelto = importoDiClassifica(m)   // 88 — la cifra scelta (operaio o scontrino)
+    if (!m || impScelto == null) {
       box.innerHTML = '<div class="calc-box"><div class="calc-label">Importo non disponibile</div><div class="calc-value">—</div></div>'
       return
     }
-    box.innerHTML = calcBoxes(calcolaIva(m.importo, alq, ivaInclusaState), m.valuta)
+    box.innerHTML = calcBoxes(calcolaIva(impScelto, alq, ivaInclusaState), m.valuta)
     return
   }
   // bulk: somma indicativa (per ciascun movimento viene comunque salvato il suo)
@@ -1815,6 +2556,14 @@ async function openSingleClassify(m, prefill) {
   if (!m) return
   classifyMode = 'single'
   classifyTargets = [m]
+  // 88 — la cifra da classificare e la lettura AI ripartono da capo. In
+  // riclassifica vale la cifra già classificata, se è diversa da quella
+  // dell'operaio: riaprire non deve riportarla indietro in silenzio.
+  letturaScontrino = null
+  importoSceltoClassifica = (prefill && m.origine_tipo === 'spesa' && spesaClassificata(m) &&
+    Math.abs(importoSpesa(m) - (safeNum(m.importo) || 0)) >= 0.005) ? importoSpesa(m) : null
+  html('cls-ai', '')
+  disegnaSceltaImporto()
 
   el('cls-title').textContent = prefill ? '✏️ Riclassifica movimento' : '🏷 Classifica movimento'
   el('cls-banner').innerHTML = ''
@@ -1837,6 +2586,7 @@ async function openSingleClassify(m, prefill) {
 
   el('classify-overlay').style.display = 'flex'
   registraAperturaModale('classify-overlay')
+  disegnaDocumentoClassifica(m)   // 88 — la foto accanto al modulo (non si aspetta)
 
   await ensureContiIva()
   await loadCantieri()
@@ -1894,6 +2644,9 @@ async function openBulkPanel() {
   classifyMode = 'bulk'
   classifyTargets = idxs.map(function (i) { return daClassList[i] }).filter(Boolean)
   if (!classifyTargets.length) return
+  letturaScontrino = null; importoSceltoClassifica = null   // 88
+  html('cls-ai', ''); html('cls-importo-scelta', '')
+  html('cls-documento', notaGiustificativiBloccoHtml(classifyTargets))
 
   el('cls-title').textContent = '🏷 Classifica ' + classifyTargets.length + ' movimenti'
   el('cls-banner').innerHTML = ''
@@ -1937,6 +2690,8 @@ function closeClassifyPanel() {
   var o = el('classify-overlay')
   if (o) o.style.display = 'none'
   classifyTargets = []
+  letturaScontrino = null; importoSceltoClassifica = null   // 88
+  html('cls-ai', ''); html('cls-documento', ''); html('cls-importo-scelta', '')
   // FASE 25 — la divisione non deve sopravvivere alla chiusura: riaprendo un
   // altro documento si troverebbero le righe del precedente.
   divisioneAttiva = false
@@ -2178,7 +2933,7 @@ var divisioneAttiva = false
 // Il totale del documento aperto: e' il numero con cui deve quadrare la somma.
 function totaleDocumentoAperto() {
   var m = classifyTargets[0]
-  return m ? (safeNum(m.importo) || 0) : 0
+  return m ? (safeNum(importoDiClassifica(m)) || 0) : 0   // 88 — la cifra scelta
 }
 
 function nuovaRigaDivisione(importo, contoId, ivaId, cantiere, note) {
@@ -2450,7 +3205,32 @@ async function saveClassificazione() {
 
   var btn = el('cls-save-btn')
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
+  var esclusiCopia = []   // 88
+  var bersagli = classifyTargets.slice()
   try {
+    // 88 — PRIMA IL GIUSTIFICATIVO. Una spesa dell'App Cantieri con la foto si
+    // classifica solo se la copia nella Pre-contabilità è riuscita: senza, la
+    // classificazione non si salva e lo si dice. Senza foto si classifica (e
+    // l'avviso «nessun giustificativo digitale» resta sulla riga).
+    for (var cp = 0; cp < bersagli.length; cp++) {
+      var tc = bersagli[cp]
+      if (tc.origine_tipo !== 'spesa' || !tc._foto_path) continue
+      if (btn) btn.textContent = '⏳ Copio il giustificativo' + (bersagli.length > 1 ? ' ' + (cp + 1) + ' di ' + bersagli.length : '') + '…'
+      try { await assicuraCopiaAllegatoSpesa(tc) }
+      catch (eCp) { esclusiCopia.push({ m: tc, motivo: eCp.message || String(eCp) }) }
+    }
+    if (esclusiCopia.length && classifyMode === 'single') {
+      showClsBanner('err', 'Classificazione NON salvata: il giustificativo non si è copiato nella Pre-contabilità — ' +
+        esclusiCopia[0].motivo + '. L\'originale nell\'App Cantieri non è stato toccato.')
+      return
+    }
+    var bersagliOk = bersagli.filter(function (t) { return !esclusiCopia.some(function (x) { return x.m === t }) })
+    if (!bersagliOk.length) {
+      showClsBanner('err', 'Nessuna classificazione salvata: per nessuna delle spese scelte il giustificativo si è copiato. ' +
+        esclusiCopia.map(function (x) { return '«' + x.m.descrizione + '»: ' + x.motivo }).join(' · '))
+      return
+    }
+    if (btn) btn.textContent = '⏳ Salvataggio…'
     var rows = []
     if (divisioneAttiva && classifyMode === 'single') {
       // FASE 25 — una riga per destinazione. L'aliquota si prende dal codice
@@ -2468,12 +3248,12 @@ async function saveClassificazione() {
     } else if (classifyMode === 'single') {
       var m = classifyTargets[0]
       var cantiere = el('cls-cantiere') ? (el('cls-cantiere').value || null) : null
-      rows.push(buildClassRow(m, contoId, ivaId, calcolaIva(m.importo, alq, ivaInclusaState), ivaInclusaState, cantiere, note))
+      rows.push(buildClassRow(m, contoId, ivaId, calcolaIva(importoDiClassifica(m), alq, ivaInclusaState), ivaInclusaState, cantiere, note))
     } else {
       var comuneOn = el('cls-cantiere-comune-chk') && el('cls-cantiere-comune-chk').checked
       var cantiereComune = comuneOn && el('cls-cantiere-comune') ? (el('cls-cantiere-comune').value || null) : null
-      for (var i = 0; i < classifyTargets.length; i++) {
-        var t = classifyTargets[i]
+      for (var i = 0; i < bersagliOk.length; i++) {   // 88 — senza quelle la cui copia è fallita
+        var t = bersagliOk[i]
         var cant = comuneOn ? cantiereComune : (t.cantiere_id || null)
         rows.push(buildClassRow(t, contoId, ivaId, calcolaIva(t.importo, alq, ivaInclusaState), ivaInclusaState, cant, note))
       }
@@ -2553,16 +3333,18 @@ async function saveClassificazione() {
 
     // L'override del gruppo si scrive DOPO: la classificazione e' gia' salvata,
     // e un errore qui non deve farla perdere.
-    await salvaOverrideGruppo(classifyMode === 'single' ? [classifyTargets[0]] : classifyTargets)
+    await salvaOverrideGruppo(classifyMode === 'single' ? [classifyTargets[0]] : bersagliOk)
 
     // FASE 25 — le mappe delle classificazioni sono cambiate: chi le tiene in
     // cache deve rileggerle, altrimenti la pagina Cantieri mostra i costi di
     // prima della divisione.
     classCantiereMap = null
     exportDataset = null
+    var eraModo = classifyMode, primo = bersagliOk[0]   // 88 — per il messaggio dopo
     closeClassifyPanel()
     if (currentPage === 'movimenti') await loadDaClassificare()
     await refreshDaClassificareCount()
+    if (currentPage === 'movimenti') messaggioDopoClassifica(eraModo, bersagliOk, esclusiCopia, primo)   // 88
     // Se si stava riclassificando da una scheda, il riquadro si rifa' subito:
     // altrimenti mostrerebbe ancora il conto vecchio.
     var t0 = classifyTargets && classifyTargets[0]
@@ -14634,6 +15416,7 @@ async function initCruscottoPage() {
     await caricaPerResiduo(true)
     // 60 — i dati dell'export, per i conti. Se non si leggono la Situazione
     // resta com'e' e il riquadro dei conti dice perche'.
+    try { await loadScarti(true) } catch (_) { /* senza, le scartate contano fra le non classificate */ }   // 88
     try { perContoDataset = await loadExportDataset(true); perContoErrore = null }
     catch (eD) { perContoDataset = null; perContoErrore = eD.message || String(eD) }
     // 72 — la mappa dei conti per i ricavi per gruppo. Non bloccante: senza,
@@ -16375,10 +17158,16 @@ async function loadSpeseCantiere(force) {
   // Stessa guardia di loadContatti e loadCantieri.
   await richiediAccesso('loadSpeseCantiere')   // 52·B1: mai un elenco vuoto per silenzio
   try {
-    const { data, error } = await leggiTutto(function () { return sb.from('spese')
-      .select('id, cantiere_id, data, descrizione, importo, valuta, note').order('id') })
-    if (error) throw error
-    speseCantiereCache = data || []
+    // 88 — anche foto_path: senza, il pacchetto per il commercialista non
+    // trovava mai la foto delle spese («foto mai scattata» anche quando c'era).
+    var rSc = await leggiTutto(function () { return sb.from('spese')
+      .select('id, cantiere_id, data, descrizione, importo, valuta, note, foto_path').order('id') })
+    if (rSc.error) {
+      rSc = await leggiTutto(function () { return sb.from('spese')
+        .select('id, cantiere_id, data, descrizione, importo, valuta, note').order('id') })
+    }
+    if (rSc.error) throw rSc.error
+    speseCantiereCache = rSc.data || []
     segnaCacheOk('speseCantiere')
   } catch (e) {
     speseCantiereCache = speseCantiereCache || []   // non riuscita: il prossimo tentativo riprova
@@ -16760,6 +17549,72 @@ async function loadCantiereDocumenti(force) {
   return docCantiereMap
 }
 
+// ══ 88·3 — UNA CIFRA E UN CANTIERE PER LA SPESA DELL'APP CANTIERI ═══════════
+// Come il residuo nella 84: UNA funzione, e tutti la usano — pagina Cantieri e
+// margine, pacchetto per il commercialista, «Da classificare / Già
+// classificati» e la loro ricerca. La regola:
+//   · la spesa è classificata  -> le righe della classificazione: la loro cifra
+//     (imponibile + IVA) e il LORO cantiere, una quota per riga se è divisa;
+//   · non è classificata       -> l'importo e il cantiere dell'App Cantieri;
+//   · è scartata                -> fuori da cantiere e pacchetto (spesaScartata).
+// Le righe della classificazione sono quelle di classCantiereMap (le stesse
+// della pagina Cantieri): chi la usa la carica prima (loadMappaCantieri, o
+// loadDaClassificare che la riempie con le classificazioni appena lette).
+// Export Excel/CSV e «Costi per conto» leggono già le righe della
+// classificazione, una per riga, con il loro cantiere: la stessa cosa.
+function quoteSpesaCantieri(s) {
+  var id = s.origine_id != null ? s.origine_id : s.id
+  var app = safeNum(s.importo) || 0
+  var daClass = classCantiereMap ? (classCantiereMap[chiaveClassificazione('spesa', id)] || []) : []
+  if (daClass.length) {
+    var tot = daClass.reduce(function (x, q) { return x + (safeNum(q.quota) || 0) }, 0)
+    // Una riga sola senza importi (classificazione di prima della FASE 10):
+    // vale tutta la spesa, sul cantiere della classificazione. Come quotaCantiere.
+    if (daClass.length === 1 && Math.abs(tot) < 0.005 && Math.abs(app) >= 0.005) {
+      return [{ cantiere_id: daClass[0].cantiere_id || null, importo: round2(app), classificata: true }]
+    }
+    return daClass.map(function (q) {
+      return { cantiere_id: q.cantiere_id || null, importo: round2(safeNum(q.quota) || 0), classificata: true }
+    })
+  }
+  return [{ cantiere_id: s.cantiere_id || null, importo: round2(app), classificata: false }]
+}
+function importoSpesa(s) {
+  return round2(quoteSpesaCantieri(s).reduce(function (x, q) { return x + q.importo }, 0))
+}
+function spesaClassificata(s) { return quoteSpesaCantieri(s)[0].classificata }
+// Il cantiere (o i cantieri, con la loro quota) scritto per esteso.
+function cantiereSpesaTesto(s) {
+  var q = quoteSpesaCantieri(s)
+  var nome = function (id) { return id ? cantiereLabel(id) : 'ditta (nessun cantiere)' }
+  if (q.length === 1) return nome(q[0].cantiere_id)
+  return q.map(function (x) { return nome(x.cantiere_id) + ' ' + fmtNumIt(x.importo) }).join(' · ')
+}
+function spesaScartata(s) {
+  var id = s.origine_id != null ? s.origine_id : s.id
+  return !!scartoAttivo('scarto', 'spesa', id)
+}
+// La cifra e la riga «Cantiere» che gli elenchi di «Da classificare» mostrano.
+function importoRiga(m) { return m.origine_tipo === 'spesa' ? importoSpesa(m) : m.importo }
+function testoExtraRiga(m) { return m.origine_tipo === 'spesa' ? 'Cantiere: ' + cantiereSpesaTesto(m) : m.extra }
+// Le quote di classificazione per documento, da un elenco di righe: la stessa
+// mappa per la pagina Cantieri e per «Da classificare».
+function mappaQuoteDa(righe) {
+  var mappa = {}
+  ;(righe || []).forEach(function (c) {
+    var k = chiaveClassificazione(c.origine_tipo, c.origine_id)
+    if (!mappa[k]) mappa[k] = []
+    mappa[k].push({
+      cantiere_id: c.cantiere_id || null,
+      // La quota e' imponibile + IVA, cioe' la fetta di TOTALE assegnata a
+      // questa riga. Non l'imponibile da solo: Umberto non e' soggetto IVA,
+      // e per lui l'IVA sugli acquisti e' costo a tutti gli effetti.
+      quota: (safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0)
+    })
+  })
+  return mappa
+}
+
 async function loadMappaCantieri(force) {
   if (classCantiereMap && !force) return classCantiereMap
   classCantiereMap = {}
@@ -16770,17 +17625,7 @@ async function loadMappaCantieri(force) {
       .select('origine_tipo, origine_id, cantiere_id, imponibile, iva_importo')
       .eq('azienda_id', currentAziendaId).order('id') })
     if (error) throw error
-    ;(data || []).forEach(function (c) {
-      var k = chiaveClassificazione(c.origine_tipo, c.origine_id)
-      if (!classCantiereMap[k]) classCantiereMap[k] = []
-      classCantiereMap[k].push({
-        cantiere_id: c.cantiere_id || null,
-        // La quota e' imponibile + IVA, cioe' la fetta di TOTALE assegnata a
-        // questa riga. Non l'imponibile da solo: Umberto non e' soggetto IVA,
-        // e per lui l'IVA sugli acquisti e' costo a tutti gli effetti.
-        quota: (safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0)
-      })
-    })
+    classCantiereMap = mappaQuoteDa(data)   // 88 — la stessa mappa di «Da classificare»
   } catch (e) {
     console.warn('Collegamento cantieri non letto:', e.message || e)
   }
@@ -17009,10 +17854,15 @@ function contiCantiere(cantiereId) {
   })
 
   // ── Spese di App Cantieri: blocco separato, MAI sommato alle fatture
+  // 88 — UNA cifra e UN cantiere (quoteSpesaCantieri): la classificazione se
+  // c'è, anche divisa; altrimenti l'App Cantieri. Le scartate non contano.
   ;(speseCantiereCache || []).forEach(function (s) {
-    if (s.cantiere_id !== cantiereId) return
-    c.spese.importo += safeNum(s.importo) || 0
-    c.spese.righe.push(s)
+    if (spesaScartata(s)) return
+    quoteSpesaCantieri(s).forEach(function (q) {
+      if (q.cantiere_id !== cantiereId) return
+      c.spese.importo += q.importo
+      c.spese.righe.push(Object.assign({}, s, { importo: q.importo, _importoApp: s.importo, _classificata: q.classificata }))
+    })
   })
 
   // ── Regia non ancora fatturata: valore = quantita x prezzo_unitario
@@ -17313,6 +18163,8 @@ async function initCantieriPage() {
     await caricaPerResiduo(true)
     await loadMappaCantieri(true)
     await loadSpeseCantiere(true)
+    // 88 — le spese scartate non contano sul cantiere.
+    try { await loadScarti(true) } catch (eSc) { console.warn('Scarti non letti (le spese scartate contano):', eSc.message || eSc) }
     await loadRegiaCantiere(true)
     await loadGiornate(true)
     // FASE 58 — contratti e rate. Se fallisce (SQL non lanciato) la scheda lo
@@ -17652,8 +18504,9 @@ function apriElencoCantiere(chiave) {
       if (tipo === 'spesa') {
         // 75·9 — una spesa dell'App Cantieri non e' un documento di qui: non si
         // apre, e lo dice.
-        return rigaElencoCant(fmtDate(r.data), (r.descrizione || '—') + ' (dall\'App Cantieri)',
-                              fmtNumIt(safeNum(r.importo) || 0) + ' CHF')
+        return rigaElencoCant(fmtDate(r.data), (r.descrizione || '—') +
+                              (r._classificata ? ' (dall\'App Cantieri, classificata)' : ' (dall\'App Cantieri)'),
+                              fmtNumIt(safeNum(r.importo) || 0) + ' CHF')   // 88 — la quota della regola
       }
       if (tipo === 'regia') {
         var q = safeNum(r.quantita) || 0, pu = safeNum(r.prezzo_unitario) || 0
@@ -17910,15 +18763,18 @@ async function raccogliDocumentiPacchetto(da, a) {
   // vuota fa pensare che qualcosa sia andato perso.
   var speseCant = await speseCantierePeriodo(da, a)
   speseCant.forEach(function (sp) {
+    // 88 — la copia conservata nella Pre-contabilità, se c'è; altrimenti
+    // l'originale nell'App Cantieri.
+    var copie = allegatiDi('spese', sp.id)
     voci.push({
       sezione: 'spese_cantiere',
       etichetta: sp.descrizione || 'Spesa di cantiere',
-      data: sp.data, chi: cantiereLabel(sp.cantiere_id), importo: sp.importo,
-      allegati: sp.foto_path
-        ? [{ path: sp.foto_path, tipo: 'altro', nome_file: null }] : [],
+      data: sp.data, chi: cantiereSpesaTesto(sp), importo: importoSpesa(sp),   // 88 — una cifra, un cantiere
+      allegati: copie.length ? copie
+        : (sp.foto_path ? [{ path: sp.foto_path, tipo: 'altro', nome_file: null }] : []),
       id: sp.id,
-      bucket: 'cantiere-spese',
-      motivoSeManca: 'foto mai scattata'
+      bucket: copie.length ? null : 'cantiere-spese',
+      motivoSeManca: 'nessun giustificativo digitale (foto mai scattata)'
     })
   })
 
@@ -17977,7 +18833,11 @@ async function speseCantierePeriodo(da, a) {
   try {
     await loadSpeseCantiere()
     await loadCantieri()
-    return (speseCantiereCache || []).filter(function (s) { return inPeriodo(s.data, da, a) })
+    // 88 — cifra e cantiere della classificazione (quoteSpesaCantieri), e le
+    // scartate fuori.
+    await loadMappaCantieri(true)
+    try { await loadScarti(true) } catch (eSc) { console.warn('Scarti non letti (le spese scartate restano):', eSc.message || eSc) }
+    return (speseCantiereCache || []).filter(function (s) { return inPeriodo(s.data, da, a) && !spesaScartata(s) })
   } catch (e) {
     console.warn('Spese di cantiere non lette per il pacchetto:', e.message || e)
     return []
@@ -20694,6 +21554,7 @@ var FINESTRE = {
   'emit-confirm-overlay': { chiudi: 'closeEmitConfirm',        protetta: true },
   'scadenze-overlay':     { chiudi: 'chiudiFinestraScadenze',  protetta: false },
   'storia-overlay':       { chiudi: 'closeStoria',             protetta: false },
+  'scontrino-overlay':    { chiudi: 'chiudiScontrinoOverlay',  protetta: false },   // 88
   'versione-overlay':     { chiudi: 'chiudiVersione',          protetta: false }   // 83
 }
 
@@ -21438,6 +22299,7 @@ function calcolaPerConto(ds, da, a) {
     if (mov.stato_conferma === 'da_confermare') return
     if (!inPeriodo(mov.data, da, a)) return
     if (ds.classMap[mov.origine_tipo + ':' + mov.origine_id]) return
+    if (scartoAttivo('scarto', mov.origine_tipo, mov.origine_id)) return   // 88 — scartata: non è «da classificare»
     fuori.n++; fuori.importo += safeNum(mov.importo) || 0
   })
 
@@ -22933,7 +23795,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '86'
+var VERSIONE = '88'
 
 function controllaVersionePagina() {
   try {
@@ -23019,13 +23881,15 @@ function pulisciIndirizzoRicarica() {
 
 // ── Il costo ─────────────────────────────────────────────────────────────────
 // Prezzi di Anthropic per claude-sonnet-5, in dollari per MILIONE di token.
-// Verificati il 31 agosto 2026 su anthropic.com/pricing.
+// 88 — corretti il 13 ottobre 2026: 2 $ letti e 10 $ scritti. Fino alla 86
+// c'erano 3 e 15 (il Sonnet di prima), e i costi a schermo erano più alti del
+// 50 % del vero.
 //
 // I prezzi cambiano: sono qui, in un punto solo, e la data dice quando erano
 // veri. Se il conto a schermo smette di somigliare a quello che arriva
 // davvero, e' questa riga che va aggiornata.
-var PREZZO_INPUT_MTOK  = 3.00
-var PREZZO_OUTPUT_MTOK = 15.00
+var PREZZO_INPUT_MTOK  = 2.00
+var PREZZO_OUTPUT_MTOK = 10.00
 
 // Da dollari a franchi. Anche questo cambia, ed e' una stima: serve l'ordine di
 // grandezza, non il centesimo esatto.
