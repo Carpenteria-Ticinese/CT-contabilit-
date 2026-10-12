@@ -564,6 +564,21 @@ tbody td {
 .bz-lettura { right: 0; left: 0; border-style: dotted; border-color: #9ca3af; }
 .bz-lettura > span { color: #6b7280; }
 
+/* 83 — lo storico di una fattura corretta, e la finestra che mostra una
+   versione di prima com'era. */
+.versioni-box { border-left: 4px solid #f59e0b; }
+.versioni-tabella { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+.versioni-tabella td { padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: middle; }
+.versioni-tabella td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.versioni-avvisi { margin-top: 10px; font-size: 13px; color: #92400e; }
+.versioni-avvisi > div + div { margin-top: 4px; }
+.modal-card.modal-largo { max-width: 900px; }
+.versione-foglio {
+  margin-top: 12px; padding: 16px; background: #fff;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  max-height: 65vh; overflow: auto;
+}
+
 /* L'anteprima a schermo: la busta vera, rimpicciolita. */
 .busta-scala {
   overflow: auto;
