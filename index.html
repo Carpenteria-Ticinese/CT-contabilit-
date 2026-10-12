@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TimberMaster — Pre-Contabilità</title>
+  <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=86" />
+  <link rel="stylesheet" href="css/style.css?v=88" />
 </head>
-<body data-versione="86">
+<body data-versione="88">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -15,7 +15,7 @@
   <!-- ── Barra superiore mobile (nascosta su desktop) ──────────────────────── -->
   <div id="mobile-topbar">
     <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Apri/chiudi menu" aria-controls="sidebar">☰</button>
-    <span class="mobile-title">🌲 TimberMaster <span class="mobile-title-sub">Pre-Contabilità</span></span>
+    <span class="mobile-title">🌲 CT <span class="mobile-title-sub">Pre-contabilità</span></span>
   </div>
 
   <!-- ── Overlay per sidebar a scomparsa (mobile) ──────────────────────────── -->
@@ -25,8 +25,8 @@
   <aside id="sidebar" role="navigation" aria-label="Navigazione principale">
 
     <div class="sidebar-logo">
-      🌲 TimberMaster
-      <span>Pre-Contabilità</span>
+      🌲 CT Pre-contabilità
+      <span>Carpenteria Ticinese</span>
     </div>
 
     <div class="sidebar-section">Modulo</div>
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 86</span>
+      <span id="sidebar-versione">Versione 88</span>
     </div>
 
   </aside>
@@ -134,7 +134,7 @@
       <div class="login-wrap">
         <div class="login-card card">
           <div class="login-logo" aria-hidden="true">🌲</div>
-          <div class="login-title">TimberMaster — Pre-Contabilità</div>
+          <div class="login-title">CT Pre-contabilità</div>
           <div class="login-subtitle">Accedi con il tuo account</div>
 
           <div id="login-error" role="alert" aria-live="assertive" class="fase-banner err" style="display:none; margin-bottom:16px">
@@ -3163,6 +3163,12 @@
         <!-- Proposta (banner suggerimento) -->
         <div id="cls-suggest" class="cls-suggest" style="display:none"></div>
 
+        <!-- 88 — il giustificativo della spesa (foto o avviso), la scelta fra
+             due cifre diverse e la proposta letta dallo scontrino. -->
+        <div id="cls-documento"></div>
+        <div id="cls-importo-scelta"></div>
+        <div id="cls-ai" aria-live="polite"></div>
+
         <!-- CONTO -->
         <div class="form-group">
           <label for="cls-conto" class="form-label">
@@ -3343,6 +3349,25 @@
     </div>
   </div>
 
+  <!-- 88 — il giustificativo di una spesa, grande. Solo visualizzazione. -->
+  <div id="scontrino-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="scontrino-title">
+    <div class="modal-card" style="max-width:820px">
+      <div class="modal-header">
+        <div class="modal-title" id="scontrino-title">📎 Giustificativo della spesa</div>
+        <button class="modal-close" onclick="chiudiScontrinoOverlay()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="scontrino-sotto" class="dim" style="margin-bottom:10px"></div>
+        <div id="scontrino-corpo"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiScontrinoOverlay()">Chiudi</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="emit-confirm-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="emit-confirm-title" >
     <div class="modal-card" style="max-width:440px">
       <div class="modal-header">
@@ -3385,7 +3410,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=86"></script>
+<script src="js/app.js?v=88"></script>
 
 </body>
 </html>
