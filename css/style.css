@@ -579,6 +579,35 @@ tbody td {
   max-height: 65vh; overflow: auto;
 }
 
+/* 86 — da dove arriva una riga: sfondo E parola, mai solo il colore. */
+tr.riga-orig-cantieri > td { background: rgba(245, 158, 11, .10); }
+tr.riga-orig-cantieri > td:first-child { box-shadow: inset 4px 0 0 #d97706; }
+tr.riga-orig-ai > td { background: rgba(124, 58, 237, .08); }
+tr.riga-orig-ai > td:first-child { box-shadow: inset 4px 0 0 #7c3aed; }
+.orig-etichetta { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); white-space: nowrap; }
+.orig-etichetta.orig-cantieri { border-color: #d97706; color: #92400e; background: #fffbeb; }
+.orig-etichetta.orig-ai { border-color: #7c3aed; color: #5b21b6; background: #f5f3ff; }
+.orig-etichetta.orig-mano { color: var(--text2, inherit); }
+.avviso-origine { margin-top: 6px; font-size: 12.5px; color: #92400e; }
+.avviso-orfane { border-left: 4px solid #d97706; }
+.storico-scarti > summary { cursor: pointer; list-style: none; }
+.storico-scarti > summary::-webkit-details-marker { display: none; }
+.storico-scarti > summary::before { content: '▸ '; }
+.storico-scarti[open] > summary::before { content: '▾ '; }
+
+/* 85 — la barra «importo e data», uguale in ogni elenco. */
+.fid-barra { margin: 4px 0 12px; }
+.fid-campi { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.fid-campo { flex: 1 1 120px; min-width: 110px; }
+.fid-campo.fid-testo { flex: 2 1 220px; }
+.fid-campo.fid-azzera { flex: 0 0 auto; }
+.fid-campo.fid-modo { flex: 1.6 1 200px; }
+.fid-campo .form-label { margin-bottom: 4px; }
+.fid-fisso { padding: 8px 0; font-size: 13px; color: var(--text3); }
+.fid-msg { font-size: 12.5px; color: var(--err); margin-top: 4px; }
+.fid-msg:empty { display: none; }
+
 /* 84 — lo stralcio come perdita, nella scheda e nell'anteprima dell'export. */
 .stralcio-box { border-left: 4px solid #b45309; }
 .stralcio-box.tolto { border-left-color: var(--border); }
