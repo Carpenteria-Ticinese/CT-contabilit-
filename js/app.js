@@ -66,6 +66,11 @@ let currentDetailFattura = null
 let editorCorrezione = null
 // 83 — le versioni precedenti della fattura aperta (solo l'elenco, senza i dati).
 let versioniDetail = []
+// 84 — gli stralci (perdite su debitori), tutti, anche quelli tolti.
+let stralciCache = null
+// 84 — il conto su cui va una perdita nuova. Uno stralcio si ricorda il suo
+// (conto_codice): cambiarlo qui non sposta quelli già fatti.
+var CONTO_PERDITE_PREDEFINITO = '6900'
 // FASE 22 — righe e riferimento della fattura aperta, per rifare il foglio di
 // stampa quando cambia la polizza QR senza rileggere dal database.
 let righeDetailCorrenti = null
@@ -264,6 +269,8 @@ function etichettaPagamento(verso, stato) {
   // di un documento: e' il totale di quanto resta da versare. Due cose diverse,
   // due nomi diversi.
   if (verso === 'entrata') {
+    // 84 — non incassata e non da incassare: persa, e scritta come perdita.
+    if (stato === 'stralciata') return { icona: '📉', testo: 'Stralciata (perdita)', cls: 'warn' }
     if (stato === 'pagato')   return { icona: '✅', testo: 'Incassato',          cls: 'ok'   }
     if (stato === 'parziale') return { icona: '🟠', testo: 'Incassato in parte', cls: 'warn' }
     // 75·3 — blu, come il 🔵: il lato clienti ha il suo colore, e l'arancio e il
@@ -294,6 +301,12 @@ function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
   // 61b — lo stato che si LEGGE tiene conto anche delle note di credito; quello
   // nel database resta del trigger, che conta solo i pagamenti.
   var statoVero = statoConStorno(tabella, id, totale, stato)
+  // 84 — una fattura stralciata: la parola e la perdita, nient'altro.
+  if (statoVero === 'stralciata') {
+    var stB = stralcioAttivo(id)
+    return badge('warn', '📉 Stralciata — perdita ' + fmtNumIt(stB ? (safeNum(stB.importo) || 0) : 0) + ' CHF' +
+      (stB && stB.data ? ' dal ' + fmtDate(stB.data) : ''))
+  }
   // 75·4 — pagato con una data che deve ancora venire: è un pagamento
   // programmato. Nessun avviso di scadenza (per il trigger è pagato), e la
   // scritta dice quando parte.
@@ -2840,8 +2853,15 @@ async function loadExportDataset(force) {
 
   // FASE 26 — anche il DETTAGLIO delle righe, non solo la sintesi: l'export
   // deve poter scrivere una riga per classificazione.
+  // 84 — gli stralci: le perdite su debitori. Fallisce a voce alta: senza,
+  // l'export mostrerebbe un utile più alto del vero senza dirlo. (La tabella
+  // che non c'è ancora vuol dire «nessuno stralcio», ed è vero.)
+  var stralci = await loadStralci(true)
+  try { await ensureContiIva() } catch (_) { /* il conto della perdita si cerca per codice */ }
+
   exportDataset = { fatture: fatture, acquisti: acquisti, movimentiAll: movimentiAll,
-                    classMap: classMap, classRighe: idx ? idx.righe : {}, numeroById: numeroById }
+                    classMap: classMap, classRighe: idx ? idx.righe : {}, numeroById: numeroById,
+                    stralci: stralci }
   return exportDataset
 }
 
@@ -2851,6 +2871,19 @@ function sezioniSelezionate() {
 }
 
 // Documenti del periodo, divisi per sezione
+// 84 — le perdite su debitori di un periodo (vedi docsPeriodo). Pura.
+function perditeDelPeriodo(ds, da, a) {
+  var fatture = {}
+  ;(ds.fatture || []).forEach(function (f) { fatture[f.id] = f })
+  return (ds.stralci || []).filter(function (s) {
+    return !s.tolto_il && inPeriodo(s.data, da, a) && fatture[s.fattura_id]
+  }).map(function (s) {
+    var conto = contoPerCodice(s.conto_codice)
+    return { stralcio: s, fattura: fatture[s.fattura_id], importo: round2(safeNum(s.importo) || 0),
+             conto: conto, lato: (conto && conto.tipo === 'ricavo') ? 'ricavi' : 'costi' }
+  }).sort(function (x, y) { return String(x.stralcio.data).localeCompare(String(y.stralcio.data)) })
+}
+
 function docsPeriodo(ds, da, a) {
   var vendite = [], note = [], acquisti = [], spese = [], classificatiTutti = []
   // FASE 5C — quello che una persona non ha ancora guardato non va al
@@ -2906,7 +2939,11 @@ function docsPeriodo(ds, da, a) {
       righeClassificate.push(lr[rq] || classificatiTutti[q].cls)
     }
   }
-  return { vendite: vendite, note: note, acquisti: acquisti, spese: spese,
+  // 84 — le perdite su debitori del periodo: gli stralci ATTIVI con la data
+  // nel periodo, di una fattura emessa. Il lato lo decide il tipo del conto:
+  // costo (il 6900) → fra i costi; ricavo → ricavo in meno. Mai tutti e due.
+  var perdite = perditeDelPeriodo(ds, da, a)
+  return { vendite: vendite, note: note, acquisti: acquisti, spese: spese, perdite: perdite,
            classificatiTutti: classificatiTutti, righeClassificate: righeClassificate,
            scartatiDaConfermare: scartatiDaConfermare }
 }
@@ -3143,10 +3180,29 @@ function totaliSezioni(d) {
     totSpese += (safeNum(d.spese[i].cls.imponibile) || 0) + (safeNum(d.spese[i].cls.iva_importo) || 0)
   }
   totSpese = round2(totSpese)
+  // 84 — le perdite: una volta sola, sul lato del loro conto.
+  var perditeCosti = 0, perditeRicavi = 0
+  ;(d.perdite || []).forEach(function (p) {
+    if (p.lato === 'ricavi') perditeRicavi += p.importo; else perditeCosti += p.importo
+  })
+  perditeCosti = round2(perditeCosti); perditeRicavi = round2(perditeRicavi)
+  var totPerdite = round2(perditeCosti + perditeRicavi)
   return {
     vendite: totVendite, note: totNote, acquisti: totAcquisti, spese: totSpese,
-    saldo: round2(totVendite + totNote - totAcquisti - totSpese)
+    perdite: totPerdite, perditeCosti: perditeCosti, perditeRicavi: perditeRicavi,
+    saldo: round2(totVendite + totNote - totAcquisti - totSpese - totPerdite)
   }
+}
+
+// 84 — il foglio delle perdite su debitori: quello che il commercialista deve vedere.
+function buildSheetPerdite(perdite) {
+  var aoa = [['Data stralcio', 'Fattura', 'Data fattura', 'Cliente', 'Totale fattura', 'Perdita', 'Conto', 'Motivo']]
+  ;(perdite || []).forEach(function (p) {
+    aoa.push([p.stralcio.data, p.fattura.numero || '', p.fattura.data_emissione || '', p.fattura.cliente_nome || '',
+              safeNum(p.fattura.totale) || 0, p.importo,
+              p.conto ? p.conto.codice_conto + ' ' + p.conto.descrizione : p.stralcio.conto_codice, p.stralcio.motivo || ''])
+  })
+  return aoa
 }
 
 function buildSheetRiepilogo(d, sez, da, a) {
@@ -3166,8 +3222,11 @@ function buildSheetRiepilogo(d, sez, da, a) {
     }
     aoa.push(['Spese e movimenti', Object.keys(visti).length, t.spese])
   }
+  // 84 — le perdite su debitori: sempre, se ce ne sono (non dipendono dalle spunte).
+  if (d.perdite && d.perdite.length) aoa.push(['Perdite su debitori (stralci)', d.perdite.length, -t.perdite])
   aoa.push(['', '', ''])
-  aoa.push(['SALDO (vendite − note − acquisti − spese)', '', t.saldo])
+  aoa.push([(d.perdite && d.perdite.length) ? 'SALDO (vendite − note − acquisti − spese − perdite)'
+                                            : 'SALDO (vendite − note − acquisti − spese)', '', t.saldo])
 
   // Riepiloghi per conto e per codice IVA (su tutto il classificato del periodo)
   var perConto = {}, perIva = {}
@@ -3185,6 +3244,12 @@ function buildSheetRiepilogo(d, sez, da, a) {
     if (!perIva[ik]) perIva[ik] = { imp: 0, iva: 0 }
     perIva[ik].imp += imp; perIva[ik].iva += ivaImp
   }
+  // 84 — le perdite nel riepilogo per conto, sul loro conto.
+  ;(d.perdite || []).forEach(function (p) {
+    var ckP = p.conto ? contoLabel(p.conto.id) : (p.stralcio.conto_codice + ' · (conto non trovato)')
+    if (!perConto[ckP]) perConto[ckP] = { imp: 0, iva: 0, tot: 0 }
+    perConto[ckP].imp += p.importo; perConto[ckP].tot += p.importo
+  })
   // FASE 26 — la spiegazione sta nel file, non solo a schermo: chi lo apre non
   // ha seguito nessuna conversazione.
   aoa.push(['', '', ''])
@@ -3251,6 +3316,7 @@ function sezioniDaEsportare(d, sez, ds) {
   if (sez.note     && d.note.length)     out.push({ nome: 'Note di credito',    aoa: buildSheetVendite(d.note, ds, true) })
   if (sez.acquisti && d.acquisti.length) out.push({ nome: 'Acquisti',           aoa: buildSheetAcquisti(d.acquisti, ds) })
   if (sez.spese    && d.spese.length)    out.push({ nome: 'Spese e movimenti',  aoa: buildSheetSpese(d.spese) })
+  if (d.perdite && d.perdite.length)     out.push({ nome: 'Perdite su debitori', aoa: buildSheetPerdite(d.perdite) })   // 84
   return out
 }
 
@@ -3328,6 +3394,15 @@ async function initExportPage() {
   }
 }
 
+// 84 — l'elenco delle perdite su debitori del periodo, sotto la riga.
+function elencoPerditeHtml(perdite) {
+  return '<div class="exp-perdite">' + perdite.map(function (p) {
+    return '<div>📉 ' + esc(fmtDate(p.stralcio.data)) + ' · fattura ' + esc(p.fattura.numero || '—') + ' · ' +
+      esc(p.fattura.cliente_nome || '—') + ' · <strong>' + esc(fmtNumIt(p.importo)) + ' CHF</strong> · «' +
+      esc(p.stralcio.motivo || '') + '»</div>'
+  }).join('') + '</div>'
+}
+
 async function updateExportPreview() {
   var prev = el('exp-preview')
   if (!prev) return
@@ -3357,6 +3432,8 @@ async function updateExportPreview() {
       riga(sez.note,     '↩️ Note di credito',    d.note.length,     t.note) +
       riga(sez.acquisti, '📥 Fatture d\'acquisto', d.acquisti.length, t.acquisti) +
       riga(sez.spese,    '🧾 Spese e movimenti',  docsDistinti(d.spese), t.spese) +
+      // 84 — le perdite su debitori del periodo, con l'elenco.
+      (d.perdite.length ? riga(true, '📉 Perdite su debitori', d.perdite.length, -t.perdite) + elencoPerditeHtml(d.perdite) : '') +
       '<div class="exp-riga" style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px">' +
         '<span><strong>Saldo del periodo</strong></span><span class="exp-amount">' + fmtNum2(t.saldo) + ' CHF</span></div>' +
       (nBlocc ? '<div class="exp-riga exp-vuoto"><span>' + nBlocc + ' movimenti già consegnati 🔒</span><span></span></div>' : '') +
@@ -3748,6 +3825,8 @@ async function loadFattureList() {
     // leggono, il residuo si omette (non si mostra una cifra che sarebbe
     // sbagliata per difetto) e il banner lo dice.
     try { await loadNoteCredito(true) } catch (eN) { contorno.push('note di credito non lette, i residui non ne tengono conto: ' + (eN.message || eN)) }
+    // 84 — gli stralci: senza, una fattura stralciata risulterebbe da incassare.
+    try { await loadStralci(true) } catch (eS2) { contorno.push('stralci non letti, le fatture stralciate risultano ancora da incassare: ' + (eS2.message || eS2)) }
     // 61g — i solleciti: senza, la vista «Scadute» direbbe «nessun sollecito»
     // su fatture gia' sollecitate tre volte. Meglio un elenco che lo dichiara.
     try { await loadSolleciti(true) } catch (eS) { contorno.push('solleciti non letti: ' + (eS.message || eS)) }
@@ -3824,7 +3903,8 @@ function venditaChiusa(f, fatture) {
   if (f.stato === 'annullata') return true
   if (f.stato !== 'emessa') return false
   if (f.tipo === 'nota_credito') return eccedenzaDaNota(f.id, fatture) <= 0.005
-  return statoConStorno('tm_conta_fatture', f.id, f.totale, f.stato_pagamento) === 'pagato'
+  var letto = statoConStorno('tm_conta_fatture', f.id, f.totale, f.stato_pagamento)
+  return letto === 'pagato' || letto === 'stralciata'   // 84 — stralciata: chiusa, con la perdita
 }
 function acquistoChiuso(a)   { return a.stato_pagamento === 'pagato' }
 function movimentoChiuso(m)  { return m.stato_pagamento === 'pagato' }
@@ -3864,6 +3944,9 @@ function statoVenditaFiltro(f, filtro) {
     case 'nc':       return f.tipo === 'nota_credito'
     case 'nc_da_rimborsare':
       return f.tipo === 'nota_credito' && f.stato === 'emessa' && eccedenzaDaNota(f.id) > 0.005
+    case 'stralciata':   // 84
+      return f.tipo !== 'nota_credito' && f.stato === 'emessa' &&
+        statoConStorno('tm_conta_fatture', f.id, f.totale, f.stato_pagamento) === 'stralciata'
     case 'non_incassato':
     case 'parziale':
     case 'incassato':
@@ -4006,6 +4089,7 @@ async function initArchivioPage() {
     // Il contorno: senza pagamenti e note di credito «chiuso» non si può dire.
     await loadPagamenti(true)
     await loadNoteCredito(true)
+    await loadStralci(true)   // 84 — una stralciata è chiusa
     try { await loadCantieri() } catch (_) { /* i nomi dei cantieri sono un aiuto */ }
     await loadMappaCantieri(true)
 
@@ -4561,6 +4645,8 @@ function motivoNoCorrezione(f, pagamenti, note) {
   if (f.stato === 'bozza') return 'È una bozza: si modifica con «✏️ Modifica bozza».'
   if (f.stato !== 'emessa') return 'Si correggono solo le fatture emesse: questa è «' + f.stato + '».'
   if (f.tipo === 'nota_credito') return 'Una nota di credito non si riapre: si annulla e se ne emette una nuova.'
+  // 84 — una stralciata è ferma.
+  if (stralcioAttivo(f.id)) return 'La fattura è stralciata come perdita: togli prima lo stralcio.'
   if (pagamenti && pagamenti.length) {
     var somma = pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
     return 'Su questa fattura ' +
@@ -4589,6 +4675,7 @@ async function riapriPerCorreggere(id) {
       .eq('tabella_origine', 'tm_conta_fatture').eq('id_origine', id)
     if (ePag) throw new Error('Non riesco a leggere i pagamenti di questa fattura, quindi NON la riapro: ' + (ePag.message || ePag))
     try { await loadNoteCredito() } catch (_) { /* le ricontrolla il database */ }
+    try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }   // 84
     var no = motivoNoCorrezione(f, pag || [], noteCreditoDi(id))
     if (no) { window.alert('Non riaperta.\n\n' + no); return }
 
@@ -4786,6 +4873,152 @@ function chiudiVersione() {
   var o = el('versione-overlay')
   if (o) o.style.display = 'none'
   html('versione-foglio', '')
+}
+
+// ══ 84 · PERDITE SU DEBITORI: LO STRALCIO ═════════════════════════════════════
+// Una fattura emessa e scaduta che non si incasserà più. Resta emessa col suo
+// numero e il RICAVO RESTA PIENO; in più c'è una PERDITA (conto 6900, salvo
+// altra scelta) alla data dello stralcio. La perdita non è un pagamento: la
+// cassa non cambia. Finché lo stralcio c'è la fattura è ferma (il database lo
+// garantisce): niente incassi, note di credito, correzioni né annullamento.
+// Lo stralcio non si cancella: si toglie, e resta nello storico.
+var stralciErroreDetail = null
+
+function motivoNoStralcio(f, oggi) {
+  if (!f) return 'Fattura non trovata.'
+  if (f.tipo === 'nota_credito') return 'Una nota di credito non si stralcia.'
+  if (f.stato !== 'emessa') return 'Si stralciano solo le fatture emesse.'
+  if (stralcioAttivo(f.id)) return 'Questa fattura è già stralciata.'
+  if (!f.data_scadenza || f.data_scadenza >= oggi) return 'La fattura non è ancora scaduta: non si stralcia.'
+  if (residuoDocumento('tm_conta_fatture', f.id, f.totale) <= 0.005) return 'Su questa fattura non resta niente da incassare.'
+  return null
+}
+
+function boxStralcioHtml(f) {
+  if (!f || f.tipo === 'nota_credito' || f.stato === 'bozza') return ''
+  if (stralciErroreDetail) {
+    return '<div class="sol-stato-riga">⚠️ Stralci non letti: ' + esc(stralciErroreDetail) +
+      '. Se la fattura è stralciata, qui non si vede.</div>'
+  }
+  var tutti = stralciDi(f.id)
+  if (!tutti.length) return ''
+  var att = stralcioAttivo(f.id)
+  var conto = att ? contoPerCodice(att.conto_codice) : null
+  var testa = att
+    ? '<div class="card-title">📉 Stralciata come perdita</div>' +
+      '<div class="stralcio-cifra">Perdita di <strong>' + esc(fmtNumIt(safeNum(att.importo) || 0)) + ' CHF</strong> dal ' +
+        esc(fmtDate(att.data)) + ' · conto ' + esc(conto ? conto.codice_conto + ' · ' + conto.descrizione : att.conto_codice) + '</div>' +
+      '<div class="annullata-motivo">' + esc(att.motivo) + '</div>' +
+      '<div class="form-hint" style="margin-top:8px">La fattura resta emessa e il ricavo resta. Esce da Scadenze, ' +
+        'solleciti e «da incassare»; la perdita entra nei conti e nel margine del cantiere. Finché lo stralcio c\'è, ' +
+        'la fattura è ferma. Se il cliente paga: «↩️ Togli lo stralcio», poi registra il pagamento.</div>'
+    : '<div class="card-title">📉 Stralci tolti</div>'
+  var tolti = tutti.filter(function (s) { return s.tolto_il })
+  var storia = tolti.length
+    ? '<div class="stralcio-storia">' + tolti.map(function (s) {
+        return '<div>↩️ Stralcio del ' + esc(fmtDate(s.data)) + ' (' + esc(fmtNumIt(safeNum(s.importo) || 0)) + ' CHF) tolto il ' +
+          esc(fmtDateTime(s.tolto_il)) + ': «' + esc(s.tolto_motivo || '') + '»</div>'
+      }).join('') + '</div>'
+    : ''
+  return '<div class="card stralcio-box' + (att ? '' : ' tolto') + '">' + testa + storia + '</div>'
+}
+
+async function stralciaFattura(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f) { window.alert('Fattura non trovata: riaprila dall\'elenco.'); return }
+  try {
+    await richiediSessione('la fattura NON è stata stralciata')
+    await caricaPerResiduo(true)
+    if (stralciSenzaTabella) {
+      window.alert('Non stralciata.\n\nManca l\'SQL della 84 (sql/da_applicare/SQL_FASE84_stralci.sql): ' +
+        'lancialo nel SQL Editor di Supabase, poi riprova.')
+      return
+    }
+    var oggi = oggiISO()
+    var no = motivoNoStralcio(f, oggi)
+    if (no) { window.alert('Non stralciata.\n\n' + no); return }
+    var perdita = residuoDocumento('tm_conta_fatture', f.id, f.totale)
+    try { await ensureContiIva() } catch (_) { /* il nome del conto è un aiuto */ }
+    var conto = contoPerCodice(CONTO_PERDITE_PREDEFINITO)
+    var nomeConto = conto ? conto.codice_conto + ' «' + conto.descrizione + '»' : CONTO_PERDITE_PREDEFINITO
+    var motivo = window.prompt(
+      'Stralciare come perdita la fattura n. ' + f.numero + ' di ' + (f.cliente_nome || '—') + '?\n\n' +
+      'Resta emessa col suo numero e il ricavo resta. In più si scrive una PERDITA di ' +
+      fmtNumIt(perdita) + ' CHF (quello che resta da incassare) sul conto ' + nomeConto + '.\n' +
+      'Esce da Scadenze, solleciti e «da incassare». Non è un pagamento: la cassa non cambia.\n\n' +
+      'Finché lo stralcio c\'è la fattura è ferma: niente incassi, note di credito, correzioni né annullamento. ' +
+      'Se il cliente paga dopo, si toglie lo stralcio e si registra il pagamento.\n\n' +
+      'Scrivi PERCHÉ (obbligatorio, lo vede il commercialista):', '')
+    if (motivo === null) return
+    motivo = String(motivo).trim()
+    if (motivo.length < 5) { window.alert('Non stralciata: il motivo è obbligatorio (almeno 5 caratteri).'); return }
+    var dataTesto = window.prompt('Data della perdita (gg.mm.aaaa). Decide in che anno conta:', fmtDate(oggi))
+    if (dataTesto === null) return
+    var data = dataDaTestoIt(String(dataTesto).trim())
+    if (!data) { window.alert('Non stralciata: la data «' + dataTesto + '» non si legge. Scrivila come 31.12.2026.'); return }
+    if (data > oggi) { window.alert('Non stralciata: la data della perdita non può essere nel futuro.'); return }
+    if (f.data_emissione && data < f.data_emissione) {
+      window.alert('Non stralciata: la data della perdita non può venire prima della fattura (' + fmtDate(f.data_emissione) + ').')
+      return
+    }
+    if (!window.confirm('Confermi lo stralcio?\n\nFattura n. ' + f.numero + ' · perdita ' + fmtNumIt(perdita) + ' CHF al ' +
+        fmtDate(data) + ' · conto ' + nomeConto + '\nMotivo: «' + motivo + '»')) return
+    html('fatture-detail-banner', loadingRow('Stralcio…'))
+    const { error } = await sb.from('tm_conta_stralci').insert({
+      azienda_id: currentAziendaId, fattura_id: f.id, data: data, importo: perdita,
+      motivo: motivo, conto_codice: CONTO_PERDITE_PREDEFINITO }).select('id')
+    if (error) throw error
+    await loadStralci(true)
+    await loadFattureList()
+    try { await refreshScadenzeCount() } catch (_) {}
+    await viewFattura(f.id)
+    showFattureBanner('fatture-detail-banner', 'ok', 'Fattura n. ' + f.numero + ' stralciata: perdita di ' +
+      fmtNumIt(perdita) + ' CHF al ' + fmtDate(data) + '. Il ricavo resta; la fattura è ferma finché lo stralcio c\'è.')
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Stralcio non fatto: ' + messaggioStralcio(e))
+  }
+}
+
+async function togliStralcio(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f) { window.alert('Fattura non trovata: riaprila dall\'elenco.'); return }
+  try {
+    await richiediSessione('lo stralcio NON è stato tolto')
+    await loadStralci(true)
+    var st = stralcioAttivo(id)
+    if (!st) { window.alert('Questa fattura non è stralciata.'); return }
+    var motivo = window.prompt('Togliere lo stralcio della fattura n. ' + f.numero + ' (perdita di ' +
+      fmtNumIt(safeNum(st.importo) || 0) + ' CHF dal ' + fmtDate(st.data) + ')?\n\n' +
+      'La perdita sparisce dai conti e la fattura torna da incassare: poi si registra il pagamento. ' +
+      'Lo stralcio non si cancella: resta nello storico della fattura, con il perché.\n\n' +
+      'Scrivi PERCHÉ lo togli (obbligatorio):', '')
+    if (motivo === null) return
+    motivo = String(motivo).trim()
+    if (motivo.length < 5) { window.alert('Stralcio non tolto: il motivo è obbligatorio (almeno 5 caratteri).'); return }
+    html('fatture-detail-banner', loadingRow('Tolgo lo stralcio…'))
+    // tolto_il lo riscrive il database con la sua ora: questo è solo il segnale.
+    const { data: agg, error } = await sb.from('tm_conta_stralci')
+      .update({ tolto_il: new Date().toISOString(), tolto_motivo: motivo })
+      .eq('id', st.id).eq('azienda_id', currentAziendaId).is('tolto_il', null)
+      .select('id')
+    if (error) throw error
+    if (!agg || agg.length !== 1) throw new Error('lo stralcio non risulta tolto: ricarica la scheda e riprova')
+    await loadStralci(true)
+    await loadFattureList()
+    try { await refreshScadenzeCount() } catch (_) {}
+    await viewFattura(f.id)
+    showFattureBanner('fatture-detail-banner', 'ok', 'Stralcio tolto: la fattura n. ' + f.numero +
+      ' è di nuovo da incassare. Adesso puoi registrare il pagamento.')
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Stralcio non tolto: ' + messaggioStralcio(e))
+  }
+}
+
+function messaggioStralcio(e) {
+  if (tabellaStralciMancante(e)) {
+    return 'manca l\'SQL della 84 (sql/da_applicare/SQL_FASE84_stralci.sql): lancialo nel SQL Editor di Supabase, poi riprova. Non è cambiato niente.'
+  }
+  return (e && e.message) ? e.message : String(e)
 }
 
 async function newFattura(tipo) {
@@ -5733,6 +5966,12 @@ async function setIncassata(id, toIncassata) {
 }
 
 async function creaNotaCredito(id) {
+  // 84 — una nota su una fattura stralciata toglierebbe ricavo E lascerebbe la perdita.
+  try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }
+  if (stralcioAttivo(id)) {
+    window.alert('Nota di credito non creata.\n\nLa fattura è stralciata come perdita: togli prima lo stralcio, poi fai la nota di credito.')
+    return
+  }
   if (!window.confirm('Creare una nota di credito che storna questa fattura? Viene creata come bozza, poi potrai emetterla con numerazione propria.')) return
   html('fatture-detail-banner', loadingRow('Creazione nota di credito…'))
   try {
@@ -6056,6 +6295,9 @@ async function viewFattura(id) {
     // 61b/61c — le note di credito: servono al residuo e al riquadro della
     // nota. Se non si leggono, il residuo non le conta e si vede dal riquadro.
     try { await loadNoteCredito() } catch (_) { /* il residuo lo dira' senza storno */ }
+    // 84 — gli stralci: il riquadro della perdita e i bottoni dipendono da qui.
+    stralciErroreDetail = null
+    try { await loadStralci(true) } catch (eSt) { stralciErroreDetail = eSt.message || String(eSt) }
     // Per la nota di credito: carica il riferimento alla fattura originale (per la stampa)
     var rifInfo = null
     if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
@@ -6081,6 +6323,7 @@ async function viewFattura(id) {
     // 62c — se il documento e' annullato, il perche' sta in cima: e' la prima
     // cosa da sapere guardandolo.
     html('fatture-annullata', boxAnnullamentoHtml(f))
+    html('fatture-stralcio', boxStralcioHtml(f))   // 84
     // 61g — i solleciti della fattura: servono al bottone e alla riga di stato.
     try { await loadSolleciti() } catch (_) { /* il bottone ripartira' dal primo */ }
     renderFatturaPrint(f, righe || [], rifInfo)
@@ -6491,6 +6734,10 @@ function motivoNoAnnullamento(f, pagamenti) {
     return 'Questo documento è già annullato.'
   }
   if (f.stato !== 'emessa') return 'Si annullano solo i documenti emessi.'
+  // 84 — annullare una stralciata toglierebbe il ricavo e lascerebbe la perdita.
+  if (f.tipo !== 'nota_credito' && stralcioAttivo(f.id)) {
+    return 'La fattura è stralciata come perdita: togli prima lo stralcio, poi annulla.'
+  }
   if (pagamenti && pagamenti.length) {
     var somma = pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
     return 'Su questo documento ci sono ' +
@@ -6523,6 +6770,7 @@ async function annullaDocumento(id) {
       .eq('tabella_origine', 'tm_conta_fatture').eq('id_origine', id)
     if (ePag) throw new Error('Non riesco a leggere i pagamenti di questo documento, quindi NON lo annullo: ' + (ePag.message || ePag))
 
+    try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }   // 84
     var no = motivoNoAnnullamento(f, pag || [])
     if (no) { window.alert('Non annullato.\n\n' + no); return }
 
@@ -6671,21 +6919,36 @@ function renderDetailActions(f) {
     // cancella tre versamenti registrati e' troppo facile da premere per sbaglio.
     // Al suo posto si registra un pagamento, e i pagamenti si tolgono uno per
     // uno dall'elenco, con una conferma che dice importo e data.
-    a += '<button class="btn-primary" onclick="apriRegistraPagamento(\'tm_conta_fatture\', \'' +
-         f.id + '\', ' + (safeNum(f.totale) || 0) + ', \'entrata\', \'' +
-         esc(String(f.cliente_nome || '').replace(/'/g, '')) + '\')">➕ Registra incasso</button>'
-    if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
-    // 83 — stesso numero, stessa data; la versione di adesso va nello storico.
-    if (f.tipo !== 'nota_credito') {
-      a += '<button class="btn-secondary" onclick="riapriPerCorreggere(\'' + esc(f.id) + '\')" ' +
-           'title="Stesso numero e stessa data di emissione. Solo senza pagamenti né note di credito; la versione di adesso va nello storico con il motivo.">' +
-           '✏️ Riapri e correggi</button>'
+    // 84 — stralciata: ferma. Incassi, note, correzione e annullamento
+    // aspettano che lo stralcio si tolga.
+    var stA = (f.tipo !== 'nota_credito') ? stralcioAttivo(f.id) : null
+    if (stA) {
+      a += '<span class="lock-tag" title="Finché c\'è lo stralcio niente incassi, note di credito, correzioni né annullamento">📉 Stralciata — ferma</span>'
+      a += '<button class="btn-secondary" onclick="togliStralcio(\'' + esc(f.id) + '\')" ' +
+           'title="Il cliente ha pagato, o lo stralcio era sbagliato: la perdita sparisce, la riga resta nello storico">↩️ Togli lo stralcio</button>'
+    } else {
+      a += '<button class="btn-primary" onclick="apriRegistraPagamento(\'tm_conta_fatture\', \'' +
+           f.id + '\', ' + (safeNum(f.totale) || 0) + ', \'entrata\', \'' +
+           esc(String(f.cliente_nome || '').replace(/'/g, '')) + '\')">➕ Registra incasso</button>'
+      if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
+      // 83 — stesso numero, stessa data; la versione di adesso va nello storico.
+      if (f.tipo !== 'nota_credito') {
+        a += '<button class="btn-secondary" onclick="riapriPerCorreggere(\'' + esc(f.id) + '\')" ' +
+             'title="Stesso numero e stessa data di emissione. Solo senza pagamenti né note di credito; la versione di adesso va nello storico con il motivo.">' +
+             '✏️ Riapri e correggi</button>'
+      }
+      // 62c — annullare: il numero resta, il documento esce da tutte le somme.
+      // Rosso perche' non si torna indietro, ma non e' una cancellazione: il
+      // documento resta dov'e' ed e' per questo che si chiama «Annulla».
+      a += '<button class="btn-secondary danger" onclick="annullaDocumento(\'' + esc(f.id) +
+           '\')" title="Il documento tiene il suo numero e smette di contare. Serve una motivazione scritta.">🚫 Annulla documento</button>'
+      // 84 — scaduta e con qualcosa da incassare: si può stralciare.
+      if (f.tipo !== 'nota_credito' && f.data_scadenza && f.data_scadenza < oggiISO() &&
+          cacheOk('pagamenti') && residuoDocumento('tm_conta_fatture', f.id, f.totale) > 0.005) {
+        a += '<button class="btn-secondary danger" onclick="stralciaFattura(\'' + esc(f.id) + '\')" ' +
+             'title="Non si incasserà più: resta emessa, il ricavo resta, e in più si scrive la perdita">📉 Stralcia come perdita</button>'
+      }
     }
-    // 62c — annullare: il numero resta, il documento esce da tutte le somme.
-    // Rosso perche' non si torna indietro, ma non e' una cancellazione: il
-    // documento resta dov'e' ed e' per questo che si chiama «Annulla».
-    a += '<button class="btn-secondary danger" onclick="annullaDocumento(\'' + esc(f.id) +
-         '\')" title="Il documento tiene il suo numero e smette di contare. Serve una motivazione scritta.">🚫 Annulla documento</button>'
   } else if (f.stato === 'annullata') {
     // Ramo che prima non esisteva: lo stato annullata era gia ammesso dal
     // database ma nell'interfaccia la scheda restava senza indicazioni.
@@ -12580,21 +12843,20 @@ async function renderFattureDelContatto(contattoId) {
       .order('data_emissione', { ascending: false, nullsFirst: false }).order('id') })
     if (error) throw error
 
-    // Il residuo non si ricalcola qui: lo espone gia' v_conta_flussi, che tiene
-    // conto dei pagamenti parziali e del segno delle note di credito. Rifarlo a
-    // mano darebbe un secondo numero, e prima o poi i due divergerebbero.
+    // 84 — il residuo è la cifra unica (residuoRigaFlusso): pagamenti, note
+    // di credito e stralci, come in tutti gli altri posti. Prima lo si leggeva
+    // dalla vista, che di note e stralci non sa niente: era un secondo numero.
     var residuo = null
     try {
       var flussi = await loadFlussi()
+      await caricaPerResiduo()
       residuo = 0
       for (var i = 0; i < flussi.length; i++) {
         var r = flussi[i]
         if (r.tabella_origine !== 'tm_conta_fatture') continue
         if (r.contatto_id !== contattoId) continue
         if (r.stato_pagamento === 'pagato') continue
-        var res = safeNum(r.residuo)
-        if (res == null) res = (safeNum(r.importo_totale) || 0) - (safeNum(r.importo_pagato) || 0)
-        residuo += res
+        residuo += residuoRigaFlusso(r)   // 84
       }
       residuo = round2(residuo)
     } catch (e) { residuo = null }   // il totale è un di più: l'elenco si vede lo stesso
@@ -13740,8 +14002,7 @@ function calcolaTotaliCruscotto(righe, da, a) {
     // pagamenti parziali sarebbe un debito gonfiato di quanto e' gia' stato
     // versato. Ignorano il periodo: «quanto devo ancora» e' una fotografia di
     // oggi, non una domanda su un intervallo.
-    var res = safeNum(r.residuo)
-    if (res == null) res = imp - (safeNum(r.importo_pagato) || 0)   // vista vecchia
+    var res = residuoRigaFlusso(r)   // 84 — la cifra unica
     if (r.stato_pagamento !== 'pagato' && Math.abs(res) > 0.005) {
       if (r.verso === 'uscita')  { t.daPagare.importo += res;    t.daPagare.righe.push(r) }
       else                       { t.daIncassare.importo += res; t.daIncassare.righe.push(r) }
@@ -13825,7 +14086,9 @@ async function initCruscottoPage() {
     await loadGruppi()
     await loadIvaPeriodi(true)
     await loadFlussi(true)
-    await loadPagamenti(true)        // FASE 8: SPESO e INCASSATO vengono da qui
+    // FASE 8: SPESO e INCASSATO vengono dai pagamenti. 84 — con note e
+    // stralci: «Da incassare» è la cifra unica.
+    await caricaPerResiduo(true)
     // 60 — i dati dell'export, per i conti. Se non si leggono la Situazione
     // resta com'e' e il riquadro dei conti dice perche'.
     try { perContoDataset = await loadExportDataset(true); perContoErrore = null }
@@ -14692,14 +14955,15 @@ function calcolaScadenze(righe, oggi, preavviso) {
     if (eNotaDiCredito(r.tabella_origine, r.id_origine)) continue
     // FASE 8 — quello che scade e' il RESIDUO, non l'importo pieno: su una
     // fattura da 400 con 200 gia' versati, restano da pagare 200.
-    var res = safeNum(r.residuo)
-    if (res == null) res = (safeNum(r.importo_totale) || 0) - (safeNum(r.importo_pagato) || 0)
-    // 61b — la vista non conosce le note di credito (il legame rif_fattura_id
-    // non ci passa): lo storno si toglie qui, con la stessa regola di tutto il
-    // resto. Una fattura coperta per intero da una nota esce dalle scadenze.
-    if (r.tabella_origine === 'tm_conta_fatture' && cacheOk('noteCredito')) {
-      res = round2(res - stornoAncoraDovuto(r.id_origine))   // 70·R — anche i solleciti leggono da qui
+    // 84 — la cifra unica: pagamenti, note di credito e stralci. Una fattura
+    // coperta, chiusa da una nota o stralciata esce dalle scadenze, rate
+    // comprese (il ramo delle rate viene dopo).
+    var res = residuoRigaFlusso(r)
+    if (r.tabella_origine === 'tm_conta_fatture') {
       if (res <= 0.005) continue
+      // Una COPIA della riga, con la stessa cifra: la riga a schermo legge
+      // r.residuo, e quella della vista non sa di note e stralci.
+      r = Object.assign({}, r, { residuo: res })
     }
     var imp = res
 
@@ -14772,12 +15036,10 @@ async function initScadenzePage() {
   try {
     await loadImpostazioniConta(true)
     await loadFlussi(true)
-    await loadPagamenti(true)
+    // 84 — pagamenti, note di credito e stralci: la cifra unica. Se una
+    // lettura non riesce, l'errore si vede (mai una cifra con un pezzo in meno).
+    await caricaPerResiduo(true)
     await loadRate(true)
-    // 61b — senza le note di credito il residuo delle Scadenze sarebbe quello
-    // vecchio: una fattura gia' coperta da una nota resterebbe fra gli incassi
-    // non arrivati. Se non si leggono, l'errore si vede.
-    await loadNoteCredito(true)
     renderScadenze()
     await refreshScadenzeCount()
   } catch (e) {
@@ -15025,6 +15287,7 @@ async function refreshScadenzeCount() {
   try {
     await loadImpostazioniConta()
     var righe = await loadFlussi()
+    await caricaPerResiduo()   // 84 — il pallino nel menu conta come la pagina
     var b = calcolaScadenze(righe, oggiISO(), giorniPreavviso())
     scadenzeCache = b
     var n = contaScadenzeUrgenti(b)
@@ -16042,10 +16305,18 @@ function quotaFuoriCantiere(r) {
 
 // I conti di quello che non sta su nessun cantiere. E' la cifra piu' utile
 // della pagina: se cresce, vuol dire che si sta dimenticando di attribuire.
+// 84 — la riga della vista di una fattura (per le quote di uno stralcio).
+function rigaFlussoFattura(fatturaId) {
+  return (flussiCache || []).filter(function (r) {
+    return r.tabella_origine === 'tm_conta_fatture' && r.id_origine === fatturaId
+  })[0] || null
+}
+
 function contiFuoriCantiere() {
   var f = {
     fatturato: { importo: 0, righe: [] },
     fornitori: { importo: 0, righe: [] },
+    perdite:   { importo: 0, righe: [] },   // 84
     perGruppo: {}
   }
   ;(flussiCache || []).forEach(function (r) {
@@ -16061,7 +16332,16 @@ function contiFuoriCantiere() {
       accumulaGruppo(f.perGruppo, r.gruppo_codice, q.importo)
     }
   })
-  f.margine = f.fatturato.importo - f.fornitori.importo
+  // 84 — la parte di perdita che sta fuori cantiere, con le quote del ricavo.
+  ;(stralciCache || []).forEach(function (s) {
+    if (s.tolto_il) return
+    var rf = rigaFlussoFattura(s.fattura_id)
+    var qf = rf ? quotaFuoriCantiere(rf) : null
+    if (!qf) return
+    f.perdite.importo += (safeNum(s.importo) || 0) * qf.frazione
+    f.perdite.righe.push(rf)
+  })
+  f.margine = f.fatturato.importo - f.fornitori.importo - f.perdite.importo
   return f
 }
 
@@ -16112,6 +16392,7 @@ function contiCantiere(cantiereId) {
     fornitori:   { importo: 0, righe: [] },
     fornitoriDaPagare: 0,
     spese:       { importo: 0, righe: [] },
+    perdite:     { importo: 0, righe: [] },   // 84 — fatture stralciate
     regiaAperta: { importo: 0, righe: [] },
     ore: 0,
     giornate:    [],
@@ -16134,8 +16415,8 @@ function contiCantiere(cantiereId) {
     // Ripartiti con la stessa frazione della quota: sono riferiti al documento
     // intero, e su un documento diviso vanno divisi anche loro.
     var pagato = (safeNum(r.importo_pagato) || 0) * q.frazione
-    var res = safeNum(r.residuo)
-    res = (res == null) ? (imp - pagato) : (res * q.frazione)
+    // 84 — la cifra unica, nella quota di questo cantiere.
+    var res = residuoRigaFlusso(r) * q.frazione
 
     if (r.verso === 'entrata') {
       // Il FATTURATO conta il documento emesso, a prescindere dall'incasso:
@@ -16152,6 +16433,17 @@ function contiCantiere(cantiereId) {
       accumulaGruppo(c.perGruppo, r.gruppo_codice, imp)   // FASE 27
       if (Math.abs(res) > 0.005) c.fornitoriDaPagare += res
     }
+  })
+
+  // ── 84 · Le perdite su crediti: lo stralcio di una fattura, diviso fra i
+  // cantieri con le STESSE quote del suo ricavo (quotaCantiere).
+  ;(stralciCache || []).forEach(function (s) {
+    if (s.tolto_il) return
+    var rf = rigaFlussoFattura(s.fattura_id)
+    var qf = rf ? quotaCantiere(rf, cantiereId) : null
+    if (!qf) return
+    c.perdite.importo += (safeNum(s.importo) || 0) * qf.frazione
+    c.perdite.righe.push(rf)
   })
 
   // ── Spese di App Cantieri: blocco separato, MAI sommato alle fatture
@@ -16185,7 +16477,7 @@ function contiCantiere(cantiereId) {
 
   // Senza costo orario la manodopera non entra nel conto, e il margine cambia
   // NOME: «senza manodopera». Un margine falso e' peggio di uno mancante.
-  c.margine = c.fatturato.importo - c.fornitori.importo - c.spese.importo
+  c.margine = c.fatturato.importo - c.fornitori.importo - c.spese.importo - c.perdite.importo   // 84
             - (c.costoManodopera != null ? c.costoManodopera : 0)
   c.margineCompleto = (c.costoManodopera != null)
 
@@ -16453,12 +16745,10 @@ async function initCantieriPage() {
     await loadImpostazioniConta(true)
     await loadCantieri()
     await loadFlussi(true)
-    await loadPagamenti(true)
-    // 62h — senza queste, il contratto sommava le rate al lordo e il residuo
-    // delle rate ignorava lo storno: la pagina Cantieri non le leggeva affatto.
-    // Non bloccante: se non si leggono, il riquadro lo dichiara invece di
-    // mostrare una cifra al lordo spacciata per netta.
-    try { await loadNoteCredito(true) } catch (eNC) { console.warn('Note di credito non lette:', eNC.message || eNC) }
+    // 62h / 84 — pagamenti, note di credito e stralci: il «da incassare» del
+    // cantiere è la cifra unica. Dalla 84 non è più facoltativo: senza note o
+    // stralci sarebbe un'altra cifra, e la pagina si ferma dicendolo.
+    await caricaPerResiduo(true)
     await loadMappaCantieri(true)
     await loadSpeseCantiere(true)
     await loadRegiaCantiere(true)
@@ -16542,7 +16832,7 @@ function renderElencoCantieri() {
   var tot = { fatturato: 0, costi: 0, margine: 0 }
   var body = righe.map(function (x) {
     var k = x.k
-    var costi = k.fornitori.importo + k.spese.importo + (k.costoManodopera || 0)
+    var costi = k.fornitori.importo + k.spese.importo + k.perdite.importo + (k.costoManodopera || 0)   // 84
     tot.fatturato += k.fatturato.importo
     tot.costi     += costi
     tot.margine   += k.margine
@@ -16574,7 +16864,7 @@ function renderElencoCantieri() {
   // totale non sarebbe il totale di niente.
   var fuori = contiFuoriCantiere()
   tot.fatturato += fuori.fatturato.importo
-  tot.costi     += fuori.fornitori.importo
+  tot.costi     += fuori.fornitori.importo + fuori.perdite.importo   // 84
   tot.margine   += fuori.margine
 
   var percTot = (tot.fatturato > 0) ? (tot.margine / tot.fatturato * 100) : null
@@ -16599,7 +16889,7 @@ function renderElencoCantieri() {
       '<td><strong>Fuori cantiere</strong> ' +
         '<span class="dim">non ancora assegnato</span></td>' +   // 76 — il magazzino ha il suo cantiere
       '<td class="num">' + esc(fmtNumIt(fuori.fatturato.importo)) + ' CHF</td>' +
-      '<td class="num">' + esc(fmtNumIt(fuori.fornitori.importo)) + ' CHF</td>' +
+      '<td class="num">' + esc(fmtNumIt(fuori.fornitori.importo + fuori.perdite.importo)) + ' CHF</td>' +
       '<td class="num">' + esc(fmtNumIt(fuori.margine)) + ' CHF</td>' +
       '<td class="num"><span class="dim">—</span></td>' +
     '</tr>' +
@@ -16694,6 +16984,11 @@ function renderSchedaCantiere() {
     '<div class="cant-sub">di cui ancora da pagare: <strong>' + esc(fmtNumIt(k.fornitoriDaPagare)) + ' CHF</strong></div>' +
     rigaClic('spese', 'Spese di cantiere', k.spese.importo, k.spese.righe.length) +
     '<div class="cant-sub">registrate in App Cantieri dagli operai</div>' +
+    // 84 — le fatture stralciate: il ricavo resta nel fatturato, la perdita qui.
+    (k.perdite.importo > 0.005
+      ? rigaClic('perdite', '📉 Perdite su crediti', k.perdite.importo, k.perdite.righe.length) +
+        '<div class="cant-sub">fatture stralciate: ricavo nel fatturato, perdita qui (nella quota del cantiere)</div>'
+      : '') +
     '<div class="nota-cruscotto avviso" style="margin:10px 0 0">' +
       '<span aria-hidden="true">⚠️</span>' +
       '<span>Controlla che le spese di cantiere non siano già registrate anche come fattura ' +
@@ -16783,6 +17078,7 @@ function apriElencoCantiere(chiave) {
   else if (chiave === 'daIncassare') { righe = k.daIncassare.righe; titolo = '🔵 Da incassare' }
   else if (chiave === 'fornitori')   { righe = k.fornitori.righe;   titolo = '💸 Fatture fornitori' }
   else if (chiave === 'spese')       { righe = k.spese.righe;       titolo = '🧾 Spese di cantiere'; tipo = 'spesa' }
+  else if (chiave === 'perdite')     { righe = k.perdite.righe;     titolo = '📉 Perdite su crediti' }   // 84
   else if (chiave === 'regia')       { righe = k.regiaAperta.righe; titolo = '🧾 Regia non fatturata'; tipo = 'regia' }
   else if (chiave === 'ore')         { righe = k.giornate;          titolo = '👷 Giornate registrate'; tipo = 'giornata' }
 
@@ -16974,7 +17270,7 @@ function nomeUnico(usati, cartella, nome) {
 // il PDF di una fattura com'era PRIMA della correzione.
 async function correzioniFatture() {
   const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture_versioni')
-    .select('fattura_id, corretta_il').eq('azienda_id', currentAziendaId).order('corretta_il') })
+    .select('fattura_id, corretta_il').eq('azienda_id', currentAziendaId).order('corretta_il').order('id') })   // 84: ordine stabile fra le pagine
   if (error) {
     throw new Error('Non riesco a leggere lo storico delle correzioni delle fatture (' + (error.message || error) +
       '): il pacchetto non lo preparo, potrebbe contenere il PDF di una fattura com\'era prima della correzione.')
@@ -17530,6 +17826,7 @@ function costruisciWorkbookPacchetto(r, mappa, da, a) {
   if (d.note.length)     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetVendite(d.note, ds, true, mappa)), 'Note di credito')
   if (d.acquisti.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetAcquisti(d.acquisti, ds, mappa)), 'Acquisti')
   if (d.spese.length)    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetSpese(d.spese, mappa)), 'Spese e movimenti')
+  if (d.perdite && d.perdite.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetPerdite(d.perdite)), 'Perdite su debitori')   // 84
 
   // Le spese di cantiere stanno in un foglio SEPARATO e non si sommano mai agli
   // acquisti: lo stesso scontrino puo' essere gia' fra le fatture ricevute.
@@ -17881,12 +18178,97 @@ function notaCreditoById(id) {
 // IL RESIDUO, per chi lo mostra. Le note valgono solo sulle fatture di
 // VENDITA: sugli acquisti una nota ricevuta e' un documento suo (vedi
 // SQL_FASE4b_nota_ricevuta.sql, parte JS non fatta).
+// ══ 84 · QUANTO RESTA DA INCASSARE — UNA CIFRA SOLA ══════════════════════════
+// residuoDocumento() è L'UNICO posto dove si calcola quanto resta su un
+// documento: totale − pagamenti − note di credito ancora dovute − stralcio
+// attivo. Lo usano tutti e cinque i posti che lo mostrano: scheda, elenchi,
+// solleciti e contratto (direttamente); Scadenze con le rate, Situazione,
+// Cantiere e Rubrica (attraverso residuoRigaFlusso, qui sotto).
+// La vista v_conta_flussi ha anche lei una colonna «residuo», ma non sa di note
+// e stralci: per le fatture di vendita non si legge più. Era il quinto calcolo,
+// e prima o poi avrebbe detto un'altra cifra (è successo coi margini
+// dell'App Cantieri).
+// Chi la usa sulle righe della vista chiama prima caricaPerResiduo(): le tre
+// letture che servono, insieme. Se una manca, la pagina si ferma e lo dice:
+// mai una cifra calcolata con un pezzo in meno.
+async function caricaPerResiduo(force) {
+  await loadPagamenti(force)
+  await loadNoteCredito(force)
+  await loadStralci(force)
+}
+function residuoPronto() { return cacheOk('pagamenti') && cacheOk('noteCredito') && cacheOk('stralci') }
+
+// Il residuo di una riga della vista, per chi lavora sulle righe (Scadenze,
+// Situazione, Cantiere, Rubrica). Fattura di vendita: la cifra unica. Nota di
+// credito: zero, perché il suo effetto è già dentro la fattura che storna
+// (prima lo si contava due volte per due strade diverse, che tornavano solo
+// finché tornavano). Acquisti e movimenti: la colonna della vista, che per loro
+// è la stessa cosa (totale − pagamenti: niente note né stralci da quella parte).
+function residuoRigaFlusso(r) {
+  if (r.tabella_origine === 'tm_conta_fatture') {
+    if (r.tipo_documento === 'nota_credito') return 0
+    if (!residuoPronto()) throw new Error('quanto resta da incassare non si calcola: mancano pagamenti, note di credito o stralci')
+    return residuoDocumento('tm_conta_fatture', r.id_origine, r.importo_totale)
+  }
+  var res = safeNum(r.residuo)
+  if (res == null) res = (safeNum(r.importo_totale) || 0) - (safeNum(r.importo_pagato) || 0)
+  return res
+}
+
 function residuoDocumento(tabella, id, totale) {
   var res = (safeNum(totale) || 0) - totalePagatoDi(tabella, id)
   // 70·R — quanto deve il cliente: la nota compensa solo la parte non ancora
   // restituita in contanti. Il fatturato invece la conta sempre piena.
   if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) res -= stornoAncoraDovuto(id)
+  // 84 — lo stralcio attivo: quello che non si incasserà più.
+  if (tabella === 'tm_conta_fatture' && cacheOk('stralci')) res -= importoStralcioAttivo(id)
   return round2(res)
+}
+
+// ── 84 · Gli stralci ─────────────────────────────────────────────────────────
+async function loadStralci(force) {
+  if (cacheOk('stralci') && !force) return stralciCache || []
+  await richiediAccesso('loadStralci')   // mai un elenco vuoto per silenzio
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_stralci')
+    .select('id, fattura_id, data, importo, motivo, conto_codice, created_at, tolto_il, tolto_motivo')
+    .eq('azienda_id', currentAziendaId).order('data').order('id') })
+  if (error) {
+    // La tabella che non c'è ancora (SQL della 84 non lanciato) vuol dire
+    // «nessuno stralcio», ed è vero: si va avanti, e il bottone lo dirà.
+    if (tabellaStralciMancante(error)) {
+      console.warn('tm_conta_stralci non c\'è ancora: SQL_FASE84_stralci.sql da lanciare.')
+      stralciCache = []
+      stralciSenzaTabella = true
+      segnaCacheOk('stralci')
+      return stralciCache
+    }
+    throw new Error('stralci non letti: ' + (error.message || error))
+  }
+  stralciSenzaTabella = false
+  stralciCache = data || []
+  segnaCacheOk('stralci')
+  return stralciCache
+}
+var stralciSenzaTabella = false
+function tabellaStralciMancante(e) {
+  var m = String((e && e.message) || e || '')
+  return /tm_conta_stralci/.test(m) && /(does not exist|Could not find|schema cache)/i.test(m)
+}
+function stralcioAttivo(fatturaId) {
+  return (stralciCache || []).filter(function (s) { return s.fattura_id === fatturaId && !s.tolto_il })[0] || null
+}
+function importoStralcioAttivo(fatturaId) {
+  var s = stralcioAttivo(fatturaId)
+  return s ? (safeNum(s.importo) || 0) : 0
+}
+function stralciDi(fatturaId) {
+  return (stralciCache || []).filter(function (s) { return s.fattura_id === fatturaId })
+}
+// Il conto di una perdita, dal codice: prima quello della ditta, poi quello
+// del pacchetto svizzero.
+function contoPerCodice(codice) {
+  var tutti = (contiCache || []).filter(function (c) { return c.codice_conto === codice })
+  return tutti.filter(function (c) { return c.azienda_id === currentAziendaId })[0] || tutti[0] || null
 }
 
 // Lo stato da MOSTRARE. Quello del database conta solo i pagamenti; qui si
@@ -17894,6 +18276,8 @@ function residuoDocumento(tabella, id, totale) {
 // credito non e' «incassata in parte»: non c'e' piu' niente da incassare.
 // Non si scrive niente nel database: e' solo la parola che si legge.
 function statoConStorno(tabella, id, totale, statoDb) {
+  // 84 — stralciata prima di tutto: non è incassata e non è da incassare.
+  if (tabella === 'tm_conta_fatture' && cacheOk('stralci') && stralcioAttivo(id)) return 'stralciata'
   if (tabella !== 'tm_conta_fatture' || !cacheOk('noteCredito')) return statoDb
   if (stornoAncoraDovuto(id) <= 0.005) return statoDb   // 70·R
   var res = residuoDocumento(tabella, id, totale)
@@ -18117,6 +18501,14 @@ async function apriModificaPagamento(idPagamento) {
     await loadRate(true)
     var pg = (pagamentiCache || []).filter(function (x) { return x.id === idPagamento })[0]
     if (!pg) throw new Error('Pagamento non trovato: ricarica la pagina.')
+    // 84 — su una fattura stralciata i pagamenti non si toccano.
+    if (pg.tabella_origine === 'tm_conta_fatture') {
+      await loadStralci(true)
+      if (stralcioAttivo(pg.id_origine)) {
+        window.alert('Pagamento non modificato.\n\nLa fattura è stralciata come perdita: togli prima lo stralcio.')
+        return
+      }
+    }
 
     // Il documento a cui appartiene: serve l'importo per il riepilogo.
     var doc = await trovaDocumento(pg.tabella_origine, pg.id_origine)
@@ -18171,6 +18563,7 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
   try {
     await loadPagamenti(true)
     await loadRate(true)
+    await loadStralci(true)   // 84
   } catch (eL) {
     // 52·B — parte da un clic: senza questo l'errore finirebbe solo in console
     // e la finestra non si aprirebbe, senza dire perche'.
@@ -18178,6 +18571,14 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
     var idBanner = tabella === 'tm_conta_fatture' ? 'fatture-list-banner'
                  : tabella === 'tm_conta_fatture_acquisto' ? 'acquisti-list-banner' : 'inserimento-banner'
     showFattureBanner(idBanner, 'err', 'Impossibile aprire il pagamento: ' + (eL.message || eL))
+    return
+  }
+  // 84 — una fattura stralciata è ferma: incassare e perdere gli stessi soldi
+  // li conterebbe due volte. (Lo ricontrolla anche il database.)
+  if (tabella === 'tm_conta_fatture' && !rimborso && stralcioAttivo(id)) {
+    docPagamentoCorrente = null
+    window.alert('Pagamento non registrato.\n\nQuesta fattura è stralciata come perdita: togli prima lo stralcio ' +
+      '(dalla scheda della fattura, «↩️ Togli lo stralcio»), poi registra il pagamento.')
     return
   }
 
@@ -18639,7 +19040,8 @@ async function ricaricaDopoPagamento(d) {
 
 // ── Elenco dei pagamenti nella scheda del documento ─────────────────────────
 
-function elencoPagamentiHtml(tabella, id, verso) {
+// 84 — `fermo`: fattura stralciata, i pagamenti si leggono ma non si toccano.
+function elencoPagamentiHtml(tabella, id, verso, fermo) {
   var lista = pagamentiDi(tabella, id)
   var rate = rateDi(tabella, id)
   if (!lista.length) {
@@ -18662,11 +19064,12 @@ function elencoPagamentiHtml(tabella, id, verso) {
         ? '<button type="button" class="azione-rapida" ' +
             'onclick="stampaRicevuta(\'' + esc(p.id) + '\')">🧾 Ricevuta</button>'
         : '') +
+      (fermo ? '' :
       '<button type="button" class="azione-rapida" ' +
         'onclick="apriModificaPagamento(\'' + esc(p.id) + '\')">✏️ Modifica</button>' +
       '<button type="button" class="azione-rapida" ' +
         'onclick="eliminaPagamento(\'' + esc(p.id) + '\', \'' + esc(fmtNumIt(p.importo)) +
-        '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>' +
+        '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>') +
     '</div>'
   }).join('')
 }
@@ -18728,6 +19131,11 @@ async function apriStoriaPagamenti(tabella, idDoc, nome) {
 // tre versamenti si sta per cancellare.
 async function eliminaPagamento(idPagamento, importoTesto, dataTesto) {
   var pg = (pagamentiCache || []).filter(function (p) { return p.id === idPagamento })[0]
+  // 84 — su una fattura stralciata i pagamenti non si toccano.
+  if (pg && pg.tabella_origine === 'tm_conta_fatture' && stralcioAttivo(pg.id_origine)) {
+    window.alert('Pagamento non eliminato.\n\nLa fattura è stralciata come perdita: togli prima lo stralcio.')
+    return
+  }
   // E1 — se sul documento ci sono altri pagamenti, la conferma lo dice:
   // altrimenti non si sa che sotto ce n'e' un altro.
   var quanti = pg ? pagamentiDi(pg.tabella_origine, pg.id_origine).length : 0
@@ -19649,9 +20057,13 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
   // sul documento da cui viene. Il residuo è quello di residuoDocumento.
   var storno = (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) ? stornoNoteCredito(id) : 0
   var rimborsato = (tabella === 'tm_conta_fatture' && cacheOk('noteCredito')) ? rimborsatoSullaFattura(id) : 0
+  // 84 — lo stralcio: una riga sua, come le note. 1.000 − 200 − 800 = 0, e
+  // ogni numero si ritrova da dove viene.
+  var stralcio = (tabella === 'tm_conta_fatture' && cacheOk('stralci')) ? importoStralcioAttivo(id) : 0
   var residuo = residuoDocumento(tabella, id, importoDoc)
   var rate = rateDi(tabella, id)
-  var e = etichettaPagamento(verso, (gia + storno) <= 0.005 ? 'aperto' : (residuo > 0.005 ? 'parziale' : 'pagato'))
+  var e = stralcio > 0.005 ? etichettaPagamento(verso, 'stralciata')
+        : etichettaPagamento(verso, (gia + storno) <= 0.005 ? 'aperto' : (residuo > 0.005 ? 'parziale' : 'pagato'))
   var argomenti = "'" + esc(tabella) + "', '" + esc(id) + "', " + (safeNum(importoDoc) || 0) +
                   ", '" + esc(verso) + "', '" + esc(String(nome || '').replace(/'/g, '')) + "'"
 
@@ -19666,16 +20078,20 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
       // senza note di credito uno «− 0,00» sarebbe solo una domanda in piu'.
       (storno > 0.005 ? rigaPagSegno('Note di credito', -storno) : '') +
       (rimborsato > 0.005 ? rigaPagSegno('Rimborsato al cliente', rimborsato) : '') +
+      (stralcio > 0.005 ? rigaPagSegno('Stralciato come perdita', -stralcio) : '') +   // 84
       rigaPagSegno('Residuo', residuo, true, '=') +
       '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + e.testo) + '</div>' +
     '</div>' +
-    elencoPagamentiHtml(tabella, id, verso) +
+    elencoPagamentiHtml(tabella, id, verso, stralcio > 0.005) +
     '<div class="form-actions" style="margin-top:12px">' +
-      '<button type="button" class="btn-primary" onclick="apriRegistraPagamento(' + argomenti + ')">' +
-        '➕ Registra pagamento</button>' +
-      '<button type="button" class="btn-secondary" onclick="apriPianoRateale(\'' + esc(tabella) + '\', \'' +
-        esc(id) + '\', ' + (safeNum(importoDoc) || 0) + ', \'' + esc(String(nome || '').replace(/'/g, '')) + '\')">' +
-        (rate.length ? '📅 Modifica il piano rateale' : '📅 Crea piano rateale') + '</button>' +
+      // 84 — stralciata: pagamenti e rate fermi finché c'è lo stralcio.
+      (stralcio > 0.005
+        ? '<span class="lock-tag" title="Togli prima lo stralcio dai bottoni della scheda">📉 Stralciata: pagamenti e rate fermi</span>'
+        : '<button type="button" class="btn-primary" onclick="apriRegistraPagamento(' + argomenti + ')">' +
+            '➕ Registra pagamento</button>' +
+          '<button type="button" class="btn-secondary" onclick="apriPianoRateale(\'' + esc(tabella) + '\', \'' +
+            esc(id) + '\', ' + (safeNum(importoDoc) || 0) + ', \'' + esc(String(nome || '').replace(/'/g, '')) + '\')">' +
+            (rate.length ? '📅 Modifica il piano rateale' : '📅 Crea piano rateale') + '</button>') +
       '<button type="button" class="btn-secondary" onclick="apriStoriaPagamenti(\'' +
         esc(tabella) + '\', \'' + esc(id) + '\', \'' +
         esc(String(nome || '').replace(/'/g, '')) + '\')">🕐 Storia</button>' +
@@ -20444,6 +20860,13 @@ function calcolaPerConto(ds, da, a) {
         pr.mov.origine_tipo + ':' + pr.mov.origine_id, c.imponibile == null)
   })
 
+  // 84 — le perdite su debitori: sul lato del loro conto, una volta sola.
+  ;(d.perdite || []).forEach(function (p) {
+    var segno = p.lato === 'ricavi' ? -1 : 1
+    acc(p.lato, p.conto ? p.conto.id : null, segno * p.importo, 0, segno * p.importo,
+        'stralcio:' + p.stralcio.id, false)
+  })
+
   // Quello che l'export NON prende: movimenti non classificati nel periodo.
   // Non entrano nelle somme (come nell'export), ma vanno detti.
   var fuori = { n: 0, importo: 0 }
@@ -20469,8 +20892,8 @@ function calcolaPerConto(ds, da, a) {
     return { righe: righe, nonClassificato: nc, tot: { netto: round2(tot.netto), iva: round2(tot.iva), tot: round2(tot.tot) } }
   }
   var ricavi = chiudi('ricavi'), costi = chiudi('costi')
-  var attesoRicavi = round2(t.vendite + t.note)       // le note sono gia' negative
-  var attesoCosti  = round2(t.acquisti + t.spese)
+  var attesoRicavi = round2(t.vendite + t.note - t.perditeRicavi)   // le note sono gia' negative
+  var attesoCosti  = round2(t.acquisti + t.spese + t.perditeCosti)   // 84
   return {
     d: d, sezioni: t, ricavi: ricavi, costi: costi, fuori: fuori,
     ivaRicevuta: ricavi.tot.iva, ivaPagata: costi.tot.iva,
@@ -20578,9 +21001,11 @@ function renderPerConto(p) {
 
   var s = r.sezioni
   var htmlRicavi = tabella('Ricavi', 'ricavi', r.ricavi,
-    'vendite ' + fmtNumIt(s.vendite) + ' + note ' + fmtNumIt(s.note), r.verifica.ricavi)
+    'vendite ' + fmtNumIt(s.vendite) + ' + note ' + fmtNumIt(s.note) +
+    (s.perditeRicavi ? ' − perdite ' + fmtNumIt(s.perditeRicavi) : ''), r.verifica.ricavi)
   var htmlCosti = tabella('Costi', 'costi', r.costi,
-    'acquisti ' + fmtNumIt(s.acquisti) + ' + spese ' + fmtNumIt(s.spese), r.verifica.costi)
+    'acquisti ' + fmtNumIt(s.acquisti) + ' + spese ' + fmtNumIt(s.spese) +
+    (s.perditeCosti ? ' + perdite su crediti ' + fmtNumIt(s.perditeCosti) : ''), r.verifica.costi)
 
   cont.innerHTML =
     '<div class="form-hint" style="margin-top:0">Periodo ' + esc(fmtDate(p.da)) + ' → ' + esc(fmtDate(p.a)) +
@@ -21945,7 +22370,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '83'
+var VERSIONE = '84'
 
 function controllaVersionePagina() {
   try {
@@ -23752,6 +24177,7 @@ async function stampaPianoPagamenti(cantiereId) {
   // esce lo stesso e lo dichiara in fondo.
   try { await loadPagamenti() } catch (_) {}
   try { await loadNoteCredito() } catch (_) {}
+  try { await loadStralci() } catch (_) {}   // 84
   renderPianoPrint(c, cantiere)
   document.body.classList.add('stampa-piano')
   var titoloPrima = document.title
@@ -24080,6 +24506,7 @@ async function stampaRiassuntoCartella(cantiereId) {
   try { await loadAziendaInfo() } catch (_) {}
   try { await loadPagamenti() } catch (_) {}
   try { await loadNoteCredito() } catch (_) {}
+  try { await loadStralci() } catch (_) {}   // 84
   renderCartellaPrint(c, cantiere)
   document.body.classList.add('stampa-cartella')
   var titoloPrima = document.title
