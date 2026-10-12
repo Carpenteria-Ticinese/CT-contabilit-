@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=84" />
+  <link rel="stylesheet" href="css/style.css?v=86" />
 </head>
-<body data-versione="84">
+<body data-versione="86">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 84</span>
+      <span id="sidebar-versione">Versione 86</span>
     </div>
 
   </aside>
@@ -347,6 +347,7 @@
         <span id="scad-nota-preavviso-testo"></span>
       </div>
 
+      <div class="fid-barra" id="fid-scadenze"></div>   <!-- 85 — importo e data -->
       <div id="scad-blocchi"></div>
 
     </div>
@@ -454,6 +455,7 @@
 
       <div id="movimenti-banner" role="status" aria-live="polite"></div>
       <div id="movimenti-sorgenti"></div>
+      <div class="fid-barra" id="fid-daclass"></div>   <!-- 85 — importo e data -->
       <div id="movimenti-lista"></div>
 
     </div>
@@ -679,7 +681,8 @@
         <!-- Colonna dx: ultimi inseriti + info bucket -->
         <div>
           <div class="card">
-            <div class="card-title">🕐 Ultimi inseriti (Canale B)</div>
+            <div class="card-title">🏢 Movimenti propri (Canale B)</div>
+            <div class="fid-barra" id="fid-propri"></div>   <!-- 85 — importo e data -->
             <div id="inserimento-contatore" class="elenco-contatore"></div>
             <div id="inserimento-recenti">
               <div class="dim" style="padding:8px 0">Nessun movimento ancora inserito.</div>
@@ -1402,11 +1405,18 @@
           </div>
           <div class="form-group" style="flex:1; margin-bottom:0">
             <label for="arch-imp-da" class="form-label">Importo da (CHF)</label>
-            <input type="number" id="arch-imp-da" class="form-input num" step="0.01" min="0" oninput="onFiltroArchivio()" />
+            <input type="text" inputmode="decimal" id="arch-imp-da" class="form-input num" placeholder="es. 1.200,50" oninput="onFiltroArchivio()" autocomplete="off" />
           </div>
           <div class="form-group" style="flex:1; margin-bottom:0">
             <label for="arch-imp-a" class="form-label">Importo a (CHF)</label>
-            <input type="number" id="arch-imp-a" class="form-input num" step="0.01" min="0" oninput="onFiltroArchivio()" />
+            <input type="text" inputmode="decimal" id="arch-imp-a" class="form-input num" placeholder="es. 1.300" oninput="onFiltroArchivio()" autocomplete="off" />
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label for="arch-modo" class="form-label">Data di</label>
+            <select id="arch-modo" class="form-input" onchange="onFiltroArchivio()">   <!-- 85 -->
+              <option value="documento">documento</option>
+              <option value="pagamento">pagamento</option>
+            </select>
           </div>
           <div class="form-group" style="flex:2; margin-bottom:0">
             <label for="arch-cantiere" class="form-label">Cantiere</label>
@@ -1623,6 +1633,7 @@
           </div>
           <!-- 59·B — quanti documenti, per stato; con filtro: «4 di 6 (filtro attivo)» -->
           <!-- 61g - la barra della vista «Scadute»: compare solo se ce ne sono. -->
+          <div class="fid-barra" id="fid-fatture"></div>   <!-- 85 — importo e data -->
           <div id="fatture-scadute-barra"></div>
           <div id="fatture-contatore" class="elenco-contatore"></div>
           <div id="fatture-table"></div>
@@ -1944,6 +1955,7 @@
               </select>
             </div>
           </div>
+          <div class="fid-barra" id="fid-offerte"></div>   <!-- 85 — importo e data -->
           <div id="offerte-contatore" class="elenco-contatore"></div>
           <div id="offerte-table"></div>
         </div>
@@ -2191,6 +2203,7 @@
               <input type="number" id="acquisti-filtro-anno" class="form-input" placeholder="Tutti" min="2000" max="2100" oninput="renderAcquistiTable()" />
             </div>
           </div>
+          <div class="fid-barra" id="fid-acquisti"></div>   <!-- 85 — importo e data -->
           <div id="acquisti-contatore" class="elenco-contatore"></div>
           <div id="acquisti-table"></div>
         </div>
@@ -3372,7 +3385,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=84"></script>
+<script src="js/app.js?v=86"></script>
 
 </body>
 </html>
