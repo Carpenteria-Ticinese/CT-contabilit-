@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=82" />
+  <link rel="stylesheet" href="css/style.css?v=83" />
 </head>
-<body data-versione="82">
+<body data-versione="83">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 82</span>
+      <span id="sidebar-versione">Versione 83</span>
     </div>
 
   </aside>
@@ -1633,7 +1633,7 @@
         <div class="page-header">
           <div>
             <div class="page-title" id="fatture-edit-title">Nuova fattura</div>
-            <div class="page-subtitle">Bozza modificabile. Il numero viene assegnato solo all'emissione.</div>
+            <div class="page-subtitle" id="fatture-edit-sub">Bozza modificabile. Il numero viene assegnato solo all'emissione.</div>
           </div>
           <button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>
         </div>
@@ -1642,6 +1642,8 @@
 
         <!-- FASE 58 — da quale rata d'acconto viene questa bozza (scritto dal JS) -->
         <div id="fatture-acconto-ref"></div>
+        <!-- 83 — quale fattura emessa si sta correggendo, e perché (scritto dal JS) -->
+        <div id="fatture-correzione-ref"></div>
 
         <div id="fatture-nc-ref" class="nc-ref" style="display:none"></div>
 
@@ -1838,6 +1840,8 @@
           <div class="form-actions">
             <button type="button" class="btn-secondary" id="btn-salva-bozza" onclick="saveBozza()">💾 Salva bozza</button>
             <button type="button" class="btn-primary" id="btn-emetti" onclick="emettiFatturaCorrente()">📨 Emetti (assegna numero)</button>
+            <!-- 83 — al posto dei due sopra, quando si corregge una fattura emessa -->
+            <button type="button" class="btn-primary" id="btn-salva-correzione" onclick="salvaCorrezione()" style="display:none">💾 Salva la correzione</button>
             <button type="button" class="btn-secondary" onclick="fattureBackToList()">Annulla</button>
           </div>
           <div class="sql-tip" style="margin-top:12px">
@@ -1857,6 +1861,8 @@
         <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
         <!-- 62c - il riquadro del documento annullato: quando, e perche'. -->
         <div id="fatture-annullata"></div>
+        <!-- 83 - le versioni di prima di una fattura corretta -->
+        <div class="no-print" id="fatture-versioni"></div>
         <!-- 61g - ritardo e solleciti, sopra il documento. -->
         <div id="fatture-stato-solleciti"></div>
 
@@ -3102,6 +3108,26 @@
     </div>
   </div>
 
+  <!-- ══ MODALE: una versione precedente di una fattura corretta — 83 ══════ -->
+  <div id="versione-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="versione-title">
+    <div class="modal-card modal-largo">
+      <div class="modal-header">
+        <div class="modal-title" id="versione-title">✏️ Versione precedente</div>
+        <button class="modal-close" onclick="chiudiVersione()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="versione-avviso"></div>
+        <div id="versione-foglio" class="versione-foglio"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-note">Dallo storico della fattura: com'era prima della correzione.</div>
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiVersione()">Chiudi</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ══ MODALE: Classificazione (conto + IVA) — Fase 3 ═══════════════════ -->
   <div id="classify-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="cls-title">
     <div class="modal-card">
@@ -3343,7 +3369,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=82"></script>
+<script src="js/app.js?v=83"></script>
 
 </body>
 </html>
