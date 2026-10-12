@@ -71,6 +71,13 @@ let stralciCache = null
 // 84 — il conto su cui va una perdita nuova. Uno stralcio si ricorda il suo
 // (conto_codice): cambiarlo qui non sposta quelli già fatti.
 var CONTO_PERDITE_PREDEFINITO = '6900'
+// 86 — gli scarti di «Da classificare» e le prese visione (tm_conta_scarti).
+let scartiCache = null
+var scartiSenzaTabella = false
+// 86 — quali letture dell'App Cantieri non sono riuscite nell'ultimo
+// loadCanalA. Senza saperlo, una lettura fallita farebbe sembrare «cancellate»
+// tutte le righe classificate di quella tabella.
+var canalAErrori = []
 // FASE 22 — righe e riferimento della fattura aperta, per rifare il foglio di
 // stampa quando cambia la polizza QR senza rileggere dal database.
 let righeDetailCorrenti = null
@@ -645,6 +652,7 @@ async function loadCanalA() {
   if (!currentAziendaId) {
     throw new Error('Sessione non attiva: le spese e la regia di App Cantieri non si possono leggere. Rientra e riprova.')
   }
+  canalAErrori = []   // 86
 
   // spese: id, data, descrizione, importo, valuta, cantiere_id, note
   try {
@@ -674,6 +682,7 @@ async function loadCanalA() {
     }
   } catch (e) {
     console.warn('Canale A / spese:', e.message)
+    canalAErrori.push('Canale A (App Cantieri) / spese: ' + e.message)   // 86
   }
 
   // regia: SEMPRE lato ricavo.
@@ -715,6 +724,7 @@ async function loadCanalA() {
         extra:        r.cantiere_id ? 'Cantiere ' + r.cantiere_id : null,
         _sorgente:    'App Cantieri',
         _tipo_label:  isFat ? 'Regia · Ricavo fatturato' : 'Regia · Da fatturare',
+        operaio_id:   r.operaio_id || null,   // 86 — per sapere se la sua giornata c'è ancora
         _icon:        isFat ? '🔧' : '📋',
         _fatturato:   isFat,
         _match_field: 'desc',
@@ -723,6 +733,7 @@ async function loadCanalA() {
     }
   } catch (e) {
     console.warn('Canale A / regia:', e.message)
+    canalAErrori.push('Canale A (App Cantieri) / regia: ' + e.message)   // 86
   }
 
   // fatture emesse (Fase 6) → entrano nel Registratore come origine_tipo='fattura' (lato ricavo).
@@ -771,7 +782,7 @@ async function loadCanalA() {
     try {
       const { data, error } = await leggiTutto(function () { return sb
         .from('tm_conta_fatture_acquisto')
-        .select('id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id, cantiere_id')
+        .select('id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id, cantiere_id, origine')   // 86: origine
         .eq('azienda_id', currentAziendaId)
         .order('data', { ascending: false }).order('id') })
       if (error) throw error
@@ -793,6 +804,7 @@ async function loadCanalA() {
           extra:        acq.fornitore ? 'Fornitore: ' + acq.fornitore : null,
           _sorgente:    'Fatture acquisto',
           _tipo_label:  'Fattura acquisto',
+          _ai:          acq.origine === 'import_ai',   // 86
           _icon:        '📥',
           _match_field: 'ente',
           _match_value: acq.fornitore || null
@@ -861,6 +873,8 @@ async function loadDaClassificare() {
   var canalB = []
   var errori = []
 
+  // 85 — i pagamenti dei movimenti propri, per cercare anche per rata pagata.
+  try { await loadPagamenti() } catch (_) { /* la ricerca guarda solo l'importo */ }
   // Carica entrambi i canali
   try { canalA = await loadCanalA() } catch (e) { errori.push('Canale A: ' + e.message) }
   try { canalB = await loadCanalB() } catch (e) { errori.push('Canale B: ' + e.message) }
@@ -873,7 +887,7 @@ async function loadDaClassificare() {
     try {
       const { data, error } = await leggiTutto(function () { return sb
         .from('tm_conta_classificazioni')
-        .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato')
+        .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at')   // 86: created_at
         .eq('azienda_id', currentAziendaId).order('id') })
       if (error) throw error
       for (var k = 0; k < (data || []).length; k++) {
@@ -888,21 +902,41 @@ async function loadDaClassificare() {
   // Nomi leggibili conto/IVA (servono alla lista «classificati» e alla Storia)
   await ensureContiIva()
 
-  // Separa non classificati / già classificati
+  // 86 — le letture dell'App Cantieri non riuscite si dicono (prima solo in console)
+  errori = errori.concat(canalAErrori)
+  // 86 — gli scarti, e le giornate per la regia.
+  try { await loadScarti(true) } catch (eSc) { errori.push('Scarti: ' + (eSc.message || eSc)) }
+  try { await loadCantieri() } catch (_) { /* i nomi dei cantieri sono un aiuto */ }   // 86 — per l'avviso delle orfane
+  var giornate = await chiaviGiornateRegia()
+
+  // Separa non classificati / già classificati (86: gli scartati escono)
   var daClass = []
   var classificati = []
   for (var t = 0; t < tutti.length; t++) {
     var mm = tutti[t]
+    mm._senzaGiornata = regiaSenzaGiornata(mm, giornate)
     var cls = classMap[mm.origine_tipo + ':' + mm.origine_id]
     if (cls) { mm._class = cls; classificati.push(mm) }
+    else if (scartoAttivo('scarto', mm.origine_tipo, mm.origine_id)) { /* scartata: sta nello storico */ }
     else { daClass.push(mm) }
   }
+  // 86 — le classificazioni la cui riga dell'App Cantieri non esiste più. Si
+  // cercano solo se spese e regia si sono lette: altrimenti sembrerebbero
+  // cancellate tutte.
+  orfaneVerificate = canalAErrori.length === 0
+  orfaneDaClass = orfaneVerificate ? classificazioniOrfane(classMap, tutti).filter(function (o) {
+    return !scartoAttivo('presa_visione', o.origine_tipo, o.origine_id)
+  }) : []
 
   function byDataDesc(a, b) { return (b.data || '').localeCompare(a.data || '') }
   daClass.sort(byDataDesc)
   classificati.sort(byDataDesc)
 
-  // Rende le liste disponibili ai pannelli (per indice)
+  // 85 — le liste intere restano qui; il disegno (renderListeDaClassificare)
+  // le filtra con la ricerca e rende ai pannelli quelle che si vedono.
+  daClassTutti = daClass
+  classificatiTutti = classificati
+  erroriDaClass = errori
   daClassList = daClass
   classificatiList = classificati
 
@@ -947,6 +981,38 @@ async function loadDaClassificare() {
     )
   }
 
+  renderListeDaClassificare()
+}
+
+// 85 — il disegno delle due sezioni, con la ricerca (testo, importo, data).
+// Gli indici dei bottoni («Classifica», «Storia»…) sono quelli delle liste che
+// si VEDONO: daClassList e classificatiList sono le liste filtrate.
+var daClassTutti = [], classificatiTutti = [], erroriDaClass = []
+function renderListeDaClassificare() {
+  var errori = erroriDaClass
+  var fidD = leggiFiltroID('daclass')
+  var passaD = function (m) {
+    var pag = m.origine_tipo === 'proprio' ? pagamentiDi('tm_conta_movimenti_propri', m.origine_id) : []
+    if (!corrispondeTesto(fidD.testo, [m.descrizione || '', m.extra || '', m._sorgente || '', m._tipo_label || ''],
+          [m.importo].concat(pag.map(function (p) { return p.importo })))) return false
+    return corrispondeImportoData(fidD, { importo: m.importo, date: { documento: m.data }, pagamenti: pag })
+  }
+  var cercando = fidD.attivo || !!fidD.testo
+  var daClass = cercando ? daClassTutti.filter(passaD) : daClassTutti
+  var classificati = cercando ? classificatiTutti.filter(passaD) : classificatiTutti
+  daClassList = daClass
+  classificatiList = classificati
+  if (cercando && !daClass.length && !classificati.length) {
+    html('movimenti-lista', '<div class="cru-vuoto">Nessun movimento trovato con questi filtri, né fra quelli da ' +
+      'classificare né fra quelli già classificati. Le fatture d\'acquisto si cercano nella loro pagina, ' +
+      'tutto il resto anche nell\'Archivio.</div>')
+    return
+  }
+
+  // 86 — in cima, le classificazioni rimaste senza origine; in fondo lo storico.
+  var sezioneOrfane = boxOrfaneHtml()
+  var sezioneScarti = storicoScartiHtml()
+
   // ── Sezione: da classificare ───────────────────────────────────────────────
   var sezioneDaClass
   if (daClass.length === 0 && errori.length > 0) {
@@ -961,6 +1027,8 @@ async function loadDaClassificare() {
           'questo elenco non è completo e non vuol dire che il lavoro sia finito.</small>' +
         '</div>' +
       '</div>'
+  } else if (daClass.length === 0 && cercando) {
+    sezioneDaClass = '<div class="cru-vuoto">Nessun movimento da classificare con questi filtri.</div>'   // 85
   } else if (daClass.length === 0) {
     sezioneDaClass =
       '<div class="fase-banner ok" role="status">' +
@@ -977,13 +1045,18 @@ async function loadDaClassificare() {
       var isProprio = m.origine_tipo === 'proprio'
       var azioni =
         '<button class="icon-btn classify" onclick="event.stopPropagation(); openClassifyPanel(' + i + ')">🏷 Classifica</button>'
+      // 86 — una riga dell'App Cantieri si scarta (qui), non si elimina (là resta).
+      if (m.origine_tipo === 'spesa' || m.origine_tipo === 'regia') {
+        azioni += '<button class="icon-btn danger" title="Toglierla da qui: nell\'App Cantieri non cambia niente" ' +
+          'onclick="event.stopPropagation(); scartaDaRiga(' + i + ')">🗑️ Scarta</button>'
+      }
       if (isProprio) {
         azioni +=
           '<button class="icon-btn" title="Modifica" onclick="event.stopPropagation(); startEditFromRow(' + i + ')">✏️</button>' +
           '<button class="icon-btn danger" title="Elimina" onclick="event.stopPropagation(); deleteFromRow(' + i + ')">🗑️</button>'
       }
       rows += (
-        '<tr class="row-clickable" onclick="openClassifyPanel(' + i + ')">' +
+        '<tr class="row-clickable ' + classeOrigine(m) + '" onclick="openClassifyPanel(' + i + ')">' +
           '<td onclick="event.stopPropagation()" style="width:34px;text-align:center">' +
             '<input type="checkbox" class="row-check" data-idx="' + i + '" onclick="onRowCheck()" aria-label="Seleziona movimento">' +
           '</td>' +
@@ -991,14 +1064,10 @@ async function loadDaClassificare() {
           '<td>' +
             '<div class="mov-desc">' + esc(m.descrizione) + '</div>' +
             (m.extra ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(m.extra) + '</div>' : '') +
+            avvisoSenzaGiornataHtml(m) +   // 86
           '</td>' +
           '<td class="num">' + fmtImporto(m.importo, m.valuta) + '</td>' +
-          '<td>' +
-            '<span class="origin-tag">' +
-              '<span aria-hidden="true">' + m._icon + '</span>' +
-              '<span class="origin-label">' + esc(m._sorgente + ' · ' + m._tipo_label) + '</span>' +
-            '</span>' +
-          '</td>' +
+          '<td>' + etichettaOrigineHtml(m) + '</td>' +   // 86 — la provenienza, scritta
           '<td class="row-actions">' + azioni + '</td>' +
         '</tr>'
       )
@@ -1048,11 +1117,13 @@ async function loadDaClassificare() {
         azioniCls += '<button class="icon-btn classify" title="Riclassifica" onclick="openRiclassifica(' + j + ')">✏️ Riclassifica</button>'
       }
       crows += (
-        '<tr>' +
+        '<tr class="' + classeOrigine(cm) + '">' +   // 86
           '<td class="dim num" style="white-space:nowrap">' + esc(fmtDate(cm.data)) + '</td>' +
           '<td>' +
             '<div class="mov-desc">' + esc(cm.descrizione) + '</div>' +
             (cm.extra ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(cm.extra) + '</div>' : '') +
+            '<div style="margin-top:4px">' + etichettaOrigineHtml(cm) + '</div>' +   // 86
+            avvisoSenzaGiornataHtml(cm) +
           '</td>' +
           '<td class="num">' + fmtImporto(cm.importo, cm.valuta) + '</td>' +
           '<td><span class="cod">' + esc(contoLabel(cc.conto_id)) + '</span></td>' +
@@ -1081,7 +1152,258 @@ async function loadDaClassificare() {
       '</div>'
   }
 
-  html('movimenti-lista', sezioneDaClass + sezioneClassificati)
+  html('movimenti-lista', sezioneOrfane + sezioneDaClass + sezioneClassificati + sezioneScarti)
+}
+
+// ══ 86 · I DATI CHE ARRIVANO DALL'APP CANTIERI ════════════════════════════════
+// Spese e regia NON si copiano: si leggono ogni volta dalle tabelle dell'App
+// Cantieri. Qui si tengono solo la classificazione e, dalla 86, gli scarti.
+//  · una riga dell'App Cantieri sbagliata si «scarta» da qui (storico, si
+//    ripristina); là non cambia niente;
+//  · una classificazione la cui riga là non c'è più compare in cima, finché non
+//    se ne prende visione: prima spariva in silenzio da conti ed export;
+//  · una regia senza la giornata dello stesso operaio, cantiere e giorno lo dice:
+//    l'App Cantieri, cancellando una giornata, lascia la regia scritta insieme
+//    (lavoro aperto sull'App Cantieri, STATO §4).
+var orfaneDaClass = [], orfaneVerificate = true
+
+async function loadScarti(force) {
+  if (cacheOk('scarti') && !force) return scartiCache || []
+  await richiediAccesso('loadScarti')
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_scarti')
+    .select('id, tipo, origine_tipo, origine_id, classificazione_id, descrizione, importo, data_origine, motivo, creato_il, ripristinato_il, ripristinato_motivo')
+    .eq('azienda_id', currentAziendaId).order('creato_il').order('id') })
+  if (error) {
+    if (tabellaScartiMancante(error)) {
+      console.warn('tm_conta_scarti non c\'è ancora: SQL_FASE86_scarti.sql da lanciare.')
+      scartiCache = []; scartiSenzaTabella = true; segnaCacheOk('scarti')
+      return scartiCache
+    }
+    throw new Error('scarti non letti: ' + (error.message || error))
+  }
+  scartiSenzaTabella = false
+  scartiCache = data || []
+  segnaCacheOk('scarti')
+  return scartiCache
+}
+function tabellaScartiMancante(e) {
+  var m = String((e && e.message) || e || '')
+  return /tm_conta_scarti/.test(m) && /(does not exist|Could not find|schema cache)/i.test(m)
+}
+function scartoAttivo(tipo, origineTipo, origineId) {
+  return (scartiCache || []).filter(function (s) {
+    return s.tipo === tipo && s.origine_tipo === origineTipo && String(s.origine_id) === String(origineId) && !s.ripristinato_il
+  })[0] || null
+}
+
+// Le classificazioni di spese e regia la cui riga dell'App Cantieri non è fra
+// quelle lette. Pura: classMap (chiave «tipo:id» → classificazione), righe lette.
+function classificazioniOrfane(classMap, righe) {
+  var lette = {}
+  ;(righe || []).forEach(function (m) { lette[m.origine_tipo + ':' + m.origine_id] = true })
+  return Object.keys(classMap || {}).filter(function (k) {
+    var c = classMap[k]
+    return (c.origine_tipo === 'spesa' || c.origine_tipo === 'regia') && !lette[c.origine_tipo + ':' + c.origine_id]
+  }).map(function (k) {
+    var c = classMap[k]
+    return { origine_tipo: c.origine_tipo, origine_id: c.origine_id, cls: c,
+             importo: round2((safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0)) }
+  })
+}
+
+// Le giornate dell'App Cantieri, come «cantiere|operaio|giorno». null = non lette.
+async function chiaviGiornateRegia() {
+  try {
+    const { data, error } = await leggiTutto(function () { return sb.from('giornate')
+      .select('id, cantiere_id, operaio_id, data').order('id') })
+    if (error) throw error
+    var chiavi = {}
+    ;(data || []).forEach(function (g) { chiavi[g.cantiere_id + '|' + g.operaio_id + '|' + g.data] = true })
+    return chiavi
+  } catch (e) {
+    console.warn('Giornate non lette (il controllo sulla regia salta):', e.message || e)
+    return null
+  }
+}
+// Una regia di un operaio senza la sua giornata: forse la giornata è stata
+// cancellata. Senza giornate lette non si dice niente.
+function regiaSenzaGiornata(m, chiavi) {
+  if (!chiavi || m.origine_tipo !== 'regia' || !m.operaio_id) return false
+  return !chiavi[m.cantiere_id + '|' + m.operaio_id + '|' + m.data]
+}
+function avvisoSenzaGiornataHtml(m) {
+  if (!m._senzaGiornata) return ''
+  return '<div class="avviso-origine">⚠️ La giornata di questa regia non c\'è più nell\'App Cantieri (forse è stata ' +
+    'cancellata: la regia scritta insieme resta). Se è così, scartala qui e cancellala anche là, da App Cantieri → Regia.</div>'
+}
+
+// La provenienza di una riga: classe della riga (lo sfondo) e etichetta SCRITTA.
+// Mai solo il colore.
+function classeOrigine(m) {
+  if (m.origine_tipo === 'spesa' || m.origine_tipo === 'regia') return 'riga-orig-cantieri'
+  if (m.origine_tipo === 'acquisto' && m._ai) return 'riga-orig-ai'
+  if (m.origine_tipo === 'proprio') return 'riga-orig-mano'
+  return 'riga-orig-doc'
+}
+function etichettaOrigineHtml(m) {
+  var t, cls
+  if (m.origine_tipo === 'spesa') { t = '🏗️ da App Cantieri · Spesa'; cls = 'orig-cantieri' }
+  else if (m.origine_tipo === 'regia') {
+    t = '🏗️ da App Cantieri · ' + (m._fatturato ? 'Regia fatturata' : 'Regia da fatturare'); cls = 'orig-cantieri'
+  }
+  else if (m.origine_tipo === 'proprio') { t = '✍️ inserito a mano'; cls = 'orig-mano' }
+  else if (m.origine_tipo === 'acquisto') { t = (m._ai ? '🤖 letta dall\'AI · ' : '📥 ') + 'fattura d\'acquisto'; cls = m._ai ? 'orig-ai' : 'orig-doc' }
+  else { t = '🧾 ' + (m._tipo_label || 'fattura emessa').toLowerCase(); cls = 'orig-doc' }
+  return '<span class="orig-etichetta ' + cls + '">' + esc(t) + '</span>'
+}
+
+function nomeOrigine(tipo) { return tipo === 'regia' ? 'Regia' : 'Spese' }
+
+async function scartaDaRiga(i) {
+  var m = daClassList[i]
+  if (!m || (m.origine_tipo !== 'spesa' && m.origine_tipo !== 'regia')) return
+  try {
+    await richiediSessione('la riga NON è stata scartata')
+    await loadScarti(true)
+    if (scartiSenzaTabella) {
+      window.alert('Non scartata.\n\nManca l\'SQL della 86 (sql/da_applicare/SQL_FASE86_scarti.sql): lancialo nel SQL Editor di Supabase, poi riprova.')
+      return
+    }
+    var motivo = window.prompt(
+      'Scartare da Pre-contabilità questa riga dell\'App Cantieri?\n\n' +
+      '«' + m.descrizione + '» · ' + fmtDate(m.data) + (m.importo != null ? ' · ' + fmtNumIt(m.importo) + ' CHF' : '') + '\n\n' +
+      'Esce da «Da classificare» e resta nello storico «🗑️ Scartati», da dove si può ripristinare.\n' +
+      'Nell\'App Cantieri NON cambia niente: se è sbagliata anche là, cancellala dall\'App Cantieri → ' +
+      nomeOrigine(m.origine_tipo) + ' → la riga → Elimina.\n\n' +
+      'Scrivi PERCHÉ la scarti (obbligatorio):', '')
+    if (motivo === null) return
+    motivo = String(motivo).trim()
+    if (motivo.length < 5) { window.alert('Non scartata: il motivo è obbligatorio (almeno 5 caratteri).'); return }
+    const { error } = await sb.from('tm_conta_scarti').insert({
+      azienda_id: currentAziendaId, tipo: 'scarto', origine_tipo: m.origine_tipo, origine_id: String(m.origine_id),
+      descrizione: m.descrizione || null, importo: m.importo, data_origine: m.data || null, motivo: motivo }).select('id')
+    if (error) throw error
+    await loadDaClassificare()
+    await refreshDaClassificareCount()
+    html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
+      '<div class="msg">Riga scartata: è nello storico «🗑️ Scartati», in fondo alla pagina. Nell\'App Cantieri è rimasta com\'era.</div></div>')
+  } catch (e) {
+    window.alert('Riga non scartata: ' + messaggioScarti(e))
+  }
+}
+
+async function prendiVisioneOrfana(j) {
+  var o = orfaneDaClass[j]
+  if (!o) return
+  try {
+    await richiediSessione('la presa visione NON è stata registrata')
+    await loadScarti(true)
+    if (scartiSenzaTabella) {
+      window.alert('Non registrata.\n\nManca l\'SQL della 86 (sql/da_applicare/SQL_FASE86_scarti.sql): lancialo nel SQL Editor di Supabase, poi riprova.')
+      return
+    }
+    var nota = window.prompt('Presa visione: la riga dell\'App Cantieri di questa classificazione non c\'è più ' +
+      '(' + (o.origine_tipo === 'regia' ? 'regia' : 'spesa') + ', ' + fmtNumIt(o.importo) + ' CHF).\n\n' +
+      'La classificazione NON si cancella: esce da questo avviso e resta nello storico. Nei conti e nell\'export non conta ' +
+      'già più (si legge l\'origine).\n\nUna nota, se vuoi (facoltativa):', '')
+    if (nota === null) return
+    nota = String(nota).trim()
+    const { error } = await sb.from('tm_conta_scarti').insert({
+      azienda_id: currentAziendaId, tipo: 'presa_visione', origine_tipo: o.origine_tipo, origine_id: String(o.origine_id),
+      classificazione_id: o.cls.id || null, importo: o.importo,
+      descrizione: (o.origine_tipo === 'regia' ? 'Regia' : 'Spesa') + ' classificata, origine cancellata nell\'App Cantieri',
+      motivo: 'Presa visione' + (nota ? ': ' + nota : ': origine cancellata nell\'App Cantieri') }).select('id')
+    if (error) throw error
+    await loadDaClassificare()
+  } catch (e) {
+    window.alert('Presa visione non registrata: ' + messaggioScarti(e))
+  }
+}
+
+async function ripristinaScarto(idScarto) {
+  var s = (scartiCache || []).filter(function (x) { return x.id === idScarto })[0]
+  if (!s) return
+  var motivo = window.prompt((s.tipo === 'scarto'
+      ? 'Ripristinare la riga «' + (s.descrizione || '') + '»? Torna in «Da classificare».'
+      : 'Rimettere l\'avviso su questa classificazione senza origine?') +
+    '\n\nScrivi PERCHÉ (obbligatorio, resta nello storico):', '')
+  if (motivo === null) return
+  motivo = String(motivo).trim()
+  if (motivo.length < 5) { window.alert('Non ripristinato: il motivo è obbligatorio (almeno 5 caratteri).'); return }
+  try {
+    const { data, error } = await sb.from('tm_conta_scarti')
+      .update({ ripristinato_il: new Date().toISOString(), ripristinato_motivo: motivo })
+      .eq('id', idScarto).eq('azienda_id', currentAziendaId).is('ripristinato_il', null).select('id')
+    if (error) throw error
+    if (!data || data.length !== 1) throw new Error('non risulta ripristinato: ricarica e riprova')
+    await loadDaClassificare()
+    await refreshDaClassificareCount()
+  } catch (e) {
+    window.alert('Non ripristinato: ' + messaggioScarti(e))
+  }
+}
+
+function messaggioScarti(e) {
+  if (tabellaScartiMancante(e)) return 'manca l\'SQL della 86 (sql/da_applicare/SQL_FASE86_scarti.sql). Non è cambiato niente.'
+  return (e && e.message) ? e.message : String(e)
+}
+
+// In cima a «Da classificare»: le classificazioni rimaste senza origine.
+function boxOrfaneHtml() {
+  if (!orfaneVerificate) {
+    return '<div class="fase-banner warn" role="status" style="margin-bottom:16px"><span class="icon" aria-hidden="true">⚠️</span>' +
+      '<div class="msg">Non controllo se qualche classificazione è rimasta senza la sua riga: l\'App Cantieri non si è letta ' +
+      'del tutto (vedi qui sopra). Riprova con «🔄 Aggiorna».</div></div>'
+  }
+  if (!orfaneDaClass.length) return ''
+  var righe = orfaneDaClass.map(function (o, j) {
+    var c = o.cls
+    var consegnata = c.stato === 'esportato' || c.stato === 'bloccato'
+    return '<tr class="riga-orig-cantieri">' +
+      '<td>' + esc(o.origine_tipo === 'regia' ? '🏗️ Regia' : '🏗️ Spesa') + '</td>' +
+      '<td class="num">' + esc(fmtNumIt(o.importo)) + ' CHF</td>' +
+      '<td><span class="cod">' + esc(contoLabel(c.conto_id)) + '</span></td>' +
+      '<td>' + esc(c.cantiere_id ? nomeCantiereDaId(c.cantiere_id) || '' : '—') + '</td>' +
+      '<td class="dim">' + esc(c.created_at ? fmtDateTime(c.created_at) : '—') + '</td>' +
+      '<td>' + (consegnata ? '<strong>già consegnata al commercialista</strong>' : esc(c.stato || '')) + '</td>' +
+      '<td><button type="button" class="icon-btn" onclick="prendiVisioneOrfana(' + j + ')">📌 Presa visione</button></td>' +
+    '</tr>'
+  }).join('')
+  return '<div class="card avviso-orfane">' +
+    '<div class="card-title">⚠️ Classificazioni senza più l\'origine (cancellata nell\'App Cantieri) ' + badge('warn', orfaneDaClass.length + '') + '</div>' +
+    '<div class="form-hint">L\'origine di questi documenti è stata cancellata nell\'App Cantieri. Nei conti, nel cantiere e ' +
+      'nell\'export non contano più (si legge l\'origine): se una era già consegnata al commercialista, i tuoi conti adesso ' +
+      'sono diversi dai suoi. Descrizione e data stavano solo nella riga cancellata.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>Tipo</th><th style="text-align:right">Importo</th><th>Conto</th>' +
+      '<th>Cantiere</th><th>Classificata il</th><th>Stato</th><th></th></tr></thead><tbody>' + righe + '</tbody></table></div>' +
+  '</div>'
+}
+
+// In fondo a «Da classificare»: lo storico degli scarti e delle prese visione.
+function storicoScartiHtml() {
+  var tutti = (scartiCache || []).slice().reverse()
+  if (!tutti.length) return ''
+  var attivi = tutti.filter(function (s) { return !s.ripristinato_il }).length
+  var righe = tutti.map(function (s) {
+    return '<tr' + (s.ripristinato_il ? ' class="riga-chiusa"' : '') + '>' +
+      '<td>' + esc(s.tipo === 'scarto' ? '🗑️ Scartata' : '📌 Presa visione') + '</td>' +
+      '<td>' + esc(s.descrizione || '—') + '<div style="margin-top:4px"><span class="orig-etichetta orig-cantieri">' +
+        esc('🏗️ da App Cantieri · ' + (s.origine_tipo === 'regia' ? 'Regia' : 'Spesa')) + '</span></div></td>' +
+      '<td class="dim">' + esc(s.data_origine ? fmtDate(s.data_origine) : '—') + '</td>' +
+      '<td class="num">' + (s.importo != null ? esc(fmtNumIt(s.importo)) + ' CHF' : '—') + '</td>' +
+      '<td>«' + esc(s.motivo) + '»<div class="dim" style="font-size:11px">' + esc(fmtDateTime(s.creato_il)) + '</div></td>' +
+      '<td>' + (s.ripristinato_il
+        ? '<span class="dim">↩️ ripristinato il ' + esc(fmtDateTime(s.ripristinato_il)) + ': «' + esc(s.ripristinato_motivo || '') + '»</span>'
+        : '<button type="button" class="icon-btn" onclick="ripristinaScarto(\'' + esc(s.id) + '\')">↩️ Ripristina</button>') + '</td>' +
+    '</tr>'
+  }).join('')
+  return '<details class="card storico-scarti"><summary class="card-title">🗑️ Scartati e prese visione ' +
+      badge('info', attivi + ' attivi · ' + tutti.length + ' in tutto') + '</summary>' +
+    '<div class="form-hint">Niente si cancella: una riga scartata si ripristina, e lo storico resta. Nell\'App Cantieri ' +
+      'queste righe non sono state toccate.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>Cosa</th><th>Descrizione</th><th>Data</th><th style="text-align:right">Importo</th>' +
+      '<th>Motivo</th><th></th></tr></thead><tbody>' + righe + '</tbody></table></div>' +
+  '</details>'
 }
 
 // Aggiorna solo il badge nel nav (chiamato dopo insert Canale B)
@@ -1103,8 +1425,10 @@ async function refreshDaClassificareCount() {
       }
     }
 
+    try { await loadScarti() } catch (_) { /* senza, contano anche gli scartati */ }   // 86
     var count = tutti.filter(function (m) {
-      return !classified.has(m.origine_tipo + ':' + m.origine_id)
+      return !classified.has(m.origine_tipo + ':' + m.origine_id) &&
+             !scartoAttivo('scarto', m.origine_tipo, m.origine_id)
     }).length
 
     var badgeNav = el('nav-badge-movimenti')
@@ -2859,9 +3183,15 @@ async function loadExportDataset(force) {
   var stralci = await loadStralci(true)
   try { await ensureContiIva() } catch (_) { /* il conto della perdita si cerca per codice */ }
 
+  // 86 — le classificazioni rimaste senza la riga dell'App Cantieri: non
+  // entrano nel file (si legge l'origine) e l'anteprima lo dice. Se spese o
+  // regia non si sono lette, lo si dice invece di contarle tutte come orfane.
+  var erroriApp = canalAErrori.slice()
+  var orfane = erroriApp.length ? [] : classificazioniOrfane(classMap, movimentiAll)
+
   exportDataset = { fatture: fatture, acquisti: acquisti, movimentiAll: movimentiAll,
                     classMap: classMap, classRighe: idx ? idx.righe : {}, numeroById: numeroById,
-                    stralci: stralci }
+                    stralci: stralci, orfane: orfane, erroriAppCantieri: erroriApp }
   return exportDataset
 }
 
@@ -3450,7 +3780,16 @@ async function updateExportPreview() {
       // FASE 26 — quanti documenti sono divisi, e quindi quante righe in piu'
       // troverà chi apre il file. Se non ce n'è nessuno non si dice niente:
       // spiegare una cosa che non c'è è solo rumore.
-      notaDivisiAnteprima(d)
+      notaDivisiAnteprima(d) +
+      // 86 — quello che arriva dall'App Cantieri e non c'è, o non si è letto.
+      ((ds.erroriAppCantieri || []).length
+        ? '<div class="exp-riga exp-vuoto"><span>⚠️ App Cantieri non letta del tutto (' + esc(ds.erroriAppCantieri.join(' · ')) +
+          '): spese e regia mancano dal file. Riprova prima di consegnare.</span><span></span></div>' : '') +
+      ((ds.orfane || []).length
+        ? '<div class="exp-riga exp-vuoto"><span>⚠️ ' + ds.orfane.length + (ds.orfane.length === 1
+            ? ' classificazione senza più la sua riga nell\'App Cantieri: non entra nel file'
+            : ' classificazioni senza più la loro riga nell\'App Cantieri: non entrano nel file') +
+          ' (vedi in cima a «Da classificare»).</span><span></span></div>' : '')
   } catch (e) {
     exportPeriodRows = []
     prev.innerHTML = '<span style="color:var(--err)">Errore anteprima: ' + esc(e.message || e) + '</span>'
@@ -4170,9 +4509,17 @@ function filtriArchivio() {
   return {
     testo: String(getVal('arch-testo') || '').toLowerCase().trim(),
     anno: getVal('arch-anno'), da: getVal('arch-da'), a: getVal('arch-a'),
-    impDa: safeNum(getVal('arch-imp-da')), impA: safeNum(getVal('arch-imp-a')),
+    // 85 — l'importo scritto come viene; e la data: del documento o di un pagamento.
+    impDa: importoFiltroArchivio('arch-imp-da'), impA: importoFiltroArchivio('arch-imp-a'),
+    modo: getVal('arch-modo') || 'documento',
     cantiere: getVal('arch-cantiere'), stato: getVal('arch-stato'), tipi: tipi
   }
+}
+
+// 85 — un importo del filtro dell'Archivio: vuoto o illeggibile non filtra.
+function importoFiltroArchivio(id) {
+  var n = parseImportoIt(getVal(id))
+  return (n == null || isNaN(n)) ? null : Math.abs(n)
 }
 
 function filtraArchivio(docs, f) {
@@ -4182,18 +4529,18 @@ function filtraArchivio(docs, f) {
     if (f.stato === 'aperti' && d.chiuso) return false
     if (f.stato === 'chiusi' && !d.chiuso) return false
     if (f.anno && String(d.data).slice(0, 4) !== String(f.anno)) return false
-    if (f.da && (!d.data || d.data < f.da)) return false
-    if (f.a && (!d.data || d.data > f.a)) return false
-    var imp = d.importo == null ? null : Math.abs(d.importo)
-    if (f.impDa != null && (imp == null || imp < f.impDa - 0.005)) return false
-    if (f.impA != null && (imp == null || imp > f.impA + 0.005)) return false
+    // 85 — importo e data come in tutti gli elenchi: totale o un pagamento.
+    var pagD = d.tabella === 'tm_conta_offerte' ? [] : pagamentiDi(d.tabella, d.id)
+    if (!corrispondeImportoData({ attivo: f.impDa != null || f.impA != null || !!f.da || !!f.a,
+          impDa: f.impDa, impA: f.impA, da: f.da, a: f.a, modo: f.modo || 'documento' },
+          { importo: d.importo, date: { documento: d.data }, pagamenti: pagD })) return false
     if (f.cantiere) {
       var cerca = f.cantiere === '__nessuno__' ? '' : f.cantiere
       if (d.cantieri.indexOf(cerca) === -1) return false
     }
     if (termini.length) {
       var hay = (d.numero + ' ' + d.controparte + ' ' + d.testo + ' ' +
-        (d.importo != null ? String(d.importo) + ' ' + d.importo.toFixed(2) : '')).toLowerCase()
+        testoImporti([d.importo].concat(pagD.map(function (p) { return p.importo })))).toLowerCase()   // 85
       if (!termini.every(function (t) { return hay.indexOf(t) !== -1 })) return false
     }
     return true
@@ -4214,9 +4561,7 @@ function mostraAltriArchivio() {
 }
 
 function azzeraArchivio() {
-  ;['arch-testo', 'arch-anno', 'arch-da', 'arch-a', 'arch-imp-da', 'arch-imp-a', 'arch-cantiere', 'arch-stato']
-    .forEach(function (id) { setVal(id, '') })
-  Object.keys(TIPI_ARCHIVIO).forEach(function (k) { var c = el('arch-tipo-' + k); if (c) c.checked = true })
+  azzeraFiltriElenco('archivio')   // 85 — gli stessi campi dell'ingresso dal menu
   onFiltroArchivio()
 }
 
@@ -4274,6 +4619,198 @@ async function apriDaArchivio(tabella, id) {
   }
 }
 
+// ══ 85 · CERCARE PER IMPORTO E PER DATA — UN MODULO SOLO, IN OGNI ELENCO ════════
+// Ogni elenco ha la stessa barra: «Importo da / a», «Data da / a» e, dove c'è
+// più di una data utile, «Data di: documento / pagamento / registrazione».
+// L'importo si scrive come viene (1.200,50 · 1200.50 · 1200,50 · 1'200.50) e
+// si confronta col totale del documento E con ogni pagamento registrato: quello
+// che si legge sull'estratto conto è spesso una rata. Con «Data di: pagamento»
+// e un importo, deve essere lo STESSO pagamento a cadere in quella data.
+// I filtri si azzerano entrando nella pagina dal menu (azzeraFiltriElenco).
+var FILTRI_ID = {
+  fatture:   { render: 'renderFattureTable',   testo: false, modi: [['documento', 'documento (emissione)'], ['pagamento', 'pagamento (incasso)'], ['registrazione', 'registrazione']] },
+  acquisti:  { render: 'renderAcquistiTable',  testo: false, modi: [['documento', 'documento (data fattura)'], ['pagamento', 'pagamento'], ['registrazione', 'registrazione']] },
+  offerte:   { render: 'renderOfferteTable',   testo: false, modi: [['documento', 'documento (data conferma)'], ['registrazione', 'registrazione']] },
+  propri:    { render: 'renderMovimentiPropri', testo: true, modi: [['documento', 'documento (data movimento)'], ['pagamento', 'pagamento'], ['registrazione', 'registrazione']] },
+  daclass:   { render: 'renderListeDaClassificare', testo: true, modi: [['documento', 'documento']] },
+  scadenze:  { render: 'renderScadenze',       testo: true, modi: [['scadenza', 'scadenza (o rata)'], ['documento', 'documento']] }
+}
+
+// L'importo scritto all'italiana, all'inglese o alla svizzera. null = vuoto,
+// NaN = non si legge. «1.200» è milleduecento (punto delle migliaia); «12.50»
+// è dodici e cinquanta (punto dei decimali).
+function parseImportoIt(t) {
+  var s = String(t == null ? '' : t).replace(/chf/ig, '').replace(/[\s'’]/g, '')
+  if (!s) return null
+  if (!/^-?[\d.,]+$/.test(s) || !/\d/.test(s)) return NaN
+  var p = s.lastIndexOf('.'), v = s.lastIndexOf(',')
+  if (p >= 0 && v >= 0) {
+    var dec = p > v ? '.' : ',', mil = dec === '.' ? ',' : '.'
+    s = s.split(mil).join('').replace(dec, '.')
+  } else if (v >= 0) {
+    s = (s.split(',').length > 2) ? s.split(',').join('') : s.replace(',', '.')
+  } else if (p >= 0) {
+    var parti = s.replace(/^-/, '').split('.')
+    var migliaia = parti.length > 1 && parti[0].length >= 1 && parti[0].length <= 3 && parti[0] !== '0' &&
+                   parti.slice(1).every(function (x) { return x.length === 3 })
+    if (migliaia && (parti.length > 2 || parti[1].length === 3)) s = s.split('.').join('')
+    else if (parti.length > 2) return NaN
+  }
+  var n = Number(s)
+  return isFinite(n) ? n : NaN
+}
+
+// Gli importi scritti in tutti i modi, per la ricerca nel testo: chi scrive
+// «1.200,50», «1200,50» o «1200.5» trova la stessa cosa.
+function testoImporti(importi) {
+  return (importi || []).map(function (x) {
+    var n = safeNum(x)
+    if (n == null) return ''
+    var a = Math.abs(n)
+    return [String(n), n.toFixed(2), fmtNumIt(a), fmtNumIt(a).replace(/\./g, ''), a.toFixed(2).replace('.', ',')].join(' ')
+  }).join(' ')
+}
+
+function barraImportoDataHtml(k) {
+  var c = FILTRI_ID[k]
+  var id = function (x) { return 'fid-' + k + '-' + x }
+  var on = 'onFiltroID(\'' + k + '\')'
+  return '<div class="fid-campi">' +
+    (c.testo
+      ? '<div class="fid-campo fid-testo"><label class="form-label" for="' + id('testo') + '">Cerca</label>' +
+          '<input type="text" id="' + id('testo') + '" class="form-input" placeholder="🔍 descrizione, fornitore, importo…" oninput="' + on + '" autocomplete="off" /></div>'
+      : '') +
+    '<div class="fid-campo"><label class="form-label" for="' + id('impda') + '">Importo da</label>' +
+      '<input type="text" inputmode="decimal" id="' + id('impda') + '" class="form-input num" placeholder="es. 1.200,50" oninput="' + on + '" autocomplete="off" /></div>' +
+    '<div class="fid-campo"><label class="form-label" for="' + id('impa') + '">Importo a</label>' +
+      '<input type="text" inputmode="decimal" id="' + id('impa') + '" class="form-input num" placeholder="es. 1.300" oninput="' + on + '" autocomplete="off" /></div>' +
+    '<div class="fid-campo"><label class="form-label" for="' + id('da') + '">Data da</label>' +
+      '<input type="date" id="' + id('da') + '" class="form-input" onchange="' + on + '" /></div>' +
+    '<div class="fid-campo"><label class="form-label" for="' + id('a') + '">Data a</label>' +
+      '<input type="date" id="' + id('a') + '" class="form-input" onchange="' + on + '" /></div>' +
+    '<div class="fid-campo fid-modo"><label class="form-label" for="' + id('modo') + '">Data di</label>' +
+      (c.modi.length > 1
+        ? '<select id="' + id('modo') + '" class="form-input" onchange="' + on + '">' +
+            c.modi.map(function (m) { return '<option value="' + m[0] + '">' + esc(m[1]) + '</option>' }).join('') + '</select>'
+        : '<div class="fid-fisso" id="' + id('modo') + '" data-valore="' + c.modi[0][0] + '">' + esc(c.modi[0][1]) + '</div>') +
+    '</div>' +
+    '<div class="fid-campo fid-azzera"><button type="button" class="btn-secondary" onclick="azzeraFiltroID(\'' + k + '\', true)">↺ Azzera</button></div>' +
+  '</div>' +
+  '<div class="fid-msg" id="' + id('msg') + '" role="status" aria-live="polite"></div>'
+}
+
+function installaFiltriImportoData() {
+  Object.keys(FILTRI_ID).forEach(function (k) {
+    var box = el('fid-' + k)
+    if (box && !box.innerHTML.trim()) box.innerHTML = barraImportoDataHtml(k)
+  })
+}
+
+// I filtri di un elenco, letti dalla barra. Un campo vuoto non filtra; un
+// importo che non si legge lo si dice, e non filtra.
+function leggiFiltroID(k) {
+  var c = FILTRI_ID[k]
+  var v = function (x) { var e = el('fid-' + k + '-' + x); return e ? String(e.value || '').trim() : '' }
+  var modoEl = el('fid-' + k + '-modo')
+  var modo = modoEl ? (modoEl.value || (modoEl.dataset && modoEl.dataset.valore) || c.modi[0][0]) : c.modi[0][0]
+  var impDa = parseImportoIt(v('impda')), impA = parseImportoIt(v('impa'))
+  var errori = []
+  if (impDa !== null && isNaN(impDa)) { errori.push('«' + v('impda') + '» non si legge come importo'); impDa = null }
+  if (impA !== null && isNaN(impA)) { errori.push('«' + v('impa') + '» non si legge come importo'); impA = null }
+  if (impDa != null) impDa = Math.abs(impDa)
+  if (impA != null) impA = Math.abs(impA)
+  var f = { impDa: impDa, impA: impA, da: v('da'), a: v('a'), modo: modo, testo: v('testo').toLowerCase() }
+  f.attivo = f.impDa != null || f.impA != null || !!f.da || !!f.a
+  var msg = el('fid-' + k + '-msg')
+  if (msg) msg.innerHTML = errori.length ? '⚠️ ' + esc(errori.join(' · ')) + ' — scrivilo come 1.200,50 o 1200.50.' : ''
+  return f
+}
+
+// Un documento passa il filtro? doc = { importo, altriImporti, date: {…}, pagamenti: [{data, importo}] }
+function corrispondeImportoData(f, doc) {
+  if (!f || !f.attivo) return true
+  var haImp = f.impDa != null || f.impA != null, haData = !!(f.da || f.a)
+  var nelleCifre = function (x) {
+    var n = safeNum(x); if (n == null) return false
+    n = Math.abs(n)
+    return (f.impDa == null || n >= f.impDa - 0.005) && (f.impA == null || n <= f.impA + 0.005)
+  }
+  var nelleDate = function (d) {
+    if (!d) return false
+    d = String(d).slice(0, 10)
+    return (!f.da || d >= f.da) && (!f.a || d <= f.a)
+  }
+  var pag = doc.pagamenti || []
+  var importi = [doc.importo].concat(doc.altriImporti || [])
+  if (f.modo === 'pagamento' && haData) {
+    // un pagamento in quella data; con un importo, quel pagamento (o il totale)
+    return pag.some(function (p) { return nelleDate(p.data) && (!haImp || nelleCifre(p.importo) || importi.some(nelleCifre)) })
+  }
+  if (haData && !nelleDate((doc.date || {})[f.modo])) return false
+  if (haImp && !importi.some(nelleCifre) && !pag.some(function (p) { return nelleCifre(p.importo) })) return false
+  return true
+}
+
+// Il testo cercato, su una manciata di campi e su tutti gli importi.
+function corrispondeTesto(q, campi, importi) {
+  if (!q) return true
+  var hay = ((campi || []).join(' ') + ' ' + testoImporti(importi)).toLowerCase()
+  return q.split(/\s+/).every(function (t) { return hay.indexOf(t) !== -1 })
+}
+
+function onFiltroID(k) {
+  var fn = window[FILTRI_ID[k].render]
+  if (typeof fn === 'function') fn()
+}
+
+function azzeraFiltroID(k, ridisegna) {
+  ;['testo', 'impda', 'impa', 'da', 'a'].forEach(function (x) { var e = el('fid-' + k + '-' + x); if (e) e.value = '' })
+  var m = el('fid-' + k + '-modo')
+  if (m && m.tagName === 'SELECT') m.value = FILTRI_ID[k].modi[0][0]
+  var msg = el('fid-' + k + '-msg'); if (msg) msg.innerHTML = ''
+  if (ridisegna) onFiltroID(k)
+}
+
+// Entrando nella pagina dal menu, l'elenco parte pulito: un filtro rimasto da
+// ieri farebbe credere che dei documenti siano spariti (come l'Elenco codici, 68).
+function azzeraFiltriElenco(pageId) {
+  if (pageId === 'fatture') {
+    azzeraFiltroID('fatture'); setVal('fatture-search', ''); setVal('fatture-filtro-anno', '')
+    statoFiltroDefault('fatture-filtro-stato')
+    if (typeof vistaFattureScadute !== 'undefined') vistaFattureScadute = false
+  } else if (pageId === 'acquisti') {
+    azzeraFiltroID('acquisti'); setVal('acquisti-search', ''); setVal('acquisti-filtro-anno', ''); setVal('acquisti-filtro-cantiere', '')
+    statoFiltroDefault('acquisti-filtro-stato')
+  } else if (pageId === 'offerte') {
+    azzeraFiltroID('offerte'); setVal('offerte-search', '')
+    statoFiltroDefault('offerte-filtro-stato')
+  } else if (pageId === 'inserimento') { azzeraFiltroID('propri')
+  } else if (pageId === 'movimenti') { azzeraFiltroID('daclass')
+  } else if (pageId === 'scadenze') { azzeraFiltroID('scadenze')
+  } else if (pageId === 'archivio') {
+    ;['arch-testo', 'arch-anno', 'arch-da', 'arch-a', 'arch-imp-da', 'arch-imp-a', 'arch-cantiere', 'arch-stato']
+      .forEach(function (id) { setVal(id, '') })
+    setVal('arch-modo', 'documento')
+    Object.keys(TIPI_ARCHIVIO).forEach(function (t) { var c = el('arch-tipo-' + t); if (c) c.checked = true })
+  }
+}
+
+// 85 — la ricerca delle fatture di vendita, usata dall'elenco e dalla vista
+// «Scadute»: testo (numero, cliente, importi in ogni forma, pagamenti) +
+// importo e data. null = nessun filtro.
+function predicatoFiltriFatture() {
+  var q = el('fatture-search') ? el('fatture-search').value.trim().toLowerCase() : ''
+  var fid = leggiFiltroID('fatture')
+  if (!q && !fid.attivo) return null
+  return function (f) {
+    var pag = pagamentiDi('tm_conta_fatture', f.id)
+    if (!corrispondeTesto(q, [f.numero || '', f.cliente_nome || ''],
+          [f.totale].concat(pag.map(function (p) { return p.importo })))) return false
+    return corrispondeImportoData(fid, { importo: f.totale,
+      date: { documento: f.data_emissione, registrazione: f.created_at }, pagamenti: pag })
+  }
+}
+
 function renderFattureTable() {
   // 80·2 — UN filtro di stato, che parte da «Aperti» (vedi statoVenditaFiltro).
   var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : 'aperti'
@@ -4286,16 +4823,7 @@ function renderFattureTable() {
 
   // ricerca testuale: numero, cliente, totale (case-insensitive, per pezzi di
   // parola; tutti i termini devono combaciare)
-  var termini = q ? q.split(/\s+/) : []
-  var cerca = q ? function (f) {
-    var totNum = safeNum(f.totale)
-    var hay = (
-      (f.numero || '') + ' ' +
-      (f.cliente_nome || '') + ' ' +
-      (totNum != null ? String(totNum) + ' ' + totNum.toFixed(2) : '')
-    ).toLowerCase()
-    return termini.every(function (t) { return hay.indexOf(t) !== -1 })
-  } : null
+  var cerca = predicatoFiltriFatture()   // 85 — testo, importo, data, pagamenti
   var diviso = elencoConStato(fattureList,
     stato,
     function (f) { return !anno || String(f.anno) === String(anno) },
@@ -4318,7 +4846,7 @@ function renderFattureTable() {
       annullata: { sing: 'annullata', plur: 'annullate' } }))
 
   if (!list.length) {
-    var filtroAttivo = q || (stato && stato !== 'aperti' && stato !== 'tutti') || anno
+    var filtroAttivo = q || (stato && stato !== 'aperti' && stato !== 'tutti') || anno || leggiFiltroID('fatture').attivo   // 85
     var msg = filtroAttivo
       ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.'
       : (diviso.nascosti ? 'Nessuna fattura aperta.' : 'Nessuna fattura.')
@@ -7470,12 +7998,14 @@ function renderAcquistiTable() {
     }
     return true
   })
-  var terminiA = qv ? qv.split(/\s+/) : []
-  var cercaA = qv ? function (a) {
-    var imp = safeNum(a.importo)
-    var hay = ((a.fornitore || '') + ' ' + (a.numero_fornitore || '') + ' ' +
-      (imp != null ? String(imp) + ' ' + imp.toFixed(2) : '')).toLowerCase()
-    return terminiA.every(function (t) { return hay.indexOf(t) !== -1 })
+  // 85 — testo (fornitore, numero, importi in ogni forma, pagamenti) + importo e data.
+  var fidA = leggiFiltroID('acquisti')
+  var cercaA = (qv || fidA.attivo) ? function (a) {
+    var pag = pagamentiDi('tm_conta_fatture_acquisto', a.id)
+    if (!corrispondeTesto(qv, [a.fornitore || '', a.numero_fornitore || ''],
+          [a.importo].concat(pag.map(function (p) { return p.importo })))) return false
+    return corrispondeImportoData(fidA, { importo: a.importo,
+      date: { documento: a.data, registrazione: a.created_at }, pagamenti: pag })
   } : null
   // 80·2 — il filtro Stato, da «Aperti». Quelli «da confermare» sono aperti:
   // c'è ancora qualcosa da fare.
@@ -7494,7 +8024,7 @@ function renderAcquistiTable() {
       pagato: { sing: 'pagata', plur: 'pagate' } }))
 
   if (!list.length) {
-    var attivo = qv || (stato && stato !== 'aperti' && stato !== 'tutti') || anno || cantF
+    var attivo = qv || (stato && stato !== 'aperti' && stato !== 'tutti') || anno || cantF || fidA.attivo   // 85
     html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
       (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
     return
@@ -7514,8 +8044,10 @@ function renderAcquistiTable() {
       : ''
     var chiusoA = acquistoChiuso(a)   // 78
     return '<tr class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') + (chiusoA ? ' riga-chiusa' : '') +
+      (a.origine === 'import_ai' ? ' riga-orig-ai' : '') +   // 86
       '" onclick="viewAcquisto(\'' + a.id + '\')">' +
-      '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + (chiusoA ? segnoChiuso() : '') + '</td>' +
+      '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + (chiusoA ? segnoChiuso() : '') +
+        (a.origine === 'import_ai' ? '<div><span class="orig-etichetta orig-ai">🤖 letta dall\'AI</span></div>' : '') + '</td>' +
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
@@ -9004,6 +9536,13 @@ async function uploadAllegato(file) {
 }
 
 // ─── Ultimi inseriti Canale B ─────────────────────────────────────────────────
+// 85 — i movimenti propri si cercano. Senza filtri l'elenco mostra gli ultimi
+// 8 inseriti, come prima; con un filtro cerca fra TUTTI (testo, importo,
+// data del movimento, del pagamento o di registrazione).
+var propriTutti = null      // tutti i movimenti propri, i più recenti per primi
+var statoPropriById = {}    // id -> stato della classificazione (per «consegnato»)
+var PROPRI_ULTIMI = 8, PROPRI_MASSIMO = 200
+
 async function loadRecentiInseriti() {
   try { await loadAllegati() } catch (_) {}
   if (!currentAziendaId) {
@@ -9012,64 +9551,71 @@ async function loadRecentiInseriti() {
   }
   html('inserimento-recenti', loadingRow('Caricamento…'))
   try {
-    const { data, error } = await sb
+    const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_movimenti_propri')
-      .select('id, data, descrizione, importo, valuta, ente_fornitore, ricorrente, periodicita')
+      .select('id, data, descrizione, importo, valuta, ente_fornitore, ricorrente, periodicita, created_at')
       .eq('azienda_id', currentAziendaId)
-      .order('created_at', { ascending: false })
-      .limit(8)
+      .order('created_at', { ascending: false }).order('id') })
     if (error) throw error
+    propriTutti = data || []
+    try { await loadPagamenti() } catch (_) { /* la ricerca guarda solo l'importo */ }
 
-    // 59·B — l'elenco mostra gli ultimi 8: il contatore dice quanti sono in
-    // tutto, cosi' «8» non viene preso per il totale. Il conteggio e' una
-    // query a parte (solo il numero, nessuna riga); se fallisce si dice.
+    // Stato e conto delle classificazioni (per scrivere il conto e bloccare i consegnati)
+    statoPropriById = {}
     try {
-      const { count, error: eC } = await sb.from('tm_conta_movimenti_propri')
-        .select('id', { count: 'exact', head: true })
-        .eq('azienda_id', currentAziendaId)
-      if (eC) throw eC
-      var nTot = count == null ? null : count, nMos = (data || []).length
-      html('inserimento-contatore', '<div class="elenco-contatore-riga">' +
-        (nTot == null ? '<strong>' + nMos + '</strong> mostrati'
-          : (nTot > nMos
-              ? '<strong>ultimi ' + nMos + ' di ' + nTot + '</strong> movimenti propri <span class="dim">(gli altri si cercano da «Da classificare» e dai Cantieri)</span>'
-              : '<strong>' + nTot + '</strong> ' + (nTot === 1 ? 'movimento proprio' : 'movimenti propri') + ' <span class="dim">— tutti in elenco</span>')) +
-        '</div>')
-    } catch (eCnt) {
-      html('inserimento-contatore', '<div class="elenco-contatore-riga dim">Totale non contato: ' + esc(eCnt.message || eCnt) + '</div>')
-    }
-
-    if (!data || data.length === 0) {
-      recentiList = []
-      html('inserimento-recenti', '<div class="dim" style="padding:8px 0">Nessun movimento ancora inserito.</div>')
-      return
-    }
-
-    recentiList = data
-
-    // Stato classificazione di questi movimenti (per marcare i bloccati come sola lettura)
-    var statoById = {}
-    try {
-      var ids = data.map(function (m) { return m.id })
-      const { data: cls, error: clsErr } = await sb
+      const { data: cls, error: clsErr } = await leggiTutto(function () { return sb
         .from('tm_conta_classificazioni')
         .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, imponibile, iva_importo, cantiere_id, note, stato, created_at')
         .eq('azienda_id', currentAziendaId)
-        .eq('origine_tipo', 'proprio')
-        .in('origine_id', ids)
+        .eq('origine_tipo', 'proprio').order('id') })
       if (!clsErr && cls) {
         // FASE 25 — anche qui passa dal motore: con un movimento diviso in due
         // righe, l'assegnamento diretto avrebbe tenuto solo la seconda.
         var idxR = indicizzaClassificazioni(cls)
         Object.keys(idxR.sintesi).forEach(function (k) {
           classByKey[k] = idxR.sintesi[k]
-          statoById[idxR.sintesi[k].origine_id] = idxR.sintesi[k].stato
+          statoPropriById[idxR.sintesi[k].origine_id] = idxR.sintesi[k].stato
         })
         Object.keys(idxR.righe).forEach(function (k) { classRigheByKey[k] = idxR.righe[k] })
       }
       // I conti servono per scrivere il nome accanto al numero.
       await ensureContiIva()
     } catch (_) { /* non bloccante */ }
+    renderMovimentiPropri()
+  } catch (e) {
+    html('inserimento-contatore', '')
+    html('inserimento-recenti', '<p style="color:var(--err);font-size:13px">Errore: ' + esc(e.message) + '</p>')
+  }
+}
+
+function renderMovimentiPropri() {
+  if (!propriTutti) return
+  var f = leggiFiltroID('propri')
+  var cercando = f.attivo || !!f.testo
+  var trovati = !cercando ? propriTutti.slice(0, PROPRI_ULTIMI) : propriTutti.filter(function (m) {
+    var pag = pagamentiDi('tm_conta_movimenti_propri', m.id)
+    if (!corrispondeTesto(f.testo, [m.descrizione || '', m.ente_fornitore || ''],
+          [m.importo].concat(pag.map(function (p) { return p.importo })))) return false
+    return corrispondeImportoData(f, { importo: m.importo,
+      date: { documento: m.data, registrazione: m.created_at }, pagamenti: pag })
+  })
+  var data = trovati.slice(0, PROPRI_MASSIMO)
+  var nTot = propriTutti.length
+  html('inserimento-contatore', '<div class="elenco-contatore-riga">' + (cercando
+    ? '<strong>' + trovati.length + '</strong> ' + (trovati.length === 1 ? 'trovato' : 'trovati') + ' su ' + nTot + ' movimenti propri' +
+      (trovati.length > data.length ? ' <span class="dim">— mostrati i primi ' + data.length + ': stringi i filtri</span>' : '')
+    : (nTot > data.length
+        ? '<strong>ultimi ' + data.length + ' di ' + nTot + '</strong> movimenti propri <span class="dim">(gli altri: cercali qui sopra, o nell\'Archivio)</span>'
+        : '<strong>' + nTot + '</strong> ' + (nTot === 1 ? 'movimento proprio' : 'movimenti propri') + ' <span class="dim">— tutti in elenco</span>')) +
+    '</div>')
+  if (!data.length) {
+    recentiList = []
+    html('inserimento-recenti', '<div class="dim" style="padding:8px 0">' +
+      (cercando ? 'Nessun movimento proprio con questi filtri.' : 'Nessun movimento ancora inserito.') + '</div>')
+    return
+  }
+  recentiList = data
+  var statoById = statoPropriById
 
     var rows = data.map(function (m, i) {
       var importoStr = fmtImporto(m.importo, m.valuta)
@@ -9106,9 +9652,6 @@ async function loadRecentiInseriti() {
     }).join('')
 
     html('inserimento-recenti', '<div class="recent-list">' + rows + '</div>')
-  } catch (e) {
-    html('inserimento-recenti', '<p style="color:var(--err);font-size:13px">Errore: ' + esc(e.message) + '</p>')
-  }
 }
 
 // ─── FASE 1 — Setup check ─────────────────────────────────────────────────────
@@ -10923,13 +11466,13 @@ function renderOfferteTable() {
   var stato = getVal('offerte-filtro-stato')
   // 80·2 — il filtro Stato, da «Aperti» (fatturate e vecchie offerte scadute o
   // rifiutate sono chiuse). Il tipo è un altro filtro, e resta.
-  var cercaO = q ? function (o) {
-    var tot = safeNum(o.totale)
-    var hay = ((o.fornitore || '') + ' ' + (o.riferimento || '') + ' ' +
-               nomeCantiereDaId(o.cantiere_id) + ' ' + etichettaStatoOff(o) + ' ' +
-               (tot != null ? String(tot) + ' ' + tot.toFixed(2) : '') + ' ' +
-               (o.totale_stampato != null ? String(o.totale_stampato) : '')).toLowerCase()
-    return q.split(/\s+/).every(function (t) { return hay.indexOf(t) !== -1 })
+  // 85 — testo (fornitore, riferimento, cantiere, stato, importi in ogni forma) + importo e data.
+  var fidO = leggiFiltroID('offerte')
+  var cercaO = (q || fidO.attivo) ? function (o) {
+    if (!corrispondeTesto(q, [o.fornitore || '', o.riferimento || '', nomeCantiereDaId(o.cantiere_id), etichettaStatoOff(o)],
+          [o.totale, o.totale_stampato])) return false
+    return corrispondeImportoData(fidO, { importo: o.totale, altriImporti: [o.totale_stampato],
+      date: { documento: o.data, registrazione: o.created_at } })
   } : null
   var divisoO = elencoConStato(offerteList || [], stato || 'aperti',
     function (o) { return !tipo || (o.tipo_documento || 'conferma_ordine') === tipo },
@@ -10953,7 +11496,7 @@ function renderOfferteTable() {
       scaduta: { sing: 'offerta scaduta', plur: 'offerte scadute' }, rifiutata: { sing: 'offerta rifiutata', plur: 'offerte rifiutate' } }))
 
   if (!list.length) {
-    var vuoto = (q || (stato && stato !== 'aperti' && stato !== 'tutti') || tipo === 'offerta')
+    var vuoto = (q || (stato && stato !== 'aperti' && stato !== 'tutti') || tipo === 'offerta' || fidO.attivo)   // 85
       ? 'Nessun documento trovato con questi filtri.'
       : 'Nessuna conferma d’ordine registrata. Premi «➕ Nuova conferma» per la prima.'
     html('offerte-table', '<div class="cru-vuoto">' + vuoto + '</div>')
@@ -15062,6 +15605,25 @@ function renderScadenze() {
   var pre  = giorniPreavviso()
   var b    = calcolaScadenze(flussiCache || [], oggi, pre)
   scadenzeCache = b
+  // 85 — la ricerca: SOLO quello che si vede (il pallino nel menu conta tutto).
+  var fidS = leggiFiltroID('scadenze')
+  if (fidS.attivo || fidS.testo) {
+    var passa = function (r) {
+      var pag = pagamentiDi(r.tabella_origine, r.id_origine)
+      var mostrato = r._importoRata != null ? r._importoRata : r.residuo
+      if (!corrispondeTesto(fidS.testo, [r.controparte_nome || '', r.descrizione || ''],
+            [mostrato, r.importo_totale].concat(pag.map(function (p) { return p.importo })))) return false
+      return corrispondeImportoData(fidS, { importo: mostrato, altriImporti: [r.importo_totale],
+        date: { scadenza: r.data_scadenza, documento: r.data_documento }, pagamenti: pag })
+    }
+    var filtra = function (blocco) {
+      var righe = blocco.righe.filter(passa)
+      return Object.assign({}, blocco, { righe: righe, somma: round2(righe.reduce(function (s, r) {
+        return s + (r._importoRata != null ? r._importoRata : (safeNum(r.residuo) || 0)) }, 0)) })
+    }
+    b = { scaduto: filtra(b.scaduto), inScadenza: filtra(b.inScadenza), incasso: filtra(b.incasso),
+          senzaData: filtra(b.senzaData), altre: filtra(b.altre) }
+  }
 
   var nota = el('scad-nota-preavviso-testo')
   if (nota) {
@@ -19950,7 +20512,8 @@ function mostraFattureScadute(si) {
 
 function tabellaFattureScaduteHtml() {
   var oggi = oggiISO()
-  var list = fattureScadute(oggi)
+  var pf = predicatoFiltriFatture()   // 85 — la vista «Scadute» rispetta la stessa ricerca
+  var list = fattureScadute(oggi).filter(function (f) { return !pf || pf(f) })
   if (!list.length) {
     return '<div class="dim" style="padding:10px 0">✅ Nessuna fattura scaduta: non c\'è niente da sollecitare.</div>'
   }
@@ -22370,7 +22933,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '84'
+var VERSIONE = '86'
 
 function controllaVersionePagina() {
   try {
@@ -23008,6 +23571,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (btn.disabled || btn.classList.contains('disabled')) return
       var pageId = btn.dataset.page
       showPage(pageId)
+      azzeraFiltriElenco(pageId)   // 85 — si entra dall'elenco pulito
       if (pageId === 'movimenti')   { loadDaClassificare() }
       if (pageId === 'inserimento') { initInserimentoPage() }
       if (pageId === 'export')      { initExportPage() }
@@ -23039,6 +23603,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // Esc e clic-fuori sono gestiti in un posto solo, con la regola per tutte
   // le finestre: vedi installaGestioneFinestre().
   installaGestioneFinestre()
+  installaFiltriImportoData()   // 85
   // FASE 27 — NPA e localita' che si compilano a vicenda. Si aggancia una
   // volta sola: i campi esistono gia' nell'HTML, non nascono dopo.
   installaTutteLeCoppieNpa()
