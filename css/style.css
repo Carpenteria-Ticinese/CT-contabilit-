@@ -3589,3 +3589,32 @@ tr.off-vecchia td { color: var(--text2); }
   #cartella-print  > *:last-child,
   #fatture-print   > *:last-child { margin-bottom: 0; }
 }
+
+/* 88 — il giustificativo delle spese dell'App Cantieri, la scelta della cifra,
+   la proposta letta dallo scontrino. Icona e parola, mai solo il colore. */
+.giust-riga { margin-top: 6px; font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.giust-manca { color: #92400e; font-weight: 600; }
+.cls-doc-box { display: flex; gap: 14px; align-items: flex-start; padding: 10px 12px; margin-bottom: 14px;
+  border: 1px solid var(--border); border-left: 4px solid #d97706; border-radius: var(--radius); background: #fffbeb; }
+.cls-doc-box.senza { display: block; }
+.cls-doc-anteprima { flex: 0 0 180px; max-width: 180px; cursor: zoom-in; }
+.cls-doc-testo { flex: 1; min-width: 0; font-size: 13px; }
+.giust-img { display: block; max-width: 100%; max-height: 240px; border-radius: 6px; border: 1px solid var(--border); }
+.giust-img.grande { max-height: 70vh; margin: 0 auto; }
+.giust-pdf { width: 100%; height: 240px; border: 1px solid var(--border); border-radius: 6px; }
+.giust-pdf.grande { height: 70vh; }
+.importo-scelta { padding: 10px 12px; margin-bottom: 14px; border: 1px solid #d97706; border-radius: var(--radius); background: var(--warn-bg); }
+.importo-scelta-titolo { font-weight: 700; margin-bottom: 6px; }
+.importo-scelta-opz { display: block; padding: 4px 0; cursor: pointer; }
+.cls-ai-box { padding: 10px 12px; margin-bottom: 14px; border: 1px solid #7c3aed; border-radius: var(--radius); background: #f5f3ff; font-size: 13px; }
+.cls-ai-titolo { font-weight: 700; margin-bottom: 6px; color: #5b21b6; }
+.cls-ai-riga { padding: 3px 0; }
+.importo-classificato { font-size: 11px; color: #92400e; margin-top: 2px; white-space: nowrap; }
+.storico-tolte > summary { cursor: pointer; list-style: none; }
+.storico-tolte > summary::-webkit-details-marker { display: none; }
+.storico-tolte > summary::before { content: '▸ '; }
+.storico-tolte[open] > summary::before { content: '▾ '; }
+@media (max-width: 640px) {
+  .cls-doc-box { flex-direction: column; }
+  .cls-doc-anteprima { flex: none; max-width: 100%; }
+}
