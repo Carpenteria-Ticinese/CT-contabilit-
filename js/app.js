@@ -61,6 +61,11 @@ let pendingEmitFn     = null   // callback della modale di conferma emissione
 let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezzo_unitario, codice_iva_id}
 let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
 let currentDetailFattura = null
+// 83 — la correzione in corso di una fattura EMESSA: { id, numero, motivo,
+// totalePrima, imponibileFisso }. null = l'editor lavora su una bozza.
+let editorCorrezione = null
+// 83 — le versioni precedenti della fattura aperta (solo l'elenco, senza i dati).
+let versioniDetail = []
 // FASE 22 — righe e riferimento della fattura aperta, per rifare il foglio di
 // stampa quando cambia la polizza QR senza rileggere dal database.
 let righeDetailCorrenti = null
@@ -4513,7 +4518,278 @@ function applyIvaModeEditor() {
   }
 }
 
+// ══ 83 · CORREGGERE UNA FATTURA EMESSA ═══════════════════════════════════════
+// Lo stesso editor delle bozze, con tre differenze: la data di emissione non si
+// tocca, «Salva bozza» ed «Emetti» lasciano il posto a «Salva la correzione», e
+// in cima c'e' scritto quale fattura si sta correggendo e perche'. Il salvataggio
+// e' UNA chiamata al database (tm_conta_correggi_fattura, SQL_FASE83): controlli,
+// versione di prima nello storico, testata e righe — tutto o niente.
+function impostaModoCorrezione(c) {
+  editorCorrezione = c || null
+  var on = !!editorCorrezione
+  var d = el('f-fat-data')
+  if (d) {
+    d.disabled = on
+    d.title = on ? 'La data di emissione non cambia: è quella che il cliente ha in mano.' : ''
+  }
+  ;['btn-salva-bozza', 'btn-emetti'].forEach(function (id) {
+    var b = el(id); if (b) b.style.display = on ? 'none' : ''
+  })
+  var s = el('btn-salva-correzione'); if (s) s.style.display = on ? '' : 'none'
+  var sub = el('fatture-edit-sub')
+  if (sub) sub.textContent = on
+    ? 'Correzione di una fattura emessa: numero e data di emissione restano quelli.'
+    : 'Bozza modificabile. Il numero viene assegnato solo all\'emissione.'
+  html('fatture-correzione-ref', on
+    ? '<div class="fase-banner warn"><span class="icon" aria-hidden="true">✏️</span><div class="msg">' +
+        'Stai correggendo la fattura <strong>n. ' + esc(editorCorrezione.numero) + '</strong> ' +
+        '(totale di adesso ' + esc(fmtNumIt(editorCorrezione.totalePrima)) + ' CHF). ' +
+        'Motivo: «' + esc(editorCorrezione.motivo) + '». ' +
+        'Salvando, la versione di adesso va nello storico della fattura e non si cancella.' +
+        (editorCorrezione.imponibileFisso != null
+          ? ' È la fattura di una rata d\'acconto: l\'imponibile resta ' +
+            esc(fmtNumIt(editorCorrezione.imponibileFisso)) + ' CHF.'
+          : '') +
+      '</div></div>'
+    : '')
+}
+
+// Perché una fattura NON si riapre. null = si può. Stesse regole del database
+// (che le ricontrolla comunque): qui servono a dirlo prima, con le parole giuste.
+function motivoNoCorrezione(f, pagamenti, note) {
+  if (!f) return 'Fattura non trovata.'
+  if (f.stato === 'bozza') return 'È una bozza: si modifica con «✏️ Modifica bozza».'
+  if (f.stato !== 'emessa') return 'Si correggono solo le fatture emesse: questa è «' + f.stato + '».'
+  if (f.tipo === 'nota_credito') return 'Una nota di credito non si riapre: si annulla e se ne emette una nuova.'
+  if (pagamenti && pagamenti.length) {
+    var somma = pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
+    return 'Su questa fattura ' +
+      (pagamenti.length === 1 ? 'c\'è un pagamento registrato' : 'ci sono ' + pagamenti.length + ' pagamenti registrati') +
+      ', per ' + fmtNumIt(somma) + ' CHF.\n\n' +
+      'Una fattura incassata, anche in parte, non si riapre: si corregge con una nota di credito ' +
+      '(in meno) o con una fattura integrativa (in più).'
+  }
+  var vive = (note || []).filter(function (n) { return n.stato !== 'annullata' })
+  if (vive.length) {
+    return 'Questa fattura ha ' + (vive.length === 1 ? 'una nota di credito' : vive.length + ' note di credito') +
+      ' (n. ' + vive.map(function (n) { return n.numero || '—' }).join(', ') + '): non si riapre.'
+  }
+  return null
+}
+
+async function riapriPerCorreggere(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f) { window.alert('Fattura non trovata: riaprila dall\'elenco.'); return }
+  try {
+    // I pagamenti si leggono ADESSO dal database, come per l'annullamento:
+    // un elenco vuoto per sbaglio vorrebbe dire «via libera».
+    await richiediSessione('la fattura NON è stata riaperta')
+    const { data: pag, error: ePag } = await sb.from('tm_conta_pagamenti')
+      .select('id, importo, data')
+      .eq('tabella_origine', 'tm_conta_fatture').eq('id_origine', id)
+    if (ePag) throw new Error('Non riesco a leggere i pagamenti di questa fattura, quindi NON la riapro: ' + (ePag.message || ePag))
+    try { await loadNoteCredito() } catch (_) { /* le ricontrolla il database */ }
+    var no = motivoNoCorrezione(f, pag || [], noteCreditoDi(id))
+    if (no) { window.alert('Non riaperta.\n\n' + no); return }
+
+    var rata = null
+    try { await loadContrattiCantiere(); var t = trovaAccontoPerFattura(id); if (t) rata = t.a } catch (_) { /* lo dice il database */ }
+
+    var motivo = window.prompt(
+      'Riaprire e correggere la fattura n. ' + f.numero + ' di ' + fmtNumIt(safeNum(f.totale) || 0) + ' ' + (f.valuta || 'CHF') + '?\n\n' +
+      'Restano lo stesso numero e la stessa data di emissione. La versione di adesso va nello ' +
+      'storico della fattura, con il motivo, e non si cancella.' +
+      (rata ? '\n\nÈ la fattura della rata «' + rata.descrizione + '»: l\'imponibile resta ' +
+              fmtNumIt(safeNum(f.totale_imponibile) || 0) + ' CHF, il resto si corregge.' : '') +
+      '\n\nScrivi PERCHÉ la correggi (obbligatorio, resta nello storico):', '')
+    if (motivo === null) return
+    motivo = String(motivo).trim()
+    if (motivo.length < 5) {
+      window.alert('Non riaperta: il motivo è obbligatorio (almeno 5 caratteri).\n\n' +
+        'Riletto fra un anno, «corretta» senza un perché non si spiega da solo.')
+      return
+    }
+    var conferma = window.prompt('Per confermare, riscrivi il numero della fattura:\n\n' + f.numero, '')
+    if (conferma === null) return
+    if (String(conferma).trim() !== String(f.numero)) {
+      window.alert('Non riaperta: il numero scritto («' + String(conferma).trim() + '») non è ' + f.numero + '.')
+      return
+    }
+    await editFattura(id, {
+      id: id, numero: f.numero, motivo: motivo,
+      totalePrima: safeNum(f.totale) || 0,
+      imponibileFisso: rata ? (safeNum(f.totale_imponibile) || 0) : null
+    })
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Riapertura: ' + (e.message || e))
+  }
+}
+
+// Il database risponde in italiano; l'unico caso da tradurre è la funzione
+// che non c'è ancora, cioè l'SQL della 83 non lanciato.
+function messaggioCorrezione(e) {
+  var m = (e && e.message) ? e.message : String(e || 'Errore sconosciuto')
+  if (/tm_conta_correggi_fattura/.test(m) || (e && e.code === 'PGRST202')) {
+    return 'Manca l\'SQL della 83 (sql/da_applicare/SQL_FASE83_correzione_fatture.sql): ' +
+      'lancialo nel SQL Editor di Supabase, poi riprova. Non è cambiato niente.'
+  }
+  return m
+}
+
+async function salvaCorrezione() {
+  var c = editorCorrezione
+  if (!c) return
+  html('fatture-edit-banner', '')
+  var btn = el('btn-salva-correzione'); if (btn) btn.disabled = true
+  try {
+    await richiediSessione('la correzione NON è stata salvata')
+    var header = collectFatturaHeader()
+    var righe = righeFatturaPayload(c.id)
+    if (!righe.length) throw new Error('Una fattura senza righe non si salva.')
+    if (c.imponibileFisso != null &&
+        Math.abs((safeNum(header.totale_imponibile) || 0) - c.imponibileFisso) > 0.005) {
+      throw new Error('È la fattura di una rata d\'acconto: l\'imponibile deve restare ' +
+        fmtNumIt(c.imponibileFisso) + ' CHF (adesso è ' + fmtNumIt(safeNum(header.totale_imponibile) || 0) + '). ' +
+        'Correggi gli altri dati; per un importo diverso serve una fattura integrativa o una nota di credito.')
+    }
+    var dopo = safeNum(header.totale) || 0
+    if (!window.confirm('Salvare la correzione della fattura n. ' + c.numero + '?\n\n' +
+        'Totale: ' + fmtNumIt(c.totalePrima) + ' → ' + fmtNumIt(dopo) + ' ' + (header.valuta || 'CHF') + '\n' +
+        'Motivo: «' + c.motivo + '»\n\n' +
+        'Numero e data di emissione restano. La versione di prima va nello storico della fattura e non si cancella.')) return
+    await maybeSaveNewIbanToRubrica()
+    html('fatture-edit-banner', loadingRow('Salvataggio della correzione…'))
+    const { error } = await sb.rpc('tm_conta_correggi_fattura', {
+      p_fattura_id: c.id, p_numero_conferma: c.numero, p_motivo: c.motivo,
+      p_testata: header, p_righe: righe })
+    if (error) throw error
+    impostaModoCorrezione(null)
+    await loadFattureList()
+    await viewFattura(c.id)
+    var avvisi = avvisiDopoCorrezione(currentDetailFattura, versioniDetail)
+    showFattureBanner('fatture-detail-banner', avvisi.length ? 'warn' : 'ok',
+      'Fattura n. ' + c.numero + ' corretta: totale ' + fmtNumIt(c.totalePrima) + ' → ' + fmtNumIt(dopo) + ' ' +
+      (header.valuta || 'CHF') + '. La versione di prima è nello storico, qui sotto.' +
+      (avvisi.length ? '\n\n' + avvisi.join('\n') : ''))
+  } catch (e) {
+    showFattureBanner('fatture-edit-banner', 'err', 'Correzione non salvata: ' + messaggioCorrezione(e))
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+// Quello che la correzione NON sistema da sola: va detto, perché resta in
+// giro la versione vecchia (la polizza QR, il PDF allegato) o un conto che
+// non torna più (il piano rateale). Pura: riceve la fattura e lo storico.
+function avvisiDopoCorrezione(f, versioni) {
+  var out = []
+  if (!f || !versioni || !versioni.length) return out
+  var ultima = new Date(versioni[versioni.length - 1].corretta_il).getTime()
+  var prima = function (al) { return al && al.created_at && new Date(al.created_at).getTime() < ultima }
+  var pol = polizzaDi(f.id)
+  if (prima(pol)) {
+    out.push('⚠️ La polizza QR allegata è di prima della correzione: se l\'importo è cambiato, ' +
+      'porta quello vecchio. Toglila e allega quella nuova.')
+  }
+  var pdfVecchi = allegatiDi('tm_conta_fatture', f.id).filter(function (al) { return al.tipo === 'fattura' && prima(al) })
+  if (pdfVecchi.length) {
+    out.push('📄 ' + (pdfVecchi.length === 1 ? 'Il PDF allegato «Fattura» è' : 'I PDF allegati «Fattura» sono') +
+      ' della versione di prima: nel pacchetto per il commercialista va al loro posto il PDF generato dal programma.')
+  }
+  var rate = rateDi('tm_conta_fatture', f.id)
+  if (rate.length) {
+    var somma = round2(rate.reduce(function (s, r) { return s + (safeNum(r.importo_previsto) || 0) }, 0))
+    if (Math.abs(somma - (safeNum(f.totale) || 0)) > 0.005) {
+      out.push('⚠️ Il piano rateale fa ' + fmtNumIt(somma) + ' CHF, la fattura adesso ' +
+        fmtNumIt(safeNum(f.totale) || 0) + ': rifallo dal riquadro Pagamenti.')
+    }
+  }
+  return out
+}
+
+// ── Lo storico, nella scheda della fattura ───────────────────────────────────
+async function caricaVersioniDetail(f) {
+  versioniDetail = []
+  html('fatture-versioni', '')
+  if (!f || f.tipo !== 'fattura' || f.stato === 'bozza') return
+  try {
+    const { data, error } = await sb.from('tm_conta_fatture_versioni')
+      .select('id, versione, motivo, totale_prima, corretta_il')
+      .eq('fattura_id', f.id).eq('azienda_id', currentAziendaId)
+      .order('versione')
+    if (error) throw error
+    versioniDetail = data || []
+    html('fatture-versioni', boxVersioniHtml(f, versioniDetail))
+  } catch (e) {
+    // Fallire a voce alta: un riquadro che manca sembra «mai corretta».
+    var m = (e && e.message) ? e.message : String(e)
+    html('fatture-versioni', '<div class="sol-stato-riga">⚠️ Storico delle correzioni non letto' +
+      (/tm_conta_fatture_versioni/.test(m) ? ': manca l\'SQL della 83 (SQL_FASE83_correzione_fatture.sql).' : ': ' + esc(m)) +
+      '</div>')
+  }
+}
+
+function boxVersioniHtml(f, versioni) {
+  if (!versioni || !versioni.length) return ''
+  var righe = versioni.map(function (v) {
+    return '<tr>' +
+      '<td>Versione ' + esc(String(v.versione)) + '</td>' +
+      '<td>sostituita il ' + esc(fmtDateTime(v.corretta_il)) + '</td>' +
+      '<td class="num">' + esc(fmtNumIt(safeNum(v.totale_prima) || 0)) + ' CHF</td>' +
+      '<td>«' + esc(v.motivo) + '»</td>' +
+      '<td><button type="button" class="btn-secondary" onclick="apriVersione(\'' + esc(v.id) + '\')">👁 Vedi</button></td>' +
+    '</tr>'
+  }).join('')
+  var avvisi = avvisiDopoCorrezione(f, versioni)
+  return '<div class="card versioni-box">' +
+    '<div class="card-title">✏️ Fattura corretta ' + (versioni.length === 1 ? 'una volta' : versioni.length + ' volte') + '</div>' +
+    '<div class="form-hint">Numero e data di emissione sono quelli di sempre. Le versioni di prima restano qui, ' +
+      'non si cancellano e non valgono più come documento.</div>' +
+    '<table class="versioni-tabella"><tbody>' + righe + '</tbody></table>' +
+    (avvisi.length ? '<div class="versioni-avvisi">' + avvisi.map(function (a) { return '<div>' + esc(a) + '</div>' }).join('') + '</div>' : '') +
+  '</div>'
+}
+
+// Una versione di prima, com'era: lo stesso foglio della stampa, con la
+// fascia che dice che non vale più.
+async function apriVersione(idVersione) {
+  try {
+    const { data: v, error } = await sb.from('tm_conta_fatture_versioni')
+      .select('versione, motivo, corretta_il, dati, righe')
+      .eq('id', idVersione).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    var box = el('fatture-print')
+    var prima = box ? box.innerHTML : ''
+    var foglio = ''
+    try {
+      renderFatturaPrint(v.dati || {}, v.righe || [], null)
+      foglio = box ? box.innerHTML : ''
+    } finally {
+      if (box) box.innerHTML = prima
+    }
+    el('versione-title').textContent = '✏️ Versione ' + v.versione + ' della fattura n. ' + ((v.dati && v.dati.numero) || '—')
+    html('versione-avviso', '<div class="fase-banner warn"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">' +
+      'VERSIONE PRECEDENTE — sostituita il ' + esc(fmtDateTime(v.corretta_il)) + '. Non vale come documento. ' +
+      'Motivo della correzione: «' + esc(v.motivo) + '».</div></div>')
+    html('versione-foglio', foglio)
+    // La polizza non c'entra (e il suo contenitore ha un id che c'è già nella pagina).
+    var q = el('versione-foglio').querySelector('#fatture-qrpage')
+    if (q && q.parentNode) q.parentNode.removeChild(q)
+    el('versione-overlay').style.display = 'flex'
+    registraAperturaModale('versione-overlay')
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Versione non aperta: ' + (e.message || e))
+  }
+}
+
+function chiudiVersione() {
+  var o = el('versione-overlay')
+  if (o) o.style.display = 'none'
+  html('versione-foglio', '')
+}
+
 async function newFattura(tipo) {
+  impostaModoCorrezione(null)   // 83
   editorFatturaId = null
   editorTipo = tipo || 'fattura'
   editorRifId = null
@@ -4559,14 +4835,17 @@ async function newFattura(tipo) {
   renderRigheEditor()
 }
 
-async function editFattura(id) {
+async function editFattura(id, correzione) {
   if (!currentAziendaId) return
+  impostaModoCorrezione(null)   // 83 — si entra sempre da bozza; la correzione si accende sotto
   html('fatture-edit-banner', '')
   try {
     const { data: f, error } = await sb.from('tm_conta_fatture').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
-    if (f.stato !== 'bozza') {
-      showFattureBanner('fatture-list-banner', 'warn', 'Solo le bozze sono modificabili. Questa fattura è «' + f.stato + '»: per correggerla usa una nota di credito.')
+    // 83 — una emessa si apre qui solo da «Riapri e correggi».
+    var inCorrezione = !!(correzione && correzione.id === id && f.stato === 'emessa')
+    if (f.stato !== 'bozza' && !inCorrezione) {
+      showFattureBanner('fatture-list-banner', 'warn', 'Solo le bozze sono modificabili. Questa fattura è «' + f.stato + '»: per correggerla apri la scheda e usa «✏️ Riapri e correggi» (senza pagamenti né note di credito), oppure una nota di credito.')
       return
     }
     const { data: righe, error: rErr } = await sb.from('tm_conta_fatture_righe').select('*').eq('fattura_id', id).order('ordine')
@@ -4635,6 +4914,11 @@ async function editFattura(id) {
     mostraDivisioneSeCe('v', 'fattura', f.id)
     // FASE 58 — se la bozza e' nata da una rata d'acconto, lo si rivede.
     await caricaAccontoDellaBozza(f.id)
+    // 83 — dopo la rata, che riscrive il titolo.
+    if (inCorrezione) {
+      el('fatture-edit-title').textContent = 'Correzione della fattura n. ' + f.numero
+      impostaModoCorrezione(correzione)
+    }
     // FASE 29 — lo sconto di documento salvato torna nel modulo.
     if (el('f-sconto-tipo'))   el('f-sconto-tipo').value   = f.sconto_doc_tipo || 'pct'
     if (el('f-sconto-valore')) el('f-sconto-valore').value = f.sconto_doc_valore == null ? '' : f.sconto_doc_valore
@@ -5049,9 +5333,8 @@ function collectFatturaHeader() {
   }
 }
 
-async function replaceRighe(fatturaId) {
-  const del = await sb.from('tm_conta_fatture_righe').delete().eq('fattura_id', fatturaId).select()
-  if (del.error) throw del.error
+// 83 — le righe come si salvano, uguali per la bozza e per la correzione.
+function righeFatturaPayload(fatturaId) {
   var payload = []
   var sdSalva = scontoDocumentoDalForm()
   var totaliPerRighe = calcolaTotaliFattura(fatturaRighe, sdSalva.tipo, sdSalva.valore)
@@ -5088,6 +5371,13 @@ async function replaceRighe(fatturaId) {
       ordine:          i
     })
   }
+  return payload
+}
+
+async function replaceRighe(fatturaId) {
+  const del = await sb.from('tm_conta_fatture_righe').delete().eq('fattura_id', fatturaId).select()
+  if (del.error) throw del.error
+  var payload = righeFatturaPayload(fatturaId)
   if (payload.length) {
     const ins = await sb.from('tm_conta_fatture_righe').insert(payload).select()
     if (ins.error) throw ins.error
@@ -5095,6 +5385,8 @@ async function replaceRighe(fatturaId) {
 }
 
 async function persistBozza() {
+  // 83 — una correzione non passa mai di qui: salverebbe come bozza.
+  if (editorCorrezione) throw new Error('Questa è la correzione di una fattura emessa: si salva con «💾 Salva la correzione».')
   await maybeSaveNewIbanToRubrica()   // se "nuovo IBAN" + "salva in rubrica"
   var header = collectFatturaHeader()
   header.stato = 'bozza'
@@ -5844,6 +6136,9 @@ async function viewFattura(id) {
     // FASE 58 — contratto e acconti, solo a schermo (div no-print, fuori
     // da fatture-print). Se la fattura non copre una rata, niente riquadro.
     try { await disegnaBoxAcconto(f) } catch (eA) { console.warn('Riquadro acconto:', eA.message || eA) }
+    // 83 — lo storico delle correzioni, per ultimo: i suoi avvisi guardano
+    // polizza, allegati e rate, che a questo punto sono letti.
+    await caricaVersioniDetail(f)
   } catch (e) {
     html('fatture-print', '<p style="color:var(--err)">Errore: ' + esc(e.message) + '</p>')
   }
@@ -6380,6 +6675,12 @@ function renderDetailActions(f) {
          f.id + '\', ' + (safeNum(f.totale) || 0) + ', \'entrata\', \'' +
          esc(String(f.cliente_nome || '').replace(/'/g, '')) + '\')">➕ Registra incasso</button>'
     if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
+    // 83 — stesso numero, stessa data; la versione di adesso va nello storico.
+    if (f.tipo !== 'nota_credito') {
+      a += '<button class="btn-secondary" onclick="riapriPerCorreggere(\'' + esc(f.id) + '\')" ' +
+           'title="Stesso numero e stessa data di emissione. Solo senza pagamenti né note di credito; la versione di adesso va nello storico con il motivo.">' +
+           '✏️ Riapri e correggi</button>'
+    }
     // 62c — annullare: il numero resta, il documento esce da tutte le somme.
     // Rosso perche' non si torna indietro, ma non e' una cancellazione: il
     // documento resta dov'e' ed e' per questo che si chiama «Annulla».
@@ -16668,10 +16969,37 @@ function nomeUnico(usati, cartella, nome) {
 // I filtri sono quelli del §7C: niente bozze, niente annullate, niente
 // «da confermare». La regia non fatturata resta fuori: non e' un documento
 // fiscale, e' lavoro ancora da fatturare.
+// 83 — quando è stata corretta per l'ultima volta ogni fattura: { id: istante }.
+// Fallisce a voce alta: senza, il pacchetto potrebbe portare al commercialista
+// il PDF di una fattura com'era PRIMA della correzione.
+async function correzioniFatture() {
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture_versioni')
+    .select('fattura_id, corretta_il').eq('azienda_id', currentAziendaId).order('corretta_il') })
+  if (error) {
+    throw new Error('Non riesco a leggere lo storico delle correzioni delle fatture (' + (error.message || error) +
+      '): il pacchetto non lo preparo, potrebbe contenere il PDF di una fattura com\'era prima della correzione.')
+  }
+  var ultima = {}
+  ;(data || []).forEach(function (v) { ultima[v.fattura_id] = v.corretta_il })
+  return ultima
+}
+
+// 83 — gli allegati di una fattura di vendita che vanno nel pacchetto: un PDF
+// «Fattura» caricato PRIMA dell'ultima correzione è la versione vecchia e resta
+// fuori (al suo posto il programma genera quello giusto). Pura.
+function allegatiValidiPacchetto(lista, correttaIl) {
+  if (!correttaIl) return lista || []
+  var t = new Date(correttaIl).getTime()
+  return (lista || []).filter(function (al) {
+    return !(al.tipo === 'fattura' && al.created_at && new Date(al.created_at).getTime() < t)
+  })
+}
+
 async function raccogliDocumentiPacchetto(da, a) {
   var ds = await loadExportDataset()
   // Senza questa lettura ogni documento risulterebbe senza allegati.
   try { await loadAllegati() } catch (_) {}
+  var corrette = await correzioniFatture()   // 83
   var d  = docsPeriodo(ds, da, a)      // applica gia' il filtro «da confermare»
   var usati = {}
   var voci = []
@@ -16684,7 +17012,7 @@ async function raccogliDocumentiPacchetto(da, a) {
       data: f.data_emissione,
       chi: f.cliente_nome,
       importo: f.totale,
-      allegati: allegatiDi('tm_conta_fatture', f.id),
+      allegati: allegatiValidiPacchetto(allegatiDi('tm_conta_fatture', f.id), corrette[f.id]),   // 83
       id: f.id,
       // Una fattura senza PDF non e' un errore dello Storage: e' un PDF che
       // nessuno ha ancora allegato. Il motivo va scritto per esteso.
@@ -19386,7 +19714,8 @@ var FINESTRE = {
   'allegato-overlay':     { chiudi: 'chiudiAggiungiAllegato',  protetta: true },
   'emit-confirm-overlay': { chiudi: 'closeEmitConfirm',        protetta: true },
   'scadenze-overlay':     { chiudi: 'chiudiFinestraScadenze',  protetta: false },
-  'storia-overlay':       { chiudi: 'closeStoria',             protetta: false }
+  'storia-overlay':       { chiudi: 'closeStoria',             protetta: false },
+  'versione-overlay':     { chiudi: 'chiudiVersione',          protetta: false }   // 83
 }
 
 var improntaFinestre = {}   // id -> stato dei campi al momento dell'apertura
@@ -21616,7 +21945,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '82'
+var VERSIONE = '83'
 
 function controllaVersionePagina() {
   try {
