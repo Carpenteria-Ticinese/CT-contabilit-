@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TimberMaster — Pre-Contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=83" />
+  <link rel="stylesheet" href="css/style.css?v=84" />
 </head>
-<body data-versione="83">
+<body data-versione="84">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 83</span>
+      <span id="sidebar-versione">Versione 84</span>
     </div>
 
   </aside>
@@ -1607,6 +1607,7 @@
                   <option value="non_incassato">🔵 Non incassate</option>
                   <option value="parziale">🟠 Incassate in parte</option>
                   <option value="incassato">✅ Incassate</option>
+                  <option value="stralciata">📉 Stralciate (perdite)</option>
                   <option value="annullata">Annullate</option>
                 </optgroup>
                 <optgroup label="Note di credito">
@@ -1863,6 +1864,8 @@
         <div id="fatture-annullata"></div>
         <!-- 83 - le versioni di prima di una fattura corretta -->
         <div class="no-print" id="fatture-versioni"></div>
+        <!-- 84 - lo stralcio come perdita: quanto, quando, perché -->
+        <div class="no-print" id="fatture-stralcio"></div>
         <!-- 61g - ritardo e solleciti, sopra il documento. -->
         <div id="fatture-stato-solleciti"></div>
 
@@ -3369,7 +3372,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=83"></script>
+<script src="js/app.js?v=84"></script>
 
 </body>
 </html>
