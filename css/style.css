@@ -579,6 +579,15 @@ tbody td {
   max-height: 65vh; overflow: auto;
 }
 
+/* 84 — lo stralcio come perdita, nella scheda e nell'anteprima dell'export. */
+.stralcio-box { border-left: 4px solid #b45309; }
+.stralcio-box.tolto { border-left-color: var(--border); }
+.stralcio-cifra { font-size: 14px; margin: 4px 0 8px; }
+.stralcio-storia { margin-top: 10px; font-size: 13px; color: var(--text3); }
+.stralcio-storia > div + div { margin-top: 4px; }
+.exp-perdite { margin: 2px 0 6px 22px; font-size: 12.5px; color: var(--text3); }
+.exp-perdite > div + div { margin-top: 2px; }
+
 /* L'anteprima a schermo: la busta vera, rimpicciolita. */
 .busta-scala {
   overflow: auto;
