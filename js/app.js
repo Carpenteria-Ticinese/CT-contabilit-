@@ -6822,7 +6822,7 @@ var GIORNI_SCADENZA_ACCONTO = 10
 function giorniPropostiFattura() {
   // 75·2 (A) — una fattura d'acconto propone 10 giorni, non quelli del
   // cliente: i giorni in rubrica sono per le fatture normali.
-  if (editorAccontoId) return GIORNI_SCADENZA_ACCONTO
+  if (editorAccontoId) return giorniRataAperta()   // 90 — il termine della rata
   var idContatto = el('f-cli-contatto-id') ? el('f-cli-contatto-id').value : ''
   if (idContatto) {
     var c = (contattiCache || []).filter(function (x) { return x.id === idContatto })[0]
@@ -6969,7 +6969,7 @@ function collectFatturaHeader() {
     // data di emissione ci pensa completaScadenzaEmessa() dopo l'emissione.
     data_scadenza:     (el('f-fat-scadenza') && el('f-fat-scadenza').value) ||
                        (editorTipo !== 'nota_credito' && dataVal
-                          ? addDays(dataVal, editorAccontoId ? GIORNI_SCADENZA_ACCONTO : GIORNI_SCADENZA_VENDITA)
+                          ? addDays(dataVal, editorAccontoId ? giorniRataAperta() : GIORNI_SCADENZA_VENDITA)   // 90
                           : null),
     anno:              anno,
     tipo:              editorTipo,
@@ -7122,10 +7122,14 @@ async function completaScadenzaEmessa(idFattura) {
       .eq('id', idFattura).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
     if (!f || f.tipo === 'nota_credito' || f.data_scadenza || !f.data_emissione) return ''
-    const { data: rate, error: eR } = await sb.from('tm_conta_cantiere_acconti')
-      .select('id').eq('fattura_id', idFattura)
-    if (eR) throw eR
-    var giorni = (rate || []).length ? GIORNI_SCADENZA_ACCONTO : GIORNI_SCADENZA_VENDITA
+    // 90 — il termine della rata, se c'è (senza l'SQL della 90 si rilegge senza).
+    var rR = await sb.from('tm_conta_cantiere_acconti').select('id, ordine, tipo, termine_giorni').eq('fattura_id', idFattura)
+    if (rR.error) rR = await sb.from('tm_conta_cantiere_acconti').select('id, ordine').eq('fattura_id', idFattura)
+    if (rR.error) throw rR.error
+    var rate = rR.data
+    var giorni = (rate || []).length
+      ? (rate[0].termine_giorni != null ? rate[0].termine_giorni : termineRataProposto(tipoDiRata(rate[0])))
+      : GIORNI_SCADENZA_VENDITA
     var scad = addDays(f.data_emissione, giorni)
     const { error: eU } = await sb.from('tm_conta_fatture')
       .update({ data_scadenza: scad })
@@ -10029,6 +10033,7 @@ async function initImpostazioniPage() {
     setVal('imp-iva-saldo', impostazione('iva_aliquota_saldo', ''))
     // 61h — spese, tasso di mora e i tre testi dei solleciti.
     riempiImpostazioniSolleciti()
+    riempiImpostazioniRate()   // 90
   } catch (_) { /* i dati della ditta si caricano lo stesso */ }
   html('impostazioni-banner', loadingRow('Caricamento dati azienda…'))
   try {
@@ -24054,7 +24059,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '89'
+var VERSIONE = '90'
 
 function controllaVersionePagina() {
   try {
@@ -25121,6 +25126,194 @@ function scartaDoppioneAcquisto() {
     : 'Modifiche non salvate: era un doppione. La fattura è rimasta com\'era.')
 }
 
+// ══ 90 · LE RATE: IL TESTO PROPOSTO E IL TERMINE PER TIPO ════════════════════
+// Una rata sa che cos'è: acconto, acconto intermedio, saldo (tm_conta_cantiere_
+// acconti.tipo, SQL_FASE90). Dal tipo vengono:
+//  · il TESTO proposto per la fattura, da un modello delle Impostazioni con i
+//    segnaposto [lavoro] [data] [n]. [lavoro] è il «Rif. offerta» del contratto
+//    o, se manca, il nome del cantiere; [data] è la data del contratto. Senza
+//    lavoro la descrizione resta vuota e lo si dice. Sempre modificabile.
+//  · il TERMINE proposto: 3 giorni per acconti e intermedi, 30 per il saldo, e
+//    poi l'ultimo che hai usato per quel tipo (ricordato nelle Impostazioni).
+//    Modificabile su ogni rata; accanto ai giorni, sempre la data.
+// Le rate scritte prima della 90 non hanno tipo: si ricava dall'ordine (la
+// prima è un acconto, le altre intermedie) finché non lo scegli tu.
+var TIPI_RATA = { acconto: 'Acconto', intermedia: 'Acconto intermedio', saldo: 'Saldo' }
+var TESTI_RATA_SEME = {
+  acconto:    'Acconto per [lavoro], come da offerta del [data]',
+  intermedia: '[n]° acconto per [lavoro], come da offerta del [data]',
+  saldo:      'Saldo per [lavoro], come da offerta del [data]'
+}
+var TERMINE_RATA_SEME = { acconto: 3, intermedia: 3, saldo: 30 }
+var MSG_SQL90 = 'manca l\'SQL della 90 (sql/da_applicare/SQL_FASE90_rate_tipo_termine.sql): lancialo nel SQL Editor di Supabase, poi riprova'
+
+function chiaveTestoRata(tipo) { return 'testo_rata_' + tipo }
+function chiaveTermineRata(tipo) { return 'termine_rata_' + tipo }
+function eErroreSql90(e) { return /tipo|termine_giorni/.test(String((e && e.message) || e || '')) && /column|colonna|schema cache/i.test(String((e && e.message) || e || '')) }
+
+function testoRataModello(tipo) {
+  var v = String(impostazione(chiaveTestoRata(tipo), '') || '').trim()
+  return v || TESTI_RATA_SEME[tipo] || TESTI_RATA_SEME.acconto
+}
+function termineRataProposto(tipo) {
+  var n = safeNum(impostazione(chiaveTermineRata(tipo), null))
+  return (n != null && n >= 0 && n <= 365) ? Math.round(n) : (TERMINE_RATA_SEME[tipo] != null ? TERMINE_RATA_SEME[tipo] : 3)
+}
+function tipoDiRata(a) {
+  if (a && TIPI_RATA[a.tipo]) return a.tipo
+  return (a && a.ordine === 1) ? 'acconto' : 'intermedia'
+}
+// Il lavoro: il riferimento dell'offerta, altrimenti il nome del cantiere.
+function lavoroContratto(c) {
+  var rif = String((c && c.rif_offerta) || '').trim()
+  if (rif) return rif
+  var k = c ? (cantieriCache || []).filter(function (x) { return x.id === c.cantiere_id })[0] : null
+  return k ? String(nomeCantiere(k, false) || '').trim() : ''
+}
+// Il testo proposto. Torna { testo, avviso }: senza lavoro il testo è vuoto.
+function testoRataProposto(c, tipo, n) {
+  var lavoro = lavoroContratto(c)
+  if (!lavoro) {
+    return { testo: '', avviso: 'Manca il lavoro: scrivi il «Rif. offerta» nel contratto (o dai un nome al cantiere), ' +
+      'poi la descrizione si propone da sola. Intanto scrivila tu.' }
+  }
+  var t = testoRataModello(tipo)
+  var avviso = ''
+  var data = c && c.data_contratto ? fmtDate(c.data_contratto) : ''
+  if (!data) {
+    t = t.replace(/\s*del \[data\]/g, '').replace(/\[data\]/g, '')
+    avviso = 'Manca la data del contratto: la frase esce senza «del …». Scrivila nel contratto se vuoi la data.'
+  }
+  t = t.replace(/\[lavoro\]/g, lavoro).replace(/\[data\]/g, data).replace(/\[n\]/g, String(n || ''))
+  return { testo: t.replace(/\s+,/g, ',').replace(/\s{2,}/g, ' ').trim(), avviso: avviso }
+}
+// Accanto ai giorni, sempre la data: se la fattura uscisse oggi.
+function testoScadenzaRata(giorni) {
+  var g = safeNum(giorni)
+  if (g == null || g < 0) return ''
+  return '→ se la fatturi oggi scade il ' + fmtDate(addDays(oggiISO(), Math.round(g)))
+}
+function opzioniTipoRata(scelto) {
+  return Object.keys(TIPI_RATA).map(function (k) {
+    return '<option value="' + k + '"' + (k === scelto ? ' selected' : '') + '>' + esc(TIPI_RATA[k]) + '</option>'
+  }).join('')
+}
+function validaGiorniRata(v) {
+  var g = safeNum(v)
+  if (g == null || g < 0 || g > 365 || Math.round(g) !== g) return null
+  return g
+}
+async function ricordaTermineRata(tipo, giorni) {
+  try {
+    await salvaImpostazioneConta(chiaveTermineRata(tipo), String(giorni),
+      'Ultimo termine di pagamento usato per una rata «' + (TIPI_RATA[tipo] || tipo) + '» (90): si propone la volta dopo.')
+  } catch (e) { console.warn('Termine della rata non ricordato:', e.message || e) }
+}
+
+// ── La riga per scrivere una rata nuova ─────────────────────────────────────
+function rigaNuovaRataHtml(c, prossimo) {
+  var tipo = (c.acconti || []).length ? 'intermedia' : 'acconto'
+  var p = testoRataProposto(c, tipo, prossimo)
+  var giorni = termineRataProposto(tipo)
+  return '<tr class="acc-nuova">' +
+    '<td class="dim">' + prossimo + '</td>' +
+    '<td>' +
+      // Il testo su una riga sua, intero; sotto tipo e termine, come nelle rate già scritte.
+      '<input type="text" id="acc-r-desc" class="cell-input" maxlength="200" value="' + esc(p.testo) + '"' +
+        ' data-proposta="' + esc(p.testo) + '" placeholder="Testo della fattura (proposto dal tipo)">' +
+      '<div class="rata-termine">' +
+        '<select id="acc-r-tipo" class="cell-input rata-tipo" aria-label="Tipo di rata" onchange="onTipoNuovaRata(\'' + esc(c.id) + '\', ' + prossimo + ')">' +
+          opzioniTipoRata(tipo) + '</select>' +
+        ' · Termine <input type="number" id="acc-r-giorni" class="cell-input num rata-giorni" min="0" max="365" step="1"' +
+        ' value="' + giorni + '" onfocus="this.select()" oninput="onGiorniNuovaRata()"> giorni ' +
+        '<span id="acc-r-scad" class="dim">' + esc(testoScadenzaRata(giorni)) + '</span></div>' +
+      '<div id="acc-r-avviso" class="rata-avviso">' + (p.avviso ? '⚠️ ' + esc(p.avviso) : '') + '</div>' +
+    '</td>' +
+    '<td><input type="number" id="acc-r-imp" class="cell-input num" step="0.01" min="0" placeholder="0.00" onfocus="this.select()"></td>' +
+    '<td></td>' +
+    '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiAcconto(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
+  '</tr>'
+}
+function onTipoNuovaRata(contrattoId, n) {
+  var c = trovaContrattoPerId(contrattoId)
+  var tipo = getVal('acc-r-tipo')
+  var p = testoRataProposto(c, tipo, n)
+  var inp = el('acc-r-desc')
+  // Il testo si rifà solo se è ancora quello proposto: uno scritto a mano resta.
+  if (inp && (!inp.value.trim() || inp.value === inp.getAttribute('data-proposta'))) inp.value = p.testo
+  if (inp) inp.setAttribute('data-proposta', p.testo)
+  setVal('acc-r-giorni', termineRataProposto(tipo))
+  onGiorniNuovaRata()
+  html('acc-r-avviso', p.avviso ? '⚠️ ' + esc(p.avviso) : '')
+}
+function onGiorniNuovaRata() {
+  html('acc-r-scad', esc(testoScadenzaRata(getVal('acc-r-giorni'))))
+}
+
+// ── Tipo e termine nella riga di una rata già scritta ───────────────────────
+function cellaRataHtml(c, a, libera) {
+  var tipo = tipoDiRata(a)
+  var giorni = a.termine_giorni != null ? a.termine_giorni : termineRataProposto(tipo)
+  if (!libera) {
+    // Fatturata: si legge. La scadenza vera è quella della fattura.
+    var scad = a.fattura && a.fattura.data_scadenza ? ' · scadenza ' + fmtDate(a.fattura.data_scadenza) : ''
+    return '<div class="rata-termine dim">' + esc(TIPI_RATA[tipo]) + (a.tipo ? '' : ' (dall\'ordine)') +
+      (a.termine_giorni != null ? ' · termine ' + a.termine_giorni + ' giorni' : '') + esc(scad) + '</div>'
+  }
+  return '<div class="rata-termine">' +
+    '<select class="cell-input rata-tipo" aria-label="Tipo di rata" onchange="modificaAcconto(\'' + esc(a.id) + '\', \'tipo\', this.value)">' +
+      opzioniTipoRata(tipo) + '</select>' + (a.tipo ? '' : ' <span class="dim">(dall\'ordine: sceglilo)</span>') +
+    ' · Termine <input type="number" class="cell-input num rata-giorni" min="0" max="365" step="1" value="' + esc(String(giorni)) + '"' +
+      ' onfocus="this.select()" onchange="modificaAcconto(\'' + esc(a.id) + '\', \'termine_giorni\', this.value)"> giorni ' +
+    '<span class="dim">' + esc(testoScadenzaRata(giorni)) + '</span></div>'
+}
+
+// ── In fattura: il termine della rata aperta nell'editor ────────────────────
+function giorniRataAperta() {
+  var t = editorAccontoId ? trovaAcconto(editorAccontoId) : null
+  if (!t) return GIORNI_SCADENZA_ACCONTO
+  return t.a.termine_giorni != null ? t.a.termine_giorni : termineRataProposto(tipoDiRata(t.a))
+}
+
+// ── Le Impostazioni: testi e termini delle rate ─────────────────────────────
+function riempiImpostazioniRate() {
+  Object.keys(TIPI_RATA).forEach(function (k) {
+    setVal('imp-rata-testo-' + k, testoRataModello(k))
+    setVal('imp-rata-giorni-' + k, termineRataProposto(k))
+  })
+}
+async function salvaImpostazioniRate() {
+  html('imp-rata-banner', '')
+  try {
+    var tipi = Object.keys(TIPI_RATA)
+    for (var i = 0; i < tipi.length; i++) {
+      var k = tipi[i]
+      var testo = String(getVal('imp-rata-testo-' + k) || '').trim()
+      if (!testo) throw new Error('il testo per «' + TIPI_RATA[k] + '» è vuoto (usa «Ripristina» per quello di partenza)')
+      var g = validaGiorniRata(getVal('imp-rata-giorni-' + k))
+      if (g == null) throw new Error('il termine per «' + TIPI_RATA[k] + '» dev\'essere un numero intero di giorni fra 0 e 365')
+    }
+    for (var j = 0; j < tipi.length; j++) {
+      var t = tipi[j]
+      await salvaImpostazioneConta(chiaveTestoRata(t), String(getVal('imp-rata-testo-' + t)).trim(),
+        'Testo proposto per la fattura di una rata «' + TIPI_RATA[t] + '» (90). Segnaposto: [lavoro] [data] [n].')
+      await salvaImpostazioneConta(chiaveTermineRata(t), String(validaGiorniRata(getVal('imp-rata-giorni-' + t))),
+        'Termine di pagamento proposto per una rata «' + TIPI_RATA[t] + '» (90).')
+    }
+    showFattureBanner('imp-rata-banner', 'ok', 'Testi e termini delle rate salvati.')
+  } catch (e) {
+    showFattureBanner('imp-rata-banner', 'err', 'Non salvato: ' + (e.message || e))
+  }
+}
+function ripristinaTestiRate() {
+  Object.keys(TIPI_RATA).forEach(function (k) {
+    setVal('imp-rata-testo-' + k, TESTI_RATA_SEME[k])
+    setVal('imp-rata-giorni-' + k, TERMINE_RATA_SEME[k])
+  })
+  showFattureBanner('imp-rata-banner', 'warn',
+    'Testi e termini di partenza rimessi nei campi. Non sono ancora salvati: premi «💾 Salva testi e termini».')
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -25360,7 +25553,7 @@ async function loadContrattiCantiere(force) {
               // stata INCASSATA, non solo fatturata. Il totale e' quello che il
               // cliente versa (IVA inclusa); l'importo della rata resta
               // l'imponibile, come vuole la 58.
-              ' fattura:tm_conta_fatture(id, numero, stato, data_emissione, totale_imponibile, totale, stato_pagamento, cantiere_id))')
+              ' fattura:tm_conta_fatture(id, numero, stato, data_emissione, data_scadenza, totale_imponibile, totale, stato_pagamento, cantiere_id))')   // 90: data_scadenza
       .eq('azienda_id', currentAziendaId)
     if (error) throw error
     var mappa = {}
@@ -25727,13 +25920,8 @@ function accontiHtml(c, t) {
     '<div class="table-wrap"><table class="acc-tabella">' +
       '<thead><tr><th>N.</th><th>Descrizione</th><th class="num">Importo</th><th>Stato</th><th></th></tr></thead>' +
       '<tbody>' + (righe || '<tr><td colspan="5" class="dim">Nessuna rata scritta.</td></tr>') +
-      '<tr class="acc-nuova">' +
-        '<td class="dim">' + prossimo + '</td>' +
-        '<td><input type="text" id="acc-r-desc" class="cell-input" maxlength="200" placeholder="Es. Acconto alla firma, Acconto a montaggio…"></td>' +
-        '<td><input type="number" id="acc-r-imp" class="cell-input num" step="0.01" min="0" placeholder="0.00" onfocus="this.select()"></td>' +
-        '<td></td>' +
-        '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiAcconto(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
-      '</tr></tbody></table></div>' +
+      rigaNuovaRataHtml(c, prossimo) +   // 90 — tipo, testo proposto, termine con la data
+      '</tbody></table></div>' +
     // 62j — le note di credito hanno un blocco loro, col loro nome, qui: fra le
     // rate e i totali. Prima stavano scritte sotto «Varianti» e nel dettaglio
     // di «Già fatturato», e per trovarle bisognava sapere già dov'erano.
@@ -25812,7 +26000,8 @@ function rigaAccontoHtml(c, a) {
   var riga = '<tr' + (annullata ? ' class="acc-annullata"' : '') + '>' +
     '<td class="dim">' + esc(String(a.ordine)) + '</td>' +
     '<td><input type="text" class="cell-input" maxlength="200" value="' + esc(a.descrizione || '') + '"' +
-      ' onchange="modificaAcconto(\'' + esc(a.id) + '\', \'descrizione\', this.value)"></td>' +
+      ' onchange="modificaAcconto(\'' + esc(a.id) + '\', \'descrizione\', this.value)">' +
+      cellaRataHtml(c, a, libera && !annullata) + '</td>' +   // 90 — tipo e termine
     '<td class="num">' + (libera
       ? '<input type="number" class="cell-input num" step="0.01" min="0" value="' + esc(String(a.importo)) + '"' +
         ' onfocus="this.select()" onchange="modificaAcconto(\'' + esc(a.id) + '\', \'importo\', this.value)">'
@@ -26827,19 +27016,24 @@ async function eliminaVariante(id) {
 }
 
 async function aggiungiAcconto(contrattoId) {
-  var desc = getVal('acc-r-desc'), imp = safeNum(getVal('acc-r-imp'))
-  if (!desc) { showCantieriBanner('err', 'Scrivi cos\'è la rata (es. «Acconto alla firma»).'); return }
+  var desc = String(getVal('acc-r-desc') || '').trim(), imp = safeNum(getVal('acc-r-imp'))
+  // 90 — il tipo e il termine della rata.
+  var tipo = TIPI_RATA[getVal('acc-r-tipo')] ? getVal('acc-r-tipo') : 'acconto'
+  var giorni = validaGiorniRata(getVal('acc-r-giorni'))
+  if (!desc) { showCantieriBanner('err', 'Scrivi il testo della rata (quello che andrà in fattura).'); return }
   if (imp == null || imp <= 0) { showCantieriBanner('err', 'Scrivi l\'importo della rata, IVA esclusa, maggiore di zero.'); return }
+  if (giorni == null) { showCantieriBanner('err', 'Il termine dev\'essere un numero intero di giorni fra 0 e 365.'); return }
   var t = trovaContrattoPerId(contrattoId)
   var ordine = (t ? t.acconti : []).reduce(function (m, a) { return Math.max(m, a.ordine || 0) }, 0) + 1
   try {
     const { error } = await sb.from('tm_conta_cantiere_acconti')
-      .insert({ contratto_id: contrattoId, ordine: ordine, descrizione: desc, importo: imp }).select('id')
+      .insert({ contratto_id: contrattoId, ordine: ordine, descrizione: desc, importo: imp, tipo: tipo, termine_giorni: giorni }).select('id')
     if (error) throw error
+    await ricordaTermineRata(tipo, giorni)   // 90 — la volta dopo si propone questo
     await ricaricaContrattoERidisegna()
-    showCantieriBanner('ok', 'Rata n. ' + ordine + ' scritta.')
+    showCantieriBanner('ok', 'Rata n. ' + ordine + ' scritta (' + TIPI_RATA[tipo] + ', ' + giorni + ' giorni).')
   } catch (e) {
-    showCantieriBanner('err', 'Rata NON salvata: ' + (e.message || e))
+    showCantieriBanner('err', 'Rata NON salvata: ' + (eErroreSql90(e) ? MSG_SQL90 : (e.message || e)))
   }
 }
 
@@ -26854,10 +27048,26 @@ function trovaContrattoPerId(contrattoId) {
 
 async function modificaAcconto(id, campo, valore) {
   var campi = {}
+  var tr = trovaAcconto(id)   // 90
   if (campo === 'importo') {
     var imp = safeNum(valore)
     if (imp == null || imp <= 0) { showCantieriBanner('err', 'L\'importo della rata deve essere maggiore di zero.'); renderSchedaCantiere(); return }
     campi.importo = imp
+  } else if (campo === 'tipo') {
+    // 90 — cambia il tipo: se il testo era ancora quello proposto, si rifà; il
+    // termine si rifà se non era stato scritto.
+    if (!TIPI_RATA[valore]) { renderSchedaCantiere(); return }
+    campi.tipo = valore
+    if (tr) {
+      var vecchio = testoRataProposto(tr.c, tipoDiRata(tr.a), tr.a.ordine).testo
+      var nuovo = testoRataProposto(tr.c, valore, tr.a.ordine).testo
+      if (nuovo && (!tr.a.descrizione || tr.a.descrizione === vecchio)) campi.descrizione = nuovo
+      if (tr.a.termine_giorni == null) campi.termine_giorni = termineRataProposto(valore)
+    }
+  } else if (campo === 'termine_giorni') {
+    var g = validaGiorniRata(valore)
+    if (g == null) { showCantieriBanner('err', 'Il termine dev\'essere un numero intero di giorni fra 0 e 365.'); renderSchedaCantiere(); return }
+    campi.termine_giorni = g
   } else {
     var d = String(valore || '').trim()
     if (!d) { showCantieriBanner('err', 'La descrizione della rata non può essere vuota.'); renderSchedaCantiere(); return }
@@ -26866,11 +27076,13 @@ async function modificaAcconto(id, campo, valore) {
   try {
     const { error } = await sb.from('tm_conta_cantiere_acconti').update(campi).eq('id', id).select('id')
     if (error) throw error
+    // 90 — il termine usato si ricorda per quel tipo di rata.
+    if (campi.termine_giorni != null && tr) await ricordaTermineRata(campi.tipo || tipoDiRata(tr.a), campi.termine_giorni)
     await ricaricaContrattoERidisegna()
     showCantieriBanner('ok', 'Rata aggiornata alle ' + oraAdesso() + '.')
   } catch (e) {
     // Il trigger del DB parla chiaro (rata fatturata): si riporta com'e'.
-    showCantieriBanner('err', 'Rata NON aggiornata: ' + (e.message || e))
+    showCantieriBanner('err', 'Rata NON aggiornata: ' + (eErroreSql90(e) ? MSG_SQL90 : (e.message || e)))
     renderSchedaCantiere()
   }
 }
@@ -27037,7 +27249,8 @@ async function fatturaDaAcconto(accontoId) {
 async function newFatturaDaAcconto(c, a) {
   await newFattura('fattura')
   editorAccontoId = a.id
-  impostaTerminiFattura(GIORNI_SCADENZA_ACCONTO, null, true)   // 75·2 (A)
+  // 90 — il termine della rata (o quello proposto per il suo tipo), con la data.
+  impostaTerminiFattura(giorniRataAperta(), null, true)
   var cant = (cantieriCache || []).filter(function (k) { return k.id === c.cantiere_id })[0]
   if (cant) scegliCantiere('v', c.cantiere_id)
   else impostaCantierePicker('v', c.cantiere_id)
@@ -27057,20 +27270,24 @@ async function newFatturaDaAcconto(c, a) {
     if (!collegato && el('f-cli-nome')) el('f-cli-nome').value = committente
   }
 
+  // 90 — il testo: quello della rata se ha un tipo (è già il testo proposto,
+  // magari corretto); su una rata di prima della 90 si propone dal modello.
+  // Senza lavoro resta vuoto, e il riquadro sopra lo dice. Sempre modificabile.
+  var prop = a.tipo ? { testo: a.descrizione || '', avviso: '' } : testoRataProposto(c, tipoDiRata(a), a.ordine)
   fatturaRighe = [{
-    descrizione: 'Acconto n. ' + a.ordine + ' — ' + (a.descrizione || '') +
-                 (cant ? '\nCantiere ' + nomeCantiere(cant, false) : ''),
+    descrizione: prop.testo,
+    // 90·4 — su un acconto quantità 1 e unità «a corpo»: kg, ml e m² non c'entrano.
     quantita: 1, prezzo_unitario: safeNum(a.importo), codice_iva_id: '',
-    unita: '', tipo_riga: 'voce', sconto_pct: ''
+    unita: 'a corpo', tipo_riga: 'voce', sconto_pct: ''
   }]
   if (el('fatture-edit-title')) el('fatture-edit-title').textContent = 'Nuova fattura d\'acconto'
   renderRigheEditor()
-  mostraRifAcconto(c, a)
+  mostraRifAcconto(c, a, prop.avviso)
   moduloModificato('fattura')   // 75·5 — compilata dal programma: si può salvare subito
 }
 
 // Il riquadro sopra l'editor: da quale rata viene questa bozza.
-function mostraRifAcconto(c, a) {
+function mostraRifAcconto(c, a, avvisoTesto) {
   var t = totaliContratto(c)
   var altre = 0
   ;(c.acconti || []).forEach(function (x) {
@@ -27085,7 +27302,10 @@ function mostraRifAcconto(c, a) {
       '</strong> · già fatturato (altre rate) <strong>' + esc(fmtNumIt(altre)) + '</strong> · questa rata <strong>' + esc(fmtNumIt(questa)) +
       '</strong> · resta <strong>' + esc(fmtNumIt(t.aggiornato - altre - questa)) + '</strong> CHF. ' +
       'La rata diventa «fatturata» all\'emissione, con l\'imponibile della fattura.</span>' +
-    '</div>')
+    '</div>' +
+    // 90 — perché la descrizione è vuota o senza data, detto qui sopra.
+    (avvisoTesto ? '<div class="nota-cruscotto avviso" style="margin-top:8px"><span aria-hidden="true">⚠️</span><span>' +
+      esc(avvisoTesto) + '</span></div>' : ''))
 }
 
 // Riaprendo una bozza: se e' nata da una rata, lo si rivede.
@@ -27117,6 +27337,16 @@ async function collegaBozzaAllaRata(fatturaId) {
       .eq('id', editorAccontoId).eq('stato', 'da_fatturare').select('id')
     if (error) throw error
     if (!data || !data.length) throw new Error('la rata non è più «da fatturare»')
+    // 90 — i giorni scritti nell'editor diventano il termine della rata, e il
+    // termine ricordato per il suo tipo. Non fa fallire il collegamento.
+    var gEd = validaGiorniRata(getVal('f-fat-giorni'))
+    var trB = trovaAcconto(editorAccontoId)
+    if (gEd != null) {
+      try {
+        await sb.from('tm_conta_cantiere_acconti').update({ termine_giorni: gEd }).eq('id', editorAccontoId).select('id')
+        if (trB) await ricordaTermineRata(tipoDiRata(trB.a), gEd)
+      } catch (_) { /* senza l'SQL della 90 il termine resta solo sulla fattura */ }
+    }
     contrattiCache = null   // la scheda cantiere rilegge
   } catch (e) {
     _avvisoAccontoBozza = 'non è collegata alla rata d\'acconto: ' + (e.message || e)
