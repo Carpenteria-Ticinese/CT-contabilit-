@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=89" />
+  <link rel="stylesheet" href="css/style.css?v=90" />
 </head>
-<body data-versione="89">
+<body data-versione="90">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 89</span>
+      <span id="sidebar-versione">Versione 90</span>
     </div>
 
   </aside>
@@ -2859,6 +2859,52 @@
         </div>
       </div>
 
+      <!-- 90 — i testi e i termini proposti per le rate del contratto -->
+      <div class="card">
+        <div class="card-title">🧾 Rate del contratto: testi e termini</div>
+        <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
+          Quando scrivi o fatturi una rata, il programma propone la descrizione da mettere in fattura
+          e i giorni di pagamento. Qui cambi i testi e i termini di partenza; su ogni rata restano modificabili.
+        </p>
+        <div class="form-group">
+          <label for="imp-rata-testo-acconto" class="form-label">Acconto</label>
+          <input type="text" id="imp-rata-testo-acconto" class="form-input" maxlength="300" />
+        </div>
+        <div class="form-group">
+          <label for="imp-rata-testo-intermedia" class="form-label">Acconto intermedio</label>
+          <input type="text" id="imp-rata-testo-intermedia" class="form-input" maxlength="300" />
+        </div>
+        <div class="form-group">
+          <label for="imp-rata-testo-saldo" class="form-label">Saldo</label>
+          <input type="text" id="imp-rata-testo-saldo" class="form-input" maxlength="300" />
+        </div>
+        <div class="form-hint" style="margin-bottom:12px">
+          Segnaposto: <code>[lavoro]</code> = il «Rif. offerta» del contratto, o il nome del cantiere ·
+          <code>[data]</code> = la data del contratto · <code>[n]</code> = il numero della rata.
+          Senza lavoro la descrizione resta vuota e il programma lo dice.
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="imp-rata-giorni-acconto" class="form-label">Termine acconto (giorni)</label>
+            <input type="number" id="imp-rata-giorni-acconto" class="form-input" min="0" max="365" step="1" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="imp-rata-giorni-intermedia" class="form-label">Termine intermedio (giorni)</label>
+            <input type="number" id="imp-rata-giorni-intermedia" class="form-input" min="0" max="365" step="1" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="imp-rata-giorni-saldo" class="form-label">Termine saldo (giorni)</label>
+            <input type="number" id="imp-rata-giorni-saldo" class="form-input" min="0" max="365" step="1" />
+          </div>
+        </div>
+        <div class="form-hint">Di partenza 3, 3 e 30. Si aggiornano da soli con l&rsquo;ultimo termine che usi su una rata di quel tipo.</div>
+        <div class="form-actions">
+          <button type="button" class="btn-primary" onclick="salvaImpostazioniRate()">💾 Salva testi e termini</button>
+          <button type="button" class="btn-secondary" onclick="ripristinaTestiRate()">↺ Ripristina quelli di partenza</button>
+        </div>
+        <div id="imp-rata-banner" role="status" aria-live="polite"></div>
+      </div>
+
       <div class="card">
         <div class="card-title">🤖 Lettura automatica delle fatture</div>
         <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
@@ -3426,7 +3472,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=89"></script>
+<script src="js/app.js?v=90"></script>
 
 </body>
 </html>
