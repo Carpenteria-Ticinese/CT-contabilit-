@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=88" />
+  <link rel="stylesheet" href="css/style.css?v=89" />
 </head>
-<body data-versione="88">
+<body data-versione="89">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 88</span>
+      <span id="sidebar-versione">Versione 89</span>
     </div>
 
   </aside>
@@ -341,6 +341,7 @@
       </div>
 
       <div id="scadenze-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+      <div id="scadenze-da-fare"></div>   <!-- 89 — lo stesso riquadro «Da fare» delle fatture d'acquisto -->
 
       <div class="nota-cruscotto" id="scad-nota-preavviso">
         <span aria-hidden="true">🕑</span>
@@ -1610,8 +1611,8 @@
             <div class="form-group" style="flex:2; margin-bottom:0">
               <label for="fatture-filtro-stato" class="form-label">Stato</label>
               <select id="fatture-filtro-stato" class="form-input" onchange="renderFattureTable()">
-                <option value="aperti" selected>Aperti</option>
-                <option value="tutti">Tutti (aperti e chiusi)</option>
+                <option value="tutti" selected>Tutti (aperti e chiusi)</option>
+                <option value="aperti">Aperti</option>
                 <optgroup label="Fatture">
                   <option value="bozza">Bozze</option>
                   <option value="non_incassato">🔵 Non incassate</option>
@@ -1951,7 +1952,7 @@
               <label for="offerte-filtro-stato" class="form-label">Stato</label>
               <!-- Le voci le mette il programma secondo il tipo scelto (aggiornaFiltroStatoOfferte). -->
               <select id="offerte-filtro-stato" class="form-input" onchange="renderOfferteTable()">
-                <option value="aperti" selected>Aperti</option>
+                <option value="tutti" selected>Tutti (aperti e chiusi)</option>
               </select>
             </div>
           </div>
@@ -2170,6 +2171,7 @@
         </div>
 
         <div id="acquisti-list-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
+        <div id="acquisti-da-fare"></div>   <!-- 89 — bozze senza giustificativo, ordini di pagamento passati -->
 
         <div class="card">
           <div class="card-title">📄 Elenco</div>
@@ -2182,14 +2184,16 @@
           <div class="form-row" style="margin-bottom:12px">
             <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="acquisti-filtro-stato" class="form-label">Stato</label>
-              <!-- 80·2 — un comando solo, da «Aperti» -->
+              <!-- 80·2 — un comando solo; 89·1 — da «Tutti» -->
               <select id="acquisti-filtro-stato" class="form-input" onchange="renderAcquistiTable()">
-                <option value="aperti" selected>Aperti</option>
-                <option value="tutti">Tutti (aperti e chiusi)</option>
+                <option value="tutti" selected>Tutti (aperti e chiusi)</option>
+                <option value="aperti">Aperti</option>
                 <option value="aperto">⏳ Non pagate</option>
                 <option value="parziale">🟠 Pagate in parte</option>
                 <option value="pagato">✅ Pagate</option>
+                <option value="ordine">📤 Ordine di pagamento creato</option>
                 <option value="da_confermare">⏳ Da confermare</option>
+                <option value="bozza">📝 Bozze (senza giustificativo)</option>
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
@@ -2250,11 +2254,12 @@
         <div class="card" id="ponte-ai"
              ondragover="onTrascinaSopra(event)" ondragleave="onTrascinaVia(event)"
              ondrop="onRilascioLettura(event, 'fattura')">
-          <div class="card-title">📋 Lettura della fattura</div>
+          <div class="card-title">📋 La fattura: prima il documento, poi la lettura</div>
           <div class="form-hint" style="margin-bottom:12px">
-            Invece di copiare i dati a mano: copia il prompt, aprilo in Claude allegando
-            la foto o il PDF, e riporta qui la risposta. I campi si compilano da soli.
-            Con la lettura automatica puoi anche <strong>trascinare il file su questo riquadro</strong>.
+            <strong>Carica il PDF o la foto</strong> (o trascinalo su questo riquadro): diventa
+            l&rsquo;allegato della fattura al salvataggio, senza ricaricarlo. Poi premi
+            <strong>«🤖 Leggi»</strong> accanto al file e i campi si compilano. Senza lettura
+            automatica: copia il prompt, aprilo in Claude con il file, e riporta qui la risposta.
           </div>
 
           <div class="form-actions" style="margin-top:0">
@@ -2262,11 +2267,11 @@
                  l'indirizzo del Worker e' configurato. -->
             <button type="button" class="btn-primary" id="btn-lettura-ai"
                     style="display:none" onclick="apriSceltaFileLettura()">
-              📄 Leggi da PDF o foto
+              📎 Carica la fattura (PDF o foto)
             </button>
-            <input type="file" id="lettura-file" style="display:none"
-                   accept=".pdf,.jpg,.jpeg,.png,.webp,image/*" capture="environment"
-                   onchange="leggiFatturaDaFile(this)" />
+            <input type="file" id="lettura-file" style="display:none" multiple
+                   accept=".pdf,.jpg,.jpeg,.png,.webp,image/*"
+                   onchange="caricaFileFattura(this)" />
             <button type="button" class="btn-secondary" onclick="copiaPromptFattura()">
               📋 Copia prompt
             </button>
@@ -2275,6 +2280,7 @@
             </button>
           </div>
           <div id="lettura-perche"></div>   <!-- 79·3 -->
+          <div id="ponte-ai-file" class="coda-file"></div>   <!-- 89·3 — il file caricato, con «🤖 Leggi» -->
 
           <div id="ponte-ai-banner" role="status" aria-live="polite" style="margin-top:12px"></div>
 
@@ -2514,11 +2520,21 @@
             <textarea id="a-note" class="form-input" rows="2" maxlength="500" placeholder="Riferimenti, cantiere, condizioni…"></textarea>
           </div>
           <div class="form-group">
-            <label for="a-allegato" class="form-label" id="a-allegato-label">Allegato documento <span class="dim">(opzionale)</span></label>
+            <label for="a-allegato" class="form-label" id="a-allegato-label">Giustificativo (PDF o foto) <span class="dim">— senza, la fattura resta bozza e non conta</span></label>
             <div id="a-allegato-corrente" class="allegato-box" style="display:none"></div>
             <input type="file" id="a-allegato" class="form-input-file" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" multiple />
             <div id="a-allegato-coda" class="coda-file"></div>
             <div class="form-hint" id="a-allegato-hint">Pi&ugrave; file in un colpo, o trascinati qui: si caricano al salvataggio, uno per uno, con l'esito di ciascuno. Se uno non riesce te lo dico: la fattura viene salvata comunque e riprovi solo quello dalla scheda.</div>
+          </div>
+          <!-- 89·4 — il giustificativo cartaceo: esiste, e il fiduciario deve sapere dove cercarlo. -->
+          <div class="form-group" id="a-cartaceo-box">
+            <label class="check-riga" for="a-cartaceo">
+              <input type="checkbox" id="a-cartaceo" onchange="onCartaceoAcquisto()" />
+              <span>📄 Ricevuta cartacea in ufficio <span class="dim">(nessun file da allegare)</span></span>
+            </label>
+            <input type="text" id="a-cartaceo-pos" class="form-input" maxlength="200" style="display:none; margin-top:6px"
+                   placeholder="Dove sta? es. raccoglitore Fornitori 2026, ottobre" />
+            <div class="form-hint">Senza file e senza questa spunta la fattura si salva, ma resta <strong>BOZZA</strong>: non entra in Situazione, cantieri, export e pacchetto finché manca la prova.</div>
           </div>
           <div class="form-actions">
             <button type="button" class="btn-primary" id="acq-save-btn" onclick="saveAcquisto()">💾 Salva</button>
@@ -3410,7 +3426,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=88"></script>
+<script src="js/app.js?v=89"></script>
 
 </body>
 </html>
