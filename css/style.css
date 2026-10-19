@@ -1081,7 +1081,7 @@ textarea.cell-desc {
    che non e' una voce con l'importo dimenticato, ma un'altra cosa. */
 #fatture-righe tr.riga-titolo { background: var(--bg); }
 #fatture-righe textarea.cell-titolo { font-weight: 700; }
-.cell-input.cell-unita { text-align: center; }
+.cell-input.cell-unita { text-align: center; min-width: 84px; }   /* 90 — «a corpo» si legge intero */
 
 /* FASE 29 — confronto offerta / fattura, uno accanto all'altro */
 .off-confronto {
@@ -3640,3 +3640,9 @@ tr.riga-bozza > td:first-child { box-shadow: inset 4px 0 0 #b45309; }
 .ponte-file-titolo { font-weight: 600; margin: 10px 0 4px; }
 .lettura-nota.proposta { border-left: 3px solid #7c3aed; }
 .alleg-cartaceo { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--border); white-space: nowrap; }
+
+/* 90 — la rata: tipo, testo proposto, termine con la data. */
+.rata-termine { font-size: 12px; margin-top: 4px; }
+.rata-termine .rata-tipo { width: auto; display: inline-block; }
+.rata-giorni { width: 64px !important; display: inline-block; }
+.rata-avviso { font-size: 12px; color: #92400e; margin-top: 3px; }
