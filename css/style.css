@@ -3618,3 +3618,25 @@ tr.off-vecchia td { color: var(--text2); }
   .cls-doc-box { flex-direction: column; }
   .cls-doc-anteprima { flex: none; max-width: 100%; }
 }
+
+/* 89 — la bozza senza giustificativo, il riquadro «Da fare», i doppioni affiancati. */
+.spia-bozza { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 6px;
+  border: 1px solid #b45309; color: #92400e; background: #fffbeb; }
+tr.riga-bozza > td { background: rgba(245, 158, 11, .08); }
+tr.riga-bozza > td:first-child { box-shadow: inset 4px 0 0 #b45309; }
+.avviso-bozza { border-left: 4px solid #b45309; background: #fffbeb; }
+.cartaceo-box { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; max-width: 560px; }
+.da-fare-card .fase-banner { margin-bottom: 10px; }
+.da-fare-lista { margin: 6px 0 6px 18px; padding: 0; }
+.da-fare-lista li { margin: 3px 0; }
+.da-fare-lista .icon-btn { margin-left: 4px; }
+.scad-segno { margin-top: 4px; }
+.doppione-tabella { margin-top: 8px; font-size: 13px; }
+.doppione-tabella th, .doppione-tabella td { padding: 4px 8px; text-align: left; }
+.doppione-tabella tr.uguale td { font-weight: 600; }
+.alleg-modifica-titolo { font-weight: 600; margin-bottom: 6px; }
+.pag-modulo { margin: 6px 0 0 18px; padding: 0; }
+.pag-modulo li { margin: 3px 0; }
+.ponte-file-titolo { font-weight: 600; margin: 10px 0 4px; }
+.lettura-nota.proposta { border-left: 3px solid #7c3aed; }
+.alleg-cartaceo { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--border); white-space: nowrap; }
