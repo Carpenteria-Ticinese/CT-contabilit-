@@ -3646,3 +3646,12 @@ tr.riga-bozza > td:first-child { box-shadow: inset 4px 0 0 #b45309; }
 .rata-termine .rata-tipo { width: auto; display: inline-block; }
 .rata-giorni { width: 64px !important; display: inline-block; }
 .rata-avviso { font-size: 12px; color: #92400e; margin-top: 3px; }
+/* 91 — lo sconto di cassa sulla rata, e sotto il totale della fattura */
+.rata-sconto { font-size: 12px; margin-top: 4px; }
+.rata-sconto-val { width: 80px !important; display: inline-block; }
+.rata-sconto-tipo { width: auto !important; display: inline-block; }
+.inv-tot .inv-sconto-cassa { border-top: 1px dashed #9ca3af; margin-top: 6px; padding-top: 6px; font-size: 12px; }
+.inv-tot .inv-sconto-cassa { align-items: flex-start; }
+.inv-tot .inv-sconto-cassa span:first-child { padding-right: 10px; }
+.inv-tot .inv-sconto-cassa span:last-child { white-space: nowrap; font-weight: 600; }
+.stralcio-box.sconto { border-left-color: #0f766e; }
