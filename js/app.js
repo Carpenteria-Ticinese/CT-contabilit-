@@ -797,11 +797,17 @@ async function loadCanalA() {
   // (lato costo, importo positivo). Restano la loro casa: qui si LEGGONO soltanto.
   if (currentAziendaId) {
     try {
-      const { data, error } = await leggiTutto(function () { return sb
+      // 89 — e il conto proposto dalla lettura e lo stato (la bozza). Senza
+      // l'SQL della 89 si rilegge senza.
+      var COLONNE_ACQ_A = 'id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id, cantiere_id, origine'   // 86: origine
+      var leggiAcqA = function (colonne) { return leggiTutto(function () { return sb
         .from('tm_conta_fatture_acquisto')
-        .select('id, fornitore, numero_fornitore, data, importo, valuta, codice_iva_id, cantiere_id, origine')   // 86: origine
+        .select(colonne)
         .eq('azienda_id', currentAziendaId)
-        .order('data', { ascending: false }).order('id') })
+        .order('data', { ascending: false }).order('id') }) }
+      var rAcqA = await leggiAcqA(COLONNE_ACQ_A + ', conto_proposto_id, stato_conferma')
+      if (rAcqA.error) rAcqA = await leggiAcqA(COLONNE_ACQ_A)
+      const { data, error } = rAcqA
       if (error) throw error
       for (var q = 0; q < (data || []).length; q++) {
         var acq = data[q]
@@ -822,6 +828,8 @@ async function loadCanalA() {
           _sorgente:    'Fatture acquisto',
           _tipo_label:  'Fattura acquisto',
           _ai:          acq.origine === 'import_ai',   // 86
+          _conto_proposto: acq.conto_proposto_id || null,   // 89·6
+          _bozza:       acq.stato_conferma === 'bozza',      // 89·4
           _icon:        '📥',
           _match_field: 'ente',
           _match_value: acq.fornitore || null
@@ -939,6 +947,7 @@ async function loadDaClassificare() {
   try { await loadAllegati(true); allegatiDaClassLetti = true }
   catch (eAl) { allegatiDaClassLetti = false; errori.push('Allegati: ' + (eAl.message || eAl)) }
   try { await loadClassTolte() } catch (eTo) { errori.push('Classificazioni tolte: ' + (eTo.message || eTo)) }
+  try { await loadCartaceiSpese() } catch (eCs) { errori.push('Ricevute cartacee delle spese: ' + (eCs.message || eCs)) }   // 89
   speseDaClassPerId = {}
 
   // Separa non classificati / già classificati (86: gli scartati escono)
@@ -1199,7 +1208,7 @@ function renderListeDaClassificare() {
       '</div>'
   }
 
-  html('movimenti-lista', sezioneOrfane + boxGiustificativiDaCopiareHtml() + sezioneDaClass + sezioneClassificati +
+  html('movimenti-lista', sezioneOrfane + daFareSpeseHtml() + boxGiustificativiDaCopiareHtml() + sezioneDaClass + sezioneClassificati +   // 89: daFareSpeseHtml
     sezioneScarti + storicoTolteHtml())   // 88
 }
 
@@ -1300,7 +1309,10 @@ function etichettaOrigineHtml(m) {
     t = '🏗️ da App Cantieri · ' + (m._fatturato ? 'Regia fatturata' : 'Regia da fatturare'); cls = 'orig-cantieri'
   }
   else if (m.origine_tipo === 'proprio') { t = '✍️ inserito a mano'; cls = 'orig-mano' }
-  else if (m.origine_tipo === 'acquisto') { t = (m._ai ? '🤖 letta dall\'AI · ' : '📥 ') + 'fattura d\'acquisto'; cls = m._ai ? 'orig-ai' : 'orig-doc' }
+  else if (m.origine_tipo === 'acquisto') {
+    t = (m._ai ? '🤖 letta dall\'AI · ' : '📥 ') + 'fattura d\'acquisto' + (m._bozza ? ' · 📝 bozza, senza giustificativo' : '')   // 89·4
+    cls = m._ai ? 'orig-ai' : 'orig-doc'
+  }
   else { t = '🧾 ' + (m._tipo_label || 'fattura emessa').toLowerCase(); cls = 'orig-doc' }
   return '<span class="orig-etichetta ' + cls + '">' + esc(t) + '</span>'
 }
@@ -1560,13 +1572,91 @@ async function assicuraCopiaAllegatoSpesa(m) {
   return a
 }
 
-// Il giustificativo di una spesa: copia | solo_app | app_non_verificata | nessuno
+// Il giustificativo di una spesa: copia | solo_app | app_non_verificata | cartaceo | nessuno
 function statoGiustificativo(m) {
   if (!m || m.origine_tipo !== 'spesa') return null
   var copia = copiaGiustificativoDi(m.origine_id)
   if (copia) return { tipo: 'copia', copia: copia }
   if (m._foto_path) return { tipo: allegatiDaClassLetti ? 'solo_app' : 'app_non_verificata' }
+  var ct = cartaceoSpesaDi(m.origine_id)   // 89 — la ricevuta su carta, con il posto
+  if (ct) return { tipo: 'cartaceo', cartaceo: ct }
   return { tipo: 'nessuno' }
+}
+
+// ── 89 · la ricevuta cartacea delle spese (tm_conta_cartacei_spese) ─────────
+// Nell'App Cantieri non si scrive: «📄 Ricevuta cartacea in ufficio» con il
+// posto dove sta vive qui. La spesa NON diventa bozza: è l'informazione su
+// dove sta la prova, per te e per il fiduciario.
+var cartaceiSpeseCache = [], cartaceiSenzaTabella = false
+async function loadCartaceiSpese() {
+  if (!currentAziendaId) return []
+  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_cartacei_spese')
+    .select('id, origine_id, posizione, creato_il, tolta_il').eq('azienda_id', currentAziendaId).order('id') })
+  if (error) {
+    var msg = String(error.message || error)
+    if (/tm_conta_cartacei_spese/.test(msg) && /(does not exist|Could not find|schema cache)/i.test(msg)) {
+      cartaceiSpeseCache = []; cartaceiSenzaTabella = true; return []
+    }
+    throw error
+  }
+  cartaceiSenzaTabella = false
+  cartaceiSpeseCache = data || []
+  return cartaceiSpeseCache
+}
+function cartaceoSpesaDi(id) {
+  return (cartaceiSpeseCache || []).filter(function (c) { return String(c.origine_id) === String(id) && !c.tolta_il })[0] || null
+}
+async function segnaCartaceoSpesa(id) {
+  var m = spesaDaId(id)
+  if (cartaceiSenzaTabella) { window.alert('Non segnata: ' + MSG_SQL89 + '.'); return }
+  var pos = window.prompt('📄 Ricevuta cartacea in ufficio' + (m ? ' — «' + m.descrizione + '» del ' + fmtDate(m.data) : '') +
+    '\n\nDove sta? (almeno 3 caratteri: il fiduciario deve poterla trovare)', '')
+  if (pos === null) return
+  pos = String(pos).trim()
+  if (pos.length < 3) { window.alert('Non segnata: scrivi dove sta la ricevuta (almeno 3 caratteri).'); return }
+  try {
+    await richiediSessione('la ricevuta cartacea NON è stata segnata')
+    const { error } = await sb.from('tm_conta_cartacei_spese')
+      .insert({ azienda_id: currentAziendaId, origine_id: String(id), posizione: pos }).select('id')
+    if (error) throw error
+    await loadDaClassificare()
+    html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
+      '<div class="msg">Ricevuta cartacea segnata: «' + esc(pos) + '».</div></div>')
+  } catch (e) {
+    window.alert('Ricevuta cartacea NON segnata: ' + (/tm_conta_cartacei_spese/.test(String(e.message || e)) ? MSG_SQL89 : (e.message || e)))
+  }
+}
+async function togliCartaceoSpesa(idRiga) {
+  if (!window.confirm('Togliere la ricevuta cartacea segnata su questa spesa?\n\nResta scritto che c\'era e quando è stata tolta.')) return
+  try {
+    const { data, error } = await sb.from('tm_conta_cartacei_spese').update({ tolta_il: new Date().toISOString() })
+      .eq('id', idRiga).eq('azienda_id', currentAziendaId).is('tolta_il', null).select('id')
+    if (error) throw error
+    if (!data || data.length !== 1) throw new Error('non risulta tolta: ricarica e riprova')
+    await loadDaClassificare()
+  } catch (e) { window.alert('Non tolta: ' + (e.message || e)) }
+}
+// In cima a «Da classificare»: le spese per cui l'operaio ha detto «nessun
+// documento» e che non hanno nessuna prova (né foto, né copia, né carta).
+function speseSenzaDocumento() {
+  return (daClassTutti || []).concat(classificatiTutti || []).filter(function (m) {
+    if (m.origine_tipo !== 'spesa' || m._documento !== 'nessuno') return false
+    var g = statoGiustificativo(m)
+    return g && g.tipo === 'nessuno'
+  })
+}
+function daFareSpeseHtml() {
+  var l = speseSenzaDocumento()
+  if (!l.length) return ''
+  return '<div class="card da-fare-card"><div class="card-title">📋 Da fare</div>' +
+    '<div class="fase-banner warn da-fare-voce" role="status"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">' +
+    '<strong>' + l.length + (l.length === 1 ? ' spesa dell\'App Cantieri senza nessun documento' : ' spese dell\'App Cantieri senza nessun documento') +
+    '</strong> — l\'operaio ha segnato «nessun documento». Recupera la ricevuta, oppure segna dove sta quella su carta.' +
+    '<ul class="da-fare-lista">' + l.map(function (m) {
+      return '<li>' + esc(fmtDate(m.data)) + ' · ' + esc(m.descrizione || '—') + ' · ' + esc(fmtNumIt(importoRiga(m))) + ' ' + esc(m.valuta || 'CHF') +
+        (m._class ? ' · <span class="dim">classificata</span>' : '') +
+        ' <button type="button" class="icon-btn" onclick="segnaCartaceoSpesa(\'' + esc(String(m.origine_id)) + '\')">📄 Ricevuta cartacea in ufficio</button></li>'
+    }).join('') + '</ul></div></div></div>'
 }
 function testoSenzaGiustificativo(m) {
   return '⚠️ nessun giustificativo digitale' +
@@ -1579,7 +1669,11 @@ function giustificativoRigaHtml(m, classificata) {
   var id = esc(String(m.origine_id))
   var apri = '<button type="button" class="icon-btn" onclick="event.stopPropagation(); apriGiustificativoSpesa(\'' + id + '\')">📎 Scontrino</button>'
   if (g.tipo === 'copia') return '<div class="giust-riga">' + apri + '<span class="dim">conservato nella Pre-contabilità</span></div>'
-  if (g.tipo === 'nessuno') return '<div class="giust-riga giust-manca">' + esc(testoSenzaGiustificativo(m)) + '</div>'
+  // 89 — la ricevuta cartacea: dove sta, e si può togliere.
+  if (g.tipo === 'cartaceo') return '<div class="giust-riga">📄 <span>Ricevuta cartacea in ufficio: <strong>' + esc(g.cartaceo.posizione) + '</strong></span>' +
+    '<button type="button" class="icon-btn" onclick="event.stopPropagation(); togliCartaceoSpesa(\'' + esc(g.cartaceo.id) + '\')">✕ Togli</button></div>'
+  if (g.tipo === 'nessuno') return '<div class="giust-riga giust-manca"><span>' + esc(testoSenzaGiustificativo(m)) + '</span>' +
+    '<button type="button" class="icon-btn" onclick="event.stopPropagation(); segnaCartaceoSpesa(\'' + id + '\')">📄 Ricevuta cartacea in ufficio</button></div>'
   if (g.tipo === 'app_non_verificata') return '<div class="giust-riga">' + apri + '<span class="dim">nell\'App Cantieri</span></div>'
   if (!classificata) {
     return '<div class="giust-riga">' + apri + '<span class="dim">nell\'App Cantieri: si copia qui alla lettura o alla classificazione</span></div>'
@@ -1655,6 +1749,11 @@ async function disegnaDocumentoClassifica(m) {
   if (!box) return
   if (classifyMode !== 'single' || !m || m.origine_tipo !== 'spesa') { box.innerHTML = ''; return }
   var g = statoGiustificativo(m)
+  if (g.tipo === 'cartaceo') {   // 89
+    box.innerHTML = '<div class="cls-doc-box senza">📄 <strong>Ricevuta cartacea in ufficio:</strong> ' + esc(g.cartaceo.posizione) +
+      '<div class="form-hint">Nessun file digitale: la prova è su carta, nel posto scritto qui.</div></div>'
+    return
+  }
   if (g.tipo === 'nessuno') {
     box.innerHTML = '<div class="cls-doc-box senza"><div class="giust-manca">' + esc(testoSenzaGiustificativo(m)) + '</div>' +
       '<div class="form-hint">La classificazione si salva lo stesso. L\'avviso resta sulla riga anche dopo, così sai quali ' +
@@ -2847,6 +2946,11 @@ async function createCustomConto() {
 
 // ── Suggerimento ultimo-usato (solo proposta) ────────────────────────────────
 async function suggestClassificazione(mov) {
+  // 89·6 — la fattura letta dall'AI porta il SUO conto proposto: viene prima
+  // dell'ultima classificazione simile. È una proposta: si conferma o si cambia.
+  if (mov && mov.origine_tipo === 'acquisto' && mov._conto_proposto) {
+    return { conto_id: mov._conto_proposto, codice_iva_id: mov.codice_iva_id || null, iva_inclusa: true, _daLettura: true }
+  }
   if (!currentAziendaId || !mov._match_value) return null
   var ids = []
   try {
@@ -2897,7 +3001,8 @@ function applySuggestion(s) {
   if (sg) {
     var conto = (contiCache || []).filter(function (c) { return c.id === s.conto_id })[0]
     sg.style.display = 'block'
-    sg.innerHTML = '💡 <strong>Proposta</strong> dall\'ultima classificazione simile' +
+    sg.innerHTML = (s._daLettura ? '🤖 <strong>Proposta della lettura AI</strong> della fattura'   // 89·6
+                                 : '💡 <strong>Proposta</strong> dall\'ultima classificazione simile') +
       (conto ? ': conto ' + esc(conto.codice_conto + ' · ' + conto.descrizione) : '') +
       '. È solo un suggerimento, modificabile.'
   }
@@ -4003,8 +4108,9 @@ function docsPeriodo(ds, da, a) {
   // Se la colonna non c'e' (SQL_FASE5.sql non ancora applicato) il valore e'
   // undefined e la riga passa: nessuna regressione rispetto a prima.
   var scartatiDaConfermare = 0
+  // 89·4 — fuori anche le bozze (fatture d'acquisto senza giustificativo).
   function confermato(r) {
-    if (r && r.stato_conferma === 'da_confermare') { scartatiDaConfermare++; return false }
+    if (r && r.stato_conferma && r.stato_conferma !== 'confermato') { scartatiDaConfermare++; return false }
     return true
   }
   for (var i = 0; i < ds.fatture.length; i++) {
@@ -4850,6 +4956,9 @@ function onRilascioLettura(e, quale) {
   if (e.currentTarget && e.currentTarget.classList) e.currentTarget.classList.remove('drop-attivo')
   var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]
   if (!f) return
+  // 89·3 — sulla fattura d'acquisto trascinare vuol dire CARICARE: il file va
+  // fra gli allegati, e si legge con «🤖 Leggi» accanto.
+  if (quale !== 'conferma') { caricaFileFattura({ files: e.dataTransfer.files, value: '' }); return }
   var conferma = quale === 'conferma'
   var avvisa = conferma
     ? function (t, m) { showBannerLetturaConferma(t, m) }
@@ -4913,7 +5022,7 @@ function statoFatturaBadge(stato, motivo) {
 }
 
 async function initFatturePage() {
-  statoFiltroDefault('fatture-filtro-stato')   // 80·2 — ogni volta si riparte dagli aperti
+  statoFiltroDefault('fatture-filtro-stato')   // 80·2, 89·1 — ogni volta si riparte da «Tutti»
   fattureBackToList()
   await loadFattureList()
 }
@@ -5054,7 +5163,8 @@ function rigaChiusiNascostiHtml(n) {
 // comprese, non quello grezzo del database.
 // La ricerca, con «Aperti», cerca anche fra i chiusi (78): chi cerca un
 // numero vuole trovarlo. Con uno stato scelto, cerca dentro quello.
-// A ogni ingresso nella pagina il filtro torna su «Aperti».
+// 89·1 — A ogni ingresso nella pagina il filtro parte da «Tutti»: si vede
+// tutto, e gli aperti (o i chiusi) li sceglie chi guarda.
 function statoVenditaFiltro(f, filtro) {
   switch (filtro) {
     case '':
@@ -5082,8 +5192,10 @@ function statoAcquistoFiltro(a, filtro) {
   switch (filtro) {
     case '':
     case 'tutti':        return true
-    case 'aperti':       return !acquistoChiuso(a) || daConfermare(a)
+    case 'aperti':       return !acquistoChiuso(a) || daConfermare(a) || inBozza(a)
     case 'da_confermare': return daConfermare(a)
+    case 'bozza':        return inBozza(a)                                              // 89·4
+    case 'ordine':       return !!a.ordine_pagamento_data && a.stato_pagamento !== 'pagato'   // 89·7
     case 'aperto':
     case 'parziale':
     case 'pagato':       return (a.stato_pagamento || 'aperto') === filtro
@@ -5119,7 +5231,7 @@ function elencoConStato(tutte, filtro, base, cerca, stato, chiuso) {
   return { list: list, universo: universo, nascosti: nascosti }
 }
 
-function statoFiltroDefault(id) { var s = el(id); if (s) s.value = 'aperti' }
+function statoFiltroDefault(id) { var s = el(id); if (s) s.value = 'tutti' }   // 89·1 — di base, tutti
 
 // Un elenco di lavoro si divide così: `filtrate` sono i documenti che passano i
 // filtri di chi guarda. Se i chiusi non sono stati chiesti, si tolgono, e si
@@ -5594,8 +5706,8 @@ function predicatoFiltriFatture() {
 }
 
 function renderFattureTable() {
-  // 80·2 — UN filtro di stato, che parte da «Aperti» (vedi statoVenditaFiltro).
-  var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : 'aperti'
+  // 80·2 — UN filtro di stato, che parte da «Tutti» (89·1; vedi statoVenditaFiltro).
+  var stato = el('fatture-filtro-stato') ? el('fatture-filtro-stato').value : 'tutti'
   var anno  = el('fatture-filtro-anno') ? el('fatture-filtro-anno').value : ''
   var q = el('fatture-search') ? el('fatture-search').value.trim().toLowerCase() : ''
 
@@ -5628,7 +5740,7 @@ function renderFattureTable() {
       annullata: { sing: 'annullata', plur: 'annullate' } }))
 
   if (!list.length) {
-    var filtroAttivo = q || (stato && stato !== 'aperti' && stato !== 'tutti') || anno || leggiFiltroID('fatture').attivo   // 85
+    var filtroAttivo = q || (stato && stato !== 'tutti') || anno || leggiFiltroID('fatture').attivo   // 85, 89·1
     var msg = filtroAttivo
       ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.'
       : (diviso.nascosti ? 'Nessuna fattura aperta.' : 'Nessuna fattura.')
@@ -8405,6 +8517,10 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
     riga('Numero fornitore', esc(a.numero_fornitore || '—')) +
     riga('Data', esc(fmtDate(a.data))) +
     riga('Scadenza', a.scadenza ? esc(fmtDate(a.scadenza)) : '') +
+    // 89·4 — il giustificativo: allegato, ricevuta cartacea (con dove sta) o niente.
+    riga('Giustificativo', inBozza(a) ? '<span class="spia-bozza">📝 Manca: la fattura è una bozza</span>'
+      : (a.giustificativo_cartaceo ? esc(testoCartaceo(a))
+      : esc(contaAllegati('tm_conta_fatture_acquisto', a.id) ? '📎 allegato' : '—'))) +
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Importi</div>' +
     riga('Totale', fmtImporto(a.importo, a.valuta), true) +
@@ -8415,6 +8531,8 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Pagamento</div>' +
     riga('Stato', statoEAvvisoAcquisto(a)) +   // 75·3
+    // 89·7 — l'ordine di pagamento dato alla banca, se c'è.
+    (a.ordine_pagamento_data && a.stato_pagamento !== 'pagato' ? riga('Ordine di pagamento', esc(testoOrdineScheda(a))) : '') +
     // Data pagamento resta: la scrive il trigger dai pagamenti, e' il dato vero.
     (pagato || a.data_pagamento ? riga('Data pagamento', a.data_pagamento ? esc(fmtDate(a.data_pagamento)) : '—') : '') +
     // Metodo e Riferimento NON stanno piu' qui: dalla FASE 8 ogni versamento ha
@@ -8468,12 +8586,16 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
 
   // FASE 10B.4 — chi sta guardando la scheda puo' confermare da li': e' il
   // momento in cui ha davanti data e importo.
-  if (daConfermare(a)) {
+  // 89·4 — una bozza viene prima: senza giustificativo non c'è niente da confermare.
+  if (inBozza(a)) {
+    html('acquisti-detail-conferma', boxBozzaHtml(a))
+  } else if (daConfermare(a)) {
     html('acquisti-detail-conferma',
       '<div class="card avviso-conferma">' +
         '<div class="card-title">⏳ Da confermare</div>' +
-        '<div>Questa fattura è stata letta automaticamente e <strong>non entra ancora</strong> ' +
-          'nei totali, nelle scadenze e nell\'export.</div>' +
+        '<div>' + (a.origine === 'import_ai' ? 'Questa fattura è stata letta automaticamente' :
+          'Il giustificativo è arrivato su una bozza') + ' e <strong>non entra ancora</strong> ' +
+          'nei totali, nelle scadenze e nell\'export. Guarda l\'allegato qui sotto: è quello giusto?</div>' +
         '<div class="form-hint" style="margin-top:8px">' +
           'L\'AI sbaglia le date e legge male gli importi sulle foto storte. Controlla prima di confermare.' +
         '</div>' +
@@ -8498,6 +8620,7 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
       '<button class="btn-primary" onclick="apriRegistraPagamento(\'tm_conta_fatture_acquisto\', \'' +
         a.id + '\', ' + (safeNum(a.importo) || 0) + ', \'uscita\', \'' +
         esc(String(a.fornitore || '').replace(/'/g, '')) + '\')">➕ Registra pagamento</button>' +
+      bottoniOrdineHtml(a) +   // 89·7 — l'ordine di pagamento creato in banca
       // 79·2 — il confronto letto dall'AI
       '<button class="btn-secondary" onclick="confrontaConConfermaEBolle(\'' + a.id + '\')">🔍 Confronta con conferma e bolle</button>' +
       '<button class="btn-secondary" onclick="deleteAcquisto(\'' + a.id + '\')">🗑️ Elimina</button>' +
@@ -8517,13 +8640,24 @@ async function loadAcquistiList() {
   try {
     // 52·B / B1 — vedi loadFattureList: sessione e azienda prima, elenco dopo.
     await richiediAccesso('lettura delle fatture d\'acquisto')
-    const { data, error } = await leggiTutto(function () { return sb
+    // 89 — anche ricevuta cartacea e ordine di pagamento. Senza l'SQL della 89
+    // le colonne non ci sono: si rilegge senza, e la pagina lo dice.
+    var COLONNE_ACQ = 'id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id, origine, stato_conferma, offerta_id'   // 79·1: offerta_id
+    var leggiAcq = function (colonne) { return leggiTutto(function () { return sb
       .from('tm_conta_fatture_acquisto')
-      .select('id, fornitore, numero_fornitore, data, importo, valuta, scadenza, stato_pagamento, note, created_at, codice_iva_id, imponibile, iva_importo, data_pagamento, gruppo_codice, contatto_id, origine, stato_conferma, offerta_id')   // 79·1: offerta_id
+      .select(colonne)
       .eq('azienda_id', currentAziendaId)
-      .order('data', { ascending: false }).order('id') })
+      .order('data', { ascending: false }).order('id') }) }
+    var rAcq = await leggiAcq(COLONNE_ACQ + ', giustificativo_cartaceo, giustificativo_posizione, ordine_pagamento_data, ordine_pagamento_creato_il')
+    sqlFase89Mancante = !!rAcq.error
+    if (rAcq.error) rAcq = await leggiAcq(COLONNE_ACQ)
+    const { data, error } = rAcq
     if (error) throw error
     acquistiList = data || []
+    await preparaDaFareAcquisti(acquistiList)   // 89 — le vecchie senza giustificativo
+    html('acquisti-da-fare', daFareAcquistiHtml(acquistiList) + (sqlFase89Mancante
+      ? '<div class="fase-banner warn" role="status"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">' +
+        'Bozze, ricevuta cartacea e ordini di pagamento non sono attivi: ' + esc(MSG_SQL89) + '.</div></div>' : ''))
     // I dati di contorno — pagamenti, allegati, doppioni, badge, cantieri — non
     // devono far sparire l'elenco se falliscono, ma nemmeno fallire in silenzio.
     // Vedi loadFattureList per i pagamenti: parola si', cifra omessa.
@@ -8652,7 +8786,9 @@ function statoEAvvisoAcquisto(a) {
   var statoVero = statoConStorno('tm_conta_fatture_acquisto', a.id, a.importo, a.stato_pagamento)
   var av = avvisoScadenzaFornitore(a.scadenza, statoVero)
   var cf = avvisoConfermaAcquisto(a)   // 79·1
+  var bo = badgeOrdine(a)   // 89·7
   return badgePagamentoConResiduo('uscita', a.stato_pagamento, 'tm_conta_fatture_acquisto', a.id, a.importo) +
+    (bo ? ' ' + bo : '') +
     (av ? ' ' + av : '') +
     (cf ? ' ' + badge('err', '⚠️ ' + testoAvvisoConferma(cf, true)) : '')
 }
@@ -8669,7 +8805,10 @@ function acquistiRowActions(a) {
       ? '<button class="icon-btn conferma" onclick="event.stopPropagation(); confermaAcquisto(\'' +
         esc(a.id) + '\')" title="Controlla data e importo, poi conferma">✅ Conferma</button>'
       : '') +
-    badgeAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-list-banner') +
+    // 89·4 — la ricevuta cartacea segnata non è «nessun allegato»: lo dice.
+    (a.giustificativo_cartaceo && !contaAllegati('tm_conta_fatture_acquisto', a.id)
+      ? '<span class="alleg-cartaceo" title="' + esc(a.giustificativo_posizione || '') + '">📄 Ricevuta cartacea</span>'
+      : badgeAllegati('tm_conta_fatture_acquisto', a.id, 'acquisti-list-banner')) +
     spiaDoppione(a) +
     // FASE 29 — «Apri» guarda, «Modifica» cambia. Prima c'era solo la seconda.
     '<button class="icon-btn" title="Apri in sola lettura" onclick="event.stopPropagation(); viewAcquisto(\'' + a.id + '\')">👁 Apri</button>' +
@@ -8793,9 +8932,9 @@ function renderAcquistiTable() {
   // c'è ancora qualcosa da fare.
   var nelFiltro = {}
   list.forEach(function (a) { nelFiltro[a.id] = true })
-  var divisoA = elencoConStato(acquistiList, stato || 'aperti',
+  var divisoA = elencoConStato(acquistiList, stato || 'tutti',   // 89·1
     function (a) { return !!nelFiltro[a.id] }, cercaA, statoAcquistoFiltro,
-    function (a) { return acquistoChiuso(a) && !daConfermare(a) })
+    function (a) { return acquistoChiuso(a) && !daConfermare(a) && !inBozza(a) })
   list = divisoA.list
 
   // 59·B — quante, e come stanno a pagamento.
@@ -8806,7 +8945,7 @@ function renderAcquistiTable() {
       pagato: { sing: 'pagata', plur: 'pagate' } }))
 
   if (!list.length) {
-    var attivo = qv || (stato && stato !== 'aperti' && stato !== 'tutti') || anno || cantF || fidA.attivo   // 85
+    var attivo = qv || (stato && stato !== 'tutti') || anno || cantF || fidA.attivo   // 85, 89·1
     html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
       (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
     return
@@ -8825,10 +8964,10 @@ function renderAcquistiTable() {
       ? '<span class="cell-sub">il ' + esc(fmtDate(a.data_pagamento)) + '</span>'
       : ''
     var chiusoA = acquistoChiuso(a)   // 78
-    return '<tr class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') + (chiusoA ? ' riga-chiusa' : '') +
+    return '<tr class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') + (inBozza(a) ? ' riga-bozza' : '') + (chiusoA ? ' riga-chiusa' : '') +
       (a.origine === 'import_ai' ? ' riga-orig-ai' : '') +   // 86
       '" onclick="viewAcquisto(\'' + a.id + '\')">' +
-      '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + (chiusoA ? segnoChiuso() : '') +
+      '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + spiaBozza(a) + (chiusoA ? segnoChiuso() : '') +   // 89·4
         (a.origine === 'import_ai' ? '<div><span class="orig-etichetta orig-ai">🤖 letta dall\'AI</span></div>' : '') + '</td>' +
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
@@ -8978,8 +9117,16 @@ async function aggiornaGiaPagata(idAcquisto, importoDoc) {
     var campi = el('a-gia-pagata-campi')
     if (campi) campi.style.display = 'none'
     avviso.style.display = ''
+    // 89·2 — i pagamenti si correggono anche da qui: metodo, data, importo,
+    // con la stessa finestra della scheda.
+    var listaPag = pagamentiDi('tm_conta_fatture_acquisto', idAcquisto)
     avviso.innerHTML = '💳 Pagato <strong>' + esc(fmtNumIt(gia)) + '</strong> di <strong>' +
-      esc(fmtNumIt(safeNum(importoDoc) || 0)) + '</strong> — gestisci i pagamenti dalla scheda.'
+      esc(fmtNumIt(safeNum(importoDoc) || 0)) + '</strong>.' +
+      '<ul class="pag-modulo">' + listaPag.map(function (pg) {
+        return '<li>' + esc(fmtDate(pg.data)) + ' · ' + esc(fmtNumIt(pg.importo)) + ' CHF · ' +
+          esc(pg.metodo || 'metodo non indicato') +
+          ' <button type="button" class="icon-btn" onclick="apriModificaPagamento(\'' + esc(pg.id) + '\')">✏️ Cambia metodo o data</button></li>'
+      }).join('') + '</ul>'
     aggiornaRimandoPagamento()   // 75·4 — il pagamento c'è già: il rimando non serve
   } catch (e) {
     // Se i pagamenti non si leggono si mostra la spunta: il salvataggio la
@@ -9338,6 +9485,10 @@ function fillAcquistoForm(v) {
   riempiSelectGruppi('a-gruppo', v.gruppo_codice || '')
   aggiornaLegatoDaId('a', v.contatto_id)
   setVal('a-note',      v.note || '')
+  // 89·4 — la ricevuta cartacea in ufficio.
+  if (el('a-cartaceo')) el('a-cartaceo').checked = !!v.giustificativo_cartaceo
+  setVal('a-cartaceo-pos', v.giustificativo_posizione || '')
+  onCartaceoAcquisto()
   // IVA: il menu va costruito prima di impostare il valore
   var ivaSel = el('a-codice-iva')
   if (ivaSel) ivaSel.innerHTML = buildIvaOptions(v.codice_iva_id || null)
@@ -9365,15 +9516,8 @@ function clearAcquistoFileInput() {
   svuotaCodaFile('a-allegato')   // 59·A — anche la coda, non solo l'input
 }
 
-// Mostra l'allegato già presente: nome + apri + rimuovi. L'input file funge da
-// "sostituisci" (caricando un nuovo file si rimpiazza il vecchio al salvataggio).
-function renderAcquistoAllegatoCorrente() {
-  // FASE 9 — il riquadro «allegato corrente» non c'e' piu': gli allegati si
-  // gestiscono dalla scheda, dove si vedono tutti e non solo il primo. Qui
-  // resta solo l'input per allegarne uno mentre si crea il documento.
-  var box = el('a-allegato-corrente')
-  if (box) { box.style.display = 'none'; box.innerHTML = '' }
-}
+// 89·2 — renderAcquistoAllegatoCorrente() sta nel blocco della 89: in modifica
+// gli allegati già salvati si vedono qui, e si eliminano uno per uno con conferma.
 
 // FASE 9 — rimuoviAllegatoAcquisto() e' stata tolta: cancellava dallo Storage
 // un file che adesso e' nominato da una riga di tm_conta_allegati, lasciando
@@ -9382,6 +9526,7 @@ function renderAcquistoAllegatoCorrente() {
 async function newAcquisto() {
   doppioneAccettato = false
   lettaDaAI = false
+  propostaLettura = null   // 89·6
   editingAcquistoId = null
   acquistoOriginal = null
   acquistoDocPath = null
@@ -9428,6 +9573,7 @@ async function editAcquisto(id) {
     // l'editor vuoto le cancellerebbe (replaceRigheAcquisto cancella e
     // riscrive), e un errore chiaro e' meglio di righe sparite in silenzio.
     var righe = await leggiRigheAcquisto(id)
+    try { await loadAllegati(true) } catch (_) { /* il riquadro degli allegati lo dice */ }   // 89·2
     editingAcquistoId = id
     var vals = {
       fornitore: data.fornitore || '', numero_fornitore: data.numero_fornitore || '',
@@ -9439,6 +9585,8 @@ async function editAcquisto(id) {
       gruppo_codice: data.gruppo_codice || null, contatto_id: data.contatto_id || null,
       cantiere_id:   data.cantiere_id || null,                     // FASE 27
       offerta_id:    data.offerta_id || null,                      // FASE 29
+      giustificativo_cartaceo:  !!data.giustificativo_cartaceo,     // 89·4
+      giustificativo_posizione: data.giustificativo_posizione || '',
       righe:         righe                                         // 56·4a
     }
     acquistoOriginal = vals
@@ -9471,6 +9619,11 @@ function collectAcquisto() {
   if (importo == null || importo <= 0) throw new Error('L\'importo dev\'essere un numero positivo.')
   var impo = safeNum(getVal('a-imponibile'))
   var ivaI = safeNum(getVal('a-iva'))
+  var cartaceo = !!(el('a-cartaceo') && el('a-cartaceo').checked)
+  var posCartaceo = String(getVal('a-cartaceo-pos') || '').trim()
+  if (cartaceo && posCartaceo.length < 3) {
+    throw new Error('Scrivi dove sta la ricevuta cartacea (almeno 3 caratteri), oppure togli la spunta.')
+  }
   // 56·4a — le righe descrittive NON entrano qui: si scrivono a parte
   // (replaceRigheAcquisto) e non ricalcolano l'importo. Il totale del
   // documento e' quello scritto in «Importo», righe o non righe.
@@ -9500,7 +9653,10 @@ function collectAcquisto() {
     // tm_conta_pagamenti: un documento pagato in tre volte ha tre metodi, e
     // queste colonne non potrebbero dirlo. Restano nel database come storico
     // (vedi i COMMENT in SQL_FASE8.sql) ma non si scrivono piu'.
-    note:             getVal('a-note') || null
+    note:             getVal('a-note') || null,
+    // 89·4 — la ricevuta cartacea: con la spunta serve dove sta.
+    giustificativo_cartaceo:  cartaceo,
+    giustificativo_posizione: cartaceo ? posCartaceo : null
   }
 }
 
@@ -9528,7 +9684,11 @@ async function saveAcquisto() {
     // fattura gia' controllata — o, peggio, confermerebbe senza guardare.
     if (!editingAcquistoId) {
       payload.origine        = lettaDaAI ? 'import_ai' : 'manuale'
+      // 89·4 — senza giustificativo il DATABASE la fa nascere «bozza», e la fa
+      // uscire da sola quando arriva l'allegato (trigger di SQL_FASE89).
       payload.stato_conferma = lettaDaAI ? 'da_confermare' : 'confermato'
+      // 89·6 — il conto proposto dalla lettura: una proposta, non una classificazione.
+      if (lettaDaAI && propostaLettura && propostaLettura.conto) payload.conto_proposto_id = propostaLettura.conto.id
     }
 
     // FASE 9B — il doppione. Si controlla PRIMA di scrivere, e non blocca:
@@ -9537,14 +9697,15 @@ async function saveAcquisto() {
     if (!doppioneAccettato) {
       var altra = null
       try {
-        altra = await cercaDoppione(payload.fornitore, payload.numero_fornitore, editingAcquistoId)
+        altra = await cercaDoppione(payload.fornitore, payload.numero_fornitore, editingAcquistoId,
+                                    payload.importo, payload.data)   // 89·5 — anche senza numero
       } catch (eDop) {
         // Se il controllo non si puo' fare, il salvataggio non si ferma: un
         // avviso mancato e' meglio di una fattura che non si riesce a salvare.
         console.warn('Controllo doppione non riuscito:', eDop.message || eDop)
       }
       if (altra) {
-        html('acquisti-edit-banner', avvisoDoppioneHtml(altra))
+        html('acquisti-edit-banner', avvisoDoppioneHtml(altra, payload))
         if (btn) { btn.disabled = false; btn.textContent = '💾 Salva' }
         return
       }
@@ -9619,6 +9780,8 @@ async function saveAcquisto() {
 
     doppioneAccettato = false      // vale una volta sola
     lettaDaAI = false              // idem: vale per il documento appena salvato
+    propostaLettura = null         // 89·6
+    var idSalvato = editingAcquistoId   // 89·4 — per dire se è rimasta bozza
     invalidaChiaviDoppioni()
     try { await refreshDaConfermareCount() } catch (_) {}
     await loadAcquistiList()
@@ -9651,10 +9814,20 @@ async function saveAcquisto() {
       tipoBanner = 'warn'
       msgBanner += '\n⚠️ Attenzione: ' + differenzaRighe
     }
+    // 89·4 — senza giustificativo è rimasta bozza: si dice, con cosa fare.
+    var salvata = (acquistiList || []).filter(function (x) { return x.id === idSalvato })[0]
+    if (inBozza(salvata)) {
+      tipoBanner = 'warn'
+      msgBanner += '\n📝 È una BOZZA: manca il giustificativo, quindi non conta in Situazione, cantieri ed export ' +
+        'finché non lo alleghi dalla scheda (o segni la ricevuta cartacea in ufficio).'
+    } else if (daConfermare(salvata) && salvata.origine !== 'import_ai') {
+      // 89 — l'allegato è arrivato: il database la mette «da confermare», non la registra da sola.
+      msgBanner += '\n⏳ Da confermare: guarda che l\'allegato sia quello giusto e premi «✅ Conferma». Finché non confermi non conta.'
+    }
     // 75·5 — l'ora, sempre: un «salvata» senza ora non si distingue da uno vecchio.
     showFattureBanner('acquisti-list-banner', tipoBanner, 'Salvata alle ' + oraAdesso() + '. ' + msgBanner)
   } catch (e) {
-    showFattureBanner('acquisti-edit-banner', 'err', 'Salvataggio: ' + (e.message || e))
+    showFattureBanner('acquisti-edit-banner', 'err', 'Salvataggio: ' + (eErroreSql89(e) ? MSG_SQL89 : (e.message || e)))
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '💾 Salva' }
   }
@@ -9716,6 +9889,13 @@ async function motivoPerNonEliminare(tabella, id) {
 
 // Perché un allegato NON si elimina; null se si può.
 async function motivoPerTenereAllegato(a) {
+  // 89·2 — un allegato DOPPIO (ne resta un altro dello stesso tipo sullo
+  // stesso documento) si toglie anche se il documento è pagato o consegnato:
+  // la prova resta. L'unico, o l'ultimo del suo tipo, no.
+  var stessoTipo = allegatiDi(a.tabella_origine, a.id_origine).filter(function (x) {
+    return x.id !== a.id && x.tipo === a.tipo
+  })
+  if (stessoTipo.length) return null
   try {
     var t = a.tabella_origine, id = a.id_origine
     var motivi = []
@@ -12204,8 +12384,8 @@ function aggiornaFiltroStatoOfferte() {
       return '<option value="' + k + '">' + stati[k].ic + ' ' + esc(stati[k].et) + '</option>'
     }).join('')
   }
-  // 80·2 — si parte da «Aperti»; «Tutti» sono aperti e chiusi.
-  var out = '<option value="aperti">Aperti</option><option value="tutti">Tutti (aperti e chiusi)</option>'
+  // 80·2 — «Tutti» sono aperti e chiusi; 89·1 — si parte da «Tutti».
+  var out = '<option value="tutti">Tutti (aperti e chiusi)</option><option value="aperti">Aperti</option>'
   if (tipo !== 'offerta') {
     out += '<option value="da_fatturare">⏳ Ordinate, non ancora fatturate</option>'
   }
@@ -12215,7 +12395,7 @@ function aggiornaFiltroStatoOfferte() {
               '<optgroup label="Offerte (FASE 29)">' + voci(STATI_OFFERTA) + '</optgroup>'
   sel.innerHTML = out
   sel.value = prima
-  if (sel.value !== prima) sel.value = 'aperti'   // 80·2
+  if (sel.value !== prima) sel.value = 'tutti'   // 80·2, 89·1
 }
 
 function onFiltroTipoOfferteChange() {
@@ -12256,7 +12436,7 @@ function renderOfferteTable() {
     return corrispondeImportoData(fidO, { importo: o.totale, altriImporti: [o.totale_stampato],
       date: { documento: o.data, registrazione: o.created_at } })
   } : null
-  var divisoO = elencoConStato(offerteList || [], stato || 'aperti',
+  var divisoO = elencoConStato(offerteList || [], stato || 'tutti',   // 89·1
     function (o) { return !tipo || (o.tipo_documento || 'conferma_ordine') === tipo },
     cercaO, statoConfermaFiltro, confermaChiusa)
   var list = divisoO.list
@@ -12278,7 +12458,7 @@ function renderOfferteTable() {
       scaduta: { sing: 'offerta scaduta', plur: 'offerte scadute' }, rifiutata: { sing: 'offerta rifiutata', plur: 'offerte rifiutate' } }))
 
   if (!list.length) {
-    var vuoto = (q || (stato && stato !== 'aperti' && stato !== 'tutti') || tipo === 'offerta' || fidO.attivo)   // 85
+    var vuoto = (q || (stato && stato !== 'tutti') || tipo === 'offerta' || fidO.attivo)   // 85, 89·1
       ? 'Nessun documento trovato con questi filtri.'
       : 'Nessuna conferma d’ordine registrata. Premi «➕ Nuova conferma» per la prima.'
     html('offerte-table', '<div class="cru-vuoto">' + vuoto + '</div>')
@@ -15306,7 +15486,10 @@ function haRipiegoData(r) { return !r.data_pagamento && r.stato_pagamento === 'p
 // Nulla che sia «da confermare» entra nei totali: oggi nessuno lo produce, lo
 // fara' il Ponte AI della FASE 5. Se il filtro mancasse, i totali cambierebbero
 // da soli il giorno in cui quella fase arriva.
-function confermata(r) { return r.stato_conferma !== 'da_confermare' }
+// 89·4 — e nemmeno una «bozza» (fattura d'acquisto senza giustificativo):
+// conta SOLO quello che è confermato. Una riga senza stato è dei documenti
+// che lo stato non l'hanno (vendite): conta.
+function confermata(r) { return !r.stato_conferma || r.stato_conferma === 'confermato' }
 
 // ── Calcolo dei quattro totali ───────────────────────────────────────────────
 
@@ -16253,6 +16436,8 @@ function giorniAParole(dataScadenza, oggi) {
 // Una riga senza data_scadenza non puo' stare in nessuno dei tre blocchi: senza
 // scadenza non c'e' modo di dire se e' in ritardo. Finisce nel blocco grigio,
 // che e' un invito a completare il dato, non un avviso.
+var ordiniPagamentoMap = {}   // 89·7 — id acquisto -> riga con l'ordine di pagamento
+
 function calcolaScadenze(righe, oggi, preavviso) {
   var b = {
     scaduto:   { chiave: 'scaduto',   icona: '🔴', titolo: 'Scaduto da pagare',    righe: [], somma: 0 },
@@ -16274,7 +16459,9 @@ function calcolaScadenze(righe, oggi, preavviso) {
     // SCADUTO compreso, senza nessun errore. Proprio i documenti che meritano
     // piu' attenzione. Adesso si salta solo cio' che e' saldato davvero.
     if (r.stato_pagamento === 'pagato') continue
-    if (!confermata(r)) continue          // le righe da confermare non sono avvisi
+    // 89·4 — le da confermare non sono avvisi; le BOZZE sì: senza giustificativo
+    // non contano nei conti, ma vanno pagate lo stesso (la riga lo dice).
+    if (!confermata(r) && r.stato_conferma !== 'bozza') continue
     // 61c — una nota di credito non si incassa: non e' una scadenza, ne' un
     // incasso non arrivato. Sparisce da qui, e il suo importo si ritrova
     // sottratto dal residuo della fattura che storna (qui sotto).
@@ -16366,6 +16553,12 @@ async function initScadenzePage() {
     // lettura non riesce, l'errore si vede (mai una cifra con un pezzo in meno).
     await caricaPerResiduo(true)
     await loadRate(true)
+    // 89 — bozze e ordini di pagamento: il riquadro «Da fare» e i segni sulle righe.
+    var acqDaFare = await caricaAcquistiDaFare()
+    await preparaDaFareAcquisti(acqDaFare)   // 89 — le vecchie senza giustificativo
+    ordiniPagamentoMap = {}
+    acqDaFare.forEach(function (a) { if (a.ordine_pagamento_data && a.stato_pagamento !== 'pagato') ordiniPagamentoMap[a.id] = a })
+    html('scadenze-da-fare', daFareAcquistiHtml(acqDaFare))
     renderScadenze()
     await refreshScadenzeCount()
   } catch (e) {
@@ -16489,6 +16682,11 @@ function rigaScadenza(r, blocco) {
   else doc.push(r.verso === 'entrata' ? 'Fattura' : 'Documento')
   if (r.data_documento) doc.push('del ' + fmtDate(r.data_documento))
   if (r.conto_codice) doc.push('conto ' + r.conto_codice + ' ' + (r.conto_descrizione || ''))
+  // 89 — la bozza e l'ordine di pagamento, scritti sulla riga.
+  var segni89 = ''
+  if (r.stato_conferma === 'bozza') segni89 += '<div class="scad-segno"><span class="spia-bozza">📝 Bozza · senza giustificativo: non conta nei conti, ma va pagata</span></div>'
+  var ord = r.tabella_origine === 'tm_conta_fatture_acquisto' ? ordiniPagamentoMap[r.id_origine] : null
+  if (ord) segni89 += '<div class="scad-segno">' + badgeOrdine(ord) + '</div>'
 
   var quando = r.data_scadenza
     ? 'Scadenza ' + fmtDate(r.data_scadenza) + ' — ' + q.testo
@@ -16508,7 +16706,7 @@ function rigaScadenza(r, blocco) {
     '<div class="scad-riga-main">' +
       '<div class="scad-nome">' + esc(r.controparte_nome || '—') + '</div>' +
       '<div class="scad-doc">' + esc(doc.join(' · ')) + '</div>' +
-      '<div class="scad-quando ' + q.cls + '">' + esc(quando) + '</div>' +
+      '<div class="scad-quando ' + q.cls + '">' + esc(quando) + '</div>' + segni89 +
     '</div>' +
     '<div class="scad-riga-imp">' +
       esc(fmtNumIt(r._importoRata != null ? r._importoRata
@@ -16768,6 +16966,7 @@ function testoPromptFattura() {
     '  "aliquota_iva": 8.1,\n' +
     '  "descrizione": "cosa e\' stato acquistato",\n' +
     '  "conto_suggerito": "codice a 4 cifre",\n' +
+    '  "cantiere_suggerito": "il nome esatto di UNO dei cantieri qui sotto, o null",\n' +
     '  "note_lettura": "cosa non si legge bene, o null"\n' +
     '}\n\n' +
     'REGOLE:\n' +
@@ -16782,6 +16981,10 @@ function testoPromptFattura() {
     '  Non calcolare la scadenza: scrivi solo quello che c\'e\'.\n' +
     '- conto_suggerito: scegli fra questi conti\n' +
     elencoContiPerPrompt() + '\n' +
+    '- cantiere_suggerito: SOLO se la fattura nomina il cantiere (indirizzo di\n' +
+    '  consegna, riferimento, commessa, cliente finale). Scegli fra:\n' +
+    elencoCantieriPerPrompt() + '\n' +
+    '  Se non è chiaro: null. Non indovinare.\n' +
     '- note_lettura: scrivi qui se la foto e\' sfocata,\n' +
     '  tagliata, o se un importo e\' incerto.\n'
 }
@@ -16789,6 +16992,7 @@ function testoPromptFattura() {
 async function copiaPromptFattura() {
   try {
     await ensureContiIva()          // il prompt ha bisogno dell'elenco conti aggiornato
+    try { await loadCantieri() } catch (_) { /* 89·6 — senza, niente proposta di cantiere */ }
     var testo = testoPromptFattura()
     var copiato = false
     try {
@@ -17009,6 +17213,13 @@ async function applicaTestoLettura(testo) {
 
   var codIva = codiceIvaPerAliquota(dati.aliquota_iva)
 
+  // 89·6 — conto, gruppo e cantiere sono PROPOSTE: niente si scrive da solo.
+  var cantProp = cantiereDaNome(dati.cantiere_suggerito)
+  if (dati.cantiere_suggerito && !cantProp) {
+    scartati.push('il cantiere «' + dati.cantiere_suggerito + '» non è nell\'elenco dei cantieri')
+  }
+  propostaLettura = { conto: conto, gruppo: (conto && conto.gruppo_codice) ? conto.gruppo_codice : null, cantiere: cantProp }
+
   // ── Coerenza degli importi ──────────────────────────────────────────────
   // Imponibile + IVA deve dare il totale. Non si corregge niente: si avvisa.
   // Gli arrotondamenti di stampa fanno ballare i centesimi, quindi si tollera
@@ -17037,12 +17248,9 @@ async function applicaTestoLettura(testo) {
 
   if (codIva && el('a-codice-iva')) el('a-codice-iva').innerHTML = buildIvaOptions(codIva.id)
 
-  // Il conto suggerito non ha un campo suo in questo modulo: il conto si
-  // assegna dopo, in «Da classificare». Qui se ne usa il GRUPPO, che e' il
-  // derivato del conto (FASE 3), e il codice resta scritto nel riquadro.
-  if (conto && conto.gruppo_codice) {
-    await riempiSelectGruppi('a-gruppo', conto.gruppo_codice)
-  }
+  // 89·6 — il gruppo NON si scrive più da solo: è una proposta, con il suo
+  // bottone, come il cantiere (propostaLetturaHtml). Il conto si salva come
+  // proposta e si conferma in «Da classificare».
 
   // Il contatto NON si collega da solo: il nome letto da una foto non basta a
   // dire che e' quel fornitore in rubrica. Si scrive il testo, il collegamento
@@ -17093,14 +17301,8 @@ function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto, notaScade
     '</div>'
   }
 
-  if (conto) {
-    pezzi += '<div class="lettura-nota">' +
-      '<span aria-hidden="true">🏷</span>' +
-      '<span><strong>Conto suggerito dalla lettura:</strong> ' +
-      esc(conto.codice_conto + ' · ' + conto.descrizione) +
-      '. Non viene salvato adesso: lo confermerai in «Da classificare».</span>' +
-    '</div>'
-  }
+  // 89·6 — conto, gruppo e cantiere proposti, con i bottoni per usarli.
+  pezzi += propostaLetturaHtml()
 
   html('ponte-ai-note', pezzi)
 }
@@ -17331,18 +17533,19 @@ async function cantiereSuggerisci(pfx) {
   mostraSuggerimentiCantiere(pfx, trovati, true, false)
 }
 
-// Il bottone: l'elenco completo, prima i soli attivi.
+// Il bottone: l'elenco completo. 89·1 — TUTTI, chiusi compresi: prima gli
+// attivi, poi gli altri con il loro stato scritto (cantieriOrdinati).
 async function cantiereSfoglia(pfx, conChiusi) {
   var c = cantiereCampi(pfx)
   var box = el(c.suggest)
   // Secondo clic sul bottone: si richiude, come ci si aspetta da un menu.
-  if (!conChiusi && box && box.innerHTML && cantiereSuggest.pfx === pfx) {
+  if (box && box.innerHTML && cantiereSuggest.pfx === pfx) {
     chiudiSuggerimentiCantiere(pfx)
     return
   }
   try { await loadCantieri() } catch (e) { /* l'elenco e' un aiuto, non un requisito */ }
-  var list = cantieriOrdinati().filter(function (x) { return conChiusi || cantiereAttivo(x) })
-  mostraSuggerimentiCantiere(pfx, list, conChiusi, true)
+  var list = cantieriOrdinati()
+  mostraSuggerimentiCantiere(pfx, list, true, true)
   if (el(c.testo)) el(c.testo).focus()
 }
 
@@ -18774,7 +18977,9 @@ async function raccogliDocumentiPacchetto(da, a) {
         : (sp.foto_path ? [{ path: sp.foto_path, tipo: 'altro', nome_file: null }] : []),
       id: sp.id,
       bucket: copie.length ? null : 'cantiere-spese',
-      motivoSeManca: 'nessun giustificativo digitale (foto mai scattata)'
+      motivoSeManca: cartaceoSpesaDi(sp.id)   // 89 — dove sta la prova su carta, per il fiduciario
+        ? 'nessun file: ricevuta cartacea in ufficio («' + cartaceoSpesaDi(sp.id).posizione + '»)'
+        : 'nessun giustificativo digitale (foto mai scattata)'
     })
   })
 
@@ -18837,6 +19042,7 @@ async function speseCantierePeriodo(da, a) {
     // scartate fuori.
     await loadMappaCantieri(true)
     try { await loadScarti(true) } catch (eSc) { console.warn('Scarti non letti (le spese scartate restano):', eSc.message || eSc) }
+    try { await loadCartaceiSpese() } catch (eCs) { console.warn('Ricevute cartacee non lette:', eCs.message || eCs) }   // 89
     return (speseCantiereCache || []).filter(function (s) { return inPeriodo(s.data, da, a) && !spesaScartata(s) })
   } catch (e) {
     console.warn('Spese di cantiere non lette per il pacchetto:', e.message || e)
@@ -20446,6 +20652,8 @@ async function ricaricaDopoPagamento(d) {
     } else if (d.tabella === 'tm_conta_fatture_acquisto') {
       await loadAcquistiList()
       if (aperta('acquisti-detail-view')) await viewAcquisto(d.id)
+      // 89·2 — corretto dal modulo di modifica: il riquadro dei pagamenti si rifà.
+      if (aperta('acquisti-edit-view') && editingAcquistoId === d.id) await aggiornaGiaPagata(d.id, getVal('a-importo'))
     }
     if (currentPage === 'scadenze') { await loadFlussi(true); renderScadenze() }
     if (currentPage === 'cruscotto') { await loadFlussi(true); renderCruscotto() }
@@ -22560,7 +22768,11 @@ function renderCodaFile(inputId, esiti) {
   var box = el(inputId + '-coda')
   if (!box) return
   var coda = codeFile[inputId] || []
-  if (!coda.length && !(esiti && esiti.length)) { box.innerHTML = ''; return }
+  if (!coda.length && !(esiti && esiti.length)) {
+    box.innerHTML = ''
+    if (inputId === 'a-allegato') aggiornaFileNelPonte()   // 89·3
+    return
+  }
   var righe = coda.map(function (f, i) {
     var mb = f.size / (1024 * 1024)
     var troppo = mb > LIMITE_ALLEGATO_MB
@@ -22568,11 +22780,13 @@ function renderCodaFile(inputId, esiti) {
       '<span class="coda-file-nome" title="' + esc(f.name) + '">📎 ' + esc(f.name) + '</span>' +
       '<span class="coda-file-dim">' + esc(fmtDimensioneFile(f.size)) +
         (troppo ? ' — oltre il limite di ' + LIMITE_ALLEGATO_MB + ' MB' : '') + '</span>' +
+      (inputId === 'a-allegato' ? bottoneLeggiFile(i, f) : '') +   // 89·3
       '<button type="button" class="icon-btn danger" title="Togli dalla scelta"' +
         ' onclick="togliDallaCoda(\'' + esc(inputId) + '\', ' + i + ')">✕</button>' +
     '</div>'
   }).join('')
   var esitiHtml = (esiti && esiti.length) ? esitiAllegatiHtml(esiti) : ''
+  if (inputId === 'a-allegato') aggiornaFileNelPonte()   // 89·3 — la stessa coda, in cima al modulo
   box.innerHTML = esitiHtml +
     (coda.length
       ? '<div class="coda-file-testa">' + coda.length + (coda.length === 1 ? ' file da caricare' : ' file da caricare') +
@@ -22959,8 +23173,12 @@ async function eliminaAllegato(idAllegato, tabella, id, nome) {
       'Il file resta con il documento per 10 anni. Se è quello sbagliato, aggiungi quello giusto accanto.')
     return
   }
+  // 89·4 — l'ultimo giustificativo di una fattura d'acquisto la rimanda in bozza: si dice prima.
+  var ultimoGiust = tabella === 'tm_conta_fatture_acquisto' && allegatiDi(tabella, id).length === 1
   if (!window.confirm('Eliminare l\'allegato «' + etichetta + '»?\n\n' +
-      'Il file viene cancellato dallo storage: non si può annullare.')) return
+      'Il file viene cancellato dallo storage: non si può annullare.' +
+      (ultimoGiust ? '\n\n⚠️ È l\'ultimo giustificativo di questa fattura: torna BOZZA e non conta più ' +
+        'finché non ne alleghi un altro (o segni la ricevuta cartacea).' : ''))) return
   try {
     // Prima la riga, poi il file: se il file non si cancella resta un file
     // orfano, fastidioso ma innocuo. Al contrario resterebbe una riga che
@@ -23698,9 +23916,12 @@ async function caricaChiaviDoppioni(force) {
   const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture_acquisto')
     .select('id, fornitore, numero_fornitore, data, importo, valuta')
     .eq('azienda_id', currentAziendaId)
-    .not('numero_fornitore', 'is', null).order('id') })
+    .order('id') })   // 89·5 — anche quelle senza numero: si confrontano per importo e data
   if (error) throw error
+  chiaviDoppioniImporto = {}   // 89·5
   ;(data || []).forEach(function (r) {
+    var ki = chiaveDoppioneImporto(r.fornitore, r.importo, r.data)
+    if (ki) { if (!chiaviDoppioniImporto[ki]) chiaviDoppioniImporto[ki] = []; chiaviDoppioniImporto[ki].push(r) }
     var k = chiaveDoppione(r.fornitore, r.numero_fornitore)
     if (!k) return
     if (!chiaviDoppioni[k]) chiaviDoppioni[k] = []
@@ -23719,9 +23940,9 @@ function doppioniDi(fornitore, numero, escludiId) {
   return (chiaviDoppioni[k] || []).filter(function (r) { return r.id !== escludiId })
 }
 
-// La spia: icona E parola, come tutte le altre.
+// La spia: icona E parola, come tutte le altre. 89·5 — anche stesso importo e data.
 function spiaDoppione(a) {
-  var altri = doppioniDi(a.fornitore, a.numero_fornitore, a.id)
+  var altri = doppioniDiAcquisto(a)
   if (!altri.length) return ''
   return ' <button type="button" class="spia-doppione" title="Un altro documento ha lo stesso fornitore e lo stesso numero" ' +
     'onclick="event.stopPropagation(); viewAcquisto(\'' + esc(altri[0].id) + '\')">⚠️ Doppione?</button>'
@@ -23732,37 +23953,75 @@ function spiaDoppione(a) {
 // il fornitore normalizzato sulle pochissime righe che tornano. Filtrare il
 // fornitore nel database vorrebbe dire normalizzarlo li', e «Softution SAGL» e
 // «softution  sagl» non si equivalgono per un confronto SQL.
-async function cercaDoppione(fornitore, numero, escludiId) {
-  var n = String(numero || '').trim()
-  if (!n) return null                       // senza numero non si controlla niente
+// 89·5 — due strade: stesso fornitore e stesso numero, oppure stesso
+// fornitore, stesso importo e stessa data (il numero può mancare, o essere
+// letto male). Torna la prima trovata, con il perché (_motivo) e quante sono.
+async function cercaDoppione(fornitore, numero, escludiId, importo, data) {
   var f = normalizzaFornitore(fornitore)
   if (!f) return null
-
-  const { data, error } = await sb.from('tm_conta_fatture_acquisto')
-    .select('id, fornitore, numero_fornitore, data, importo, valuta')
-    .eq('azienda_id', currentAziendaId)
-    .eq('numero_fornitore', n)
-  if (error) throw error
-
-  var trovati = (data || []).filter(function (r) {
-    return r.id !== escludiId && normalizzaFornitore(r.fornitore) === f
-  })
-  return trovati.length ? trovati[0] : null
+  var COL = 'id, fornitore, numero_fornitore, data, importo, valuta, stato_pagamento, created_at'
+  var trovati = [], visti = {}
+  function prendi(righe, motivo) {
+    ;(righe || []).forEach(function (r) {
+      if (r.id === escludiId || visti[r.id] || normalizzaFornitore(r.fornitore) !== f) return
+      visti[r.id] = true
+      trovati.push(Object.assign({ _motivo: motivo }, r))
+    })
+  }
+  var n = String(numero || '').trim()
+  if (n) {
+    const { data: d1, error: e1 } = await sb.from('tm_conta_fatture_acquisto').select(COL)
+      .eq('azienda_id', currentAziendaId).eq('numero_fornitore', n)
+    if (e1) throw e1
+    prendi(d1, 'stesso fornitore e stesso numero')
+  }
+  var imp = safeNum(importo)
+  if (imp != null && data) {
+    const { data: d2, error: e2 } = await sb.from('tm_conta_fatture_acquisto').select(COL)
+      .eq('azienda_id', currentAziendaId).eq('importo', imp).eq('data', data)
+    if (e2) throw e2
+    prendi(d2, 'stesso fornitore, stesso importo e stessa data')
+  }
+  if (!trovati.length) return null
+  trovati[0]._quante = trovati.length
+  return trovati[0]
 }
 
-// L'avviso: dice QUALE fattura, con data e importo, e lascia decidere.
-function avvisoDoppioneHtml(altra) {
-  return '<div class="fase-banner warn">' +
+// L'avviso: le due fatture AFFIANCATE, campo per campo, e due bottoni che
+// dicono cosa succede. 89·5 — prima c'era «Vedi quella fattura», che portava
+// via dal modulo e faceva perdere quello che si stava scrivendo.
+function avvisoDoppioneHtml(altra, nuova) {
+  nuova = nuova || {}
+  var campi = [
+    ['Fornitore', function (x) { return x.fornitore || '—' }, function (x) { return normalizzaFornitore(x.fornitore) }],
+    ['Numero', function (x) { return x.numero_fornitore || '—' }, function (x) { return normalizzaNumeroFattura(x.numero_fornitore) }],
+    ['Data', function (x) { return x.data ? fmtDate(x.data) : '—' }, function (x) { return x.data || '' }],
+    ['Importo', function (x) { return x.importo != null ? fmtNumIt(x.importo) + ' ' + (x.valuta || 'CHF') : '—' },
+                function (x) { return x.importo != null ? round2(safeNum(x.importo)).toFixed(2) + (x.valuta || 'CHF') : '' }]
+  ]
+  var righe = campi.map(function (c) {
+    var uguale = c[2](nuova) !== '' && c[2](nuova) === c[2](altra)
+    return '<tr' + (uguale ? ' class="uguale"' : '') + '><th>' + esc(c[0]) + '</th><td>' + esc(c[1](nuova)) + '</td><td>' +
+      esc(c[1](altra)) + '</td><td>' + (uguale ? '= uguale' : '≠ diverso') + '</td></tr>'
+  }).join('')
+  var alleg = allegatiDi('tm_conta_fatture_acquisto', altra.id)
+  righe += '<tr><th>Allegati</th><td>' + esc(String(fileScelti('a-allegato').length)) + ' da caricare</td><td>' +
+    (alleg.length ? alleg.length + ' <button type="button" class="link-btn" onclick="openAllegato(\'' + esc(alleg[0].path) +
+      '\', \'acquisti-edit-banner\')">📎 Apri il suo allegato</button>' : 'nessuno') + '</td><td></td></tr>' +
+    '<tr><th>Registrata</th><td>adesso</td><td>' + esc(altra.created_at ? fmtDateTime(altra.created_at) : '—') + '</td><td></td></tr>'
+  return '<div class="fase-banner warn doppione-avviso">' +
     '<span class="icon" aria-hidden="true">⚠️</span>' +
     '<div class="msg">' +
-      '<strong>Attenzione: hai già registrato la fattura n. ' + esc(altra.numero_fornitore || '') +
-        ' di ' + esc(altra.fornitore || '') + ' del ' + esc(fmtDate(altra.data)) +
-        ' per ' + esc(fmtNumIt(altra.importo)) + ' ' + esc(altra.valuta || 'CHF') + '.</strong>' +
+      '<strong>Questa fattura sembra già registrata</strong> (' + esc(altra._motivo || 'stesso fornitore e stesso numero') + '). ' +
+        'Guardale affiancate e decidi tu:' +
+      '<div class="table-wrap"><table class="doppione-tabella"><thead><tr><th></th><th>Quella che stai salvando</th>' +
+        '<th>Quella già registrata</th><th></th></tr></thead><tbody>' + righe + '</tbody></table></div>' +
+      (altra._quante > 1 ? '<div class="form-hint">Ce ne sono ' + altra._quante + ' simili: qui la prima.</div>' : '') +
       '<div class="form-actions" style="margin-top:10px">' +
-        '<button type="button" class="btn-secondary" onclick="viewAcquisto(\'' + esc(altra.id) + '\')">' +
-          '👁 Vedi quella fattura</button>' +
+        '<button type="button" class="btn-secondary" onclick="scartaDoppioneAcquisto()">' +
+          '🗑️ È un doppione: non la salvo</button>' +
         '<button type="button" class="btn-primary" onclick="salvaAcquistoComunque()">' +
-          '💾 Salva lo stesso</button>' +
+          '💾 Sono due fatture diverse: salva</button>' +
       '</div>' +
     '</div>' +
   '</div>'
@@ -23795,7 +24054,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '88'
+var VERSIONE = '89'
 
 function controllaVersionePagina() {
   try {
@@ -24202,14 +24461,22 @@ function apriSceltaFileLettura() {
   if (inp) { inp.value = ''; inp.click() }
 }
 
+// 89·3 — chi passa ancora un <input> (la conferma d'ordine, le prove): si legge
+// il primo file, come prima.
 async function leggiFatturaDaFile(input) {
   if (!input || !input.files || !input.files.length) return
-  if (letturaInCorso) return
-  var file = input.files[0]
+  try { await leggiFileFattura(input.files[0]) }
+  finally { if (input && 'value' in input) input.value = '' }
+}
 
-  var btn = el('btn-lettura-ai')
+// La lettura di UN file della coda degli allegati: resta in coda, e al
+// salvataggio diventa l'allegato della fattura.
+async function leggiFileFattura(file) {
+  if (!file || letturaInCorso) return
+  var btn = null
   html('ponte-ai-note', '')
   html('lettura-costo', '')
+  document.querySelectorAll('.btn-leggi-file').forEach(function (b) { b.disabled = true })
 
   try {
     // Il limite si controlla PRIMA di leggere e mandare: caricare 30 MB per
@@ -24222,12 +24489,13 @@ async function leggiFatturaDaFile(input) {
     }
 
     letturaInCorso = true
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Lettura in corso…' }
     showPonteBanner('info', 'Lettura di «' + file.name + '» in corso… può volerci qualche secondo.')
 
     // Il prompt esce dal database, con l'elenco dei conti aggiornato: e' lo
     // stesso del ponte manuale, e come lì i conti vanno caricati prima.
+    // 89·6 — e quello dei cantieri attivi, per la proposta del cantiere.
     await ensureContiIva()
+    try { await loadCantieri() } catch (_) { /* senza elenco niente proposta di cantiere */ }
     var prompt = testoPromptFattura()
 
     var risposta = await chiediLetturaAlWorker(file, prompt)
@@ -24238,7 +24506,8 @@ async function leggiFatturaDaFile(input) {
     if (esito.ok) {
       lettaDaAI = true          // il documento entrera' come «da confermare»
       mostraCostoLettura(risposta.input_tokens, risposta.output_tokens)
-      showPonteBanner('ok', 'Fattura letta. Controlla i campi prima di salvare: entrerà come «da confermare».')
+      showPonteBanner('ok', 'Fattura letta da «' + file.name + '». Controlla i campi prima di salvare: entrerà come «da confermare», ' +
+        'e il file resta come suo allegato.')
     }
     // Se la validazione ha rifiutato, il messaggio l'ha gia' scritto lei.
   } catch (e) {
@@ -24246,8 +24515,7 @@ async function leggiFatturaDaFile(input) {
       ' — puoi sempre usare 📋 Copia prompt e leggerla a mano.')
   } finally {
     letturaInCorso = false
-    if (btn) { btn.disabled = false; btn.textContent = '📄 Leggi da PDF o foto' }
-    if (input) input.value = ''       // così lo stesso file si può riprovare
+    document.querySelectorAll('.btn-leggi-file').forEach(function (b) { b.disabled = false })
   }
 }
 
@@ -24265,8 +24533,11 @@ function motivoNienteLettura(nuovo, cosa) {
 }
 
 function mostraBottoneLettura(nuovo) {
+  // 89·3 — il bottone in cima CARICA il documento (diventa l'allegato); la
+  // lettura è il «🤖 Leggi» accanto al file. Si carica anche senza lettura.
   var btn = el('btn-lettura-ai')
-  if (btn) btn.style.display = (nuovo && letturaAutomaticaAttiva()) ? '' : 'none'
+  if (btn) btn.style.display = nuovo ? '' : 'none'
+  renderCodaFile('a-allegato')
   var perche = motivoNienteLettura(nuovo, 'una fattura')
   html('lettura-perche', perche ? '<div class="form-hint">ℹ️ ' + esc(perche) + '</div>' : '')   // 79·3
   html('lettura-costo', '')
@@ -24382,9 +24653,13 @@ function spiaDaConfermare(a) {
 }
 
 async function confermaAcquisto(id) {
+  // 89 — da confermare ci si arriva dalla lettura AI O da un allegato arrivato
+  // su una bozza: in tutti e due i casi si guarda il file prima di dire sì.
+  var nAll = contaAllegati('tm_conta_fatture_acquisto', id)
   if (!window.confirm('Confermare questa fattura?\n\n' +
       'Da adesso entra nei totali, nelle scadenze e nell\'export per il commercialista.\n' +
-      'Controlla che data e importo siano giusti: l\'AI sbaglia le date e legge male gli importi sulle foto storte.')) return
+      'Controlla che il giustificativo allegato' + (nAll ? ' (' + nAll + (nAll === 1 ? ' file' : ' file') + ')' : '') +
+      ' sia quello giusto, e che data e importo tornino: l\'AI sbaglia le date e legge male gli importi sulle foto storte.')) return
   try {
     const { error } = await sb.from('tm_conta_fatture_acquisto')
       .update({ stato_conferma: 'confermato' })
@@ -24425,6 +24700,426 @@ async function refreshDaConfermareCount() {
   } catch (_) { /* non bloccante */ }
 }
 
+
+// ══ 89 · FATTURE D'ACQUISTO: GIUSTIFICATIVO, PROPOSTE DELLA LETTURA, ORDINI ═══
+// SQL: SQL_FASE89_bozze_e_ordini.sql. Le regole della bozza le applica il
+// database (trigger): qui si mostrano, si spiegano e si chiede.
+
+// ── La bozza: senza giustificativo non è una spesa vera ──────────────────────
+// stato_conferma 'bozza' = nessun allegato e nessuna ricevuta cartacea segnata.
+// Fuori da Situazione, Cantieri, export e pacchetto (confermata(), docsPeriodo);
+// resta nelle Scadenze, perché pagare va pagata lo stesso.
+var GIORNI_BOZZA_FORTE = 7
+var MSG_SQL89 = 'manca l\'SQL della 89 (sql/da_applicare/SQL_FASE89_bozze_e_ordini.sql): lancialo nel SQL Editor di Supabase, poi riprova'
+var sqlFase89Mancante = false
+
+function inBozza(a) { return !!a && a.stato_conferma === 'bozza' }
+function spiaBozza(a) {
+  return inBozza(a) ? ' <span class="spia-bozza">📝 Bozza · senza giustificativo</span>' : ''
+}
+function testoCartaceo(a) {
+  if (!a || !a.giustificativo_cartaceo) return ''
+  return '📄 Ricevuta cartacea in ufficio' + (a.giustificativo_posizione ? ': ' + a.giustificativo_posizione : '')
+}
+function eErroreSql89(e) {
+  var m = String((e && (e.message || e.details)) || e || '')
+  return /giustificativo_cartaceo|giustificativo_posizione|conto_proposto_id|ordine_pagamento|stato_conferma_check|cartaceo_check/.test(m)
+}
+// I giorni da quando la fattura è stata registrata (non dalla data del documento).
+function giorniDaRegistrazione(a) {
+  var d = a && a.created_at ? dataISO(new Date(a.created_at)) : (a && a.data)
+  var n = d ? diffGiorni(oggiISO(), d) : null
+  return n == null ? 0 : n
+}
+
+// ── «📋 Da fare»: le bozze e gli ordini di pagamento passati ─────────────────
+// Un riquadro solo, uguale in Fatture d'acquisto e in Scadenze (e domani nella
+// Home): legge le righe che gli si danno, non fa query.
+function ordinePassato(a) {
+  return !!(a && a.ordine_pagamento_data && a.stato_pagamento !== 'pagato' && a.ordine_pagamento_data < oggiISO())
+}
+function coseDaFareAcquisti(lista) {
+  var bozze = [], ordini = [], vecchie = []
+  ;(lista || []).forEach(function (a) {
+    if (inBozza(a)) bozze.push(Object.assign({ _giorni: giorniDaRegistrazione(a) }, a))
+    if (ordinePassato(a)) ordini.push(a)
+    if (a._vecchiaSenzaProva) vecchie.push(a)
+  })
+  vecchie.sort(function (x, y) { return String(x.data).localeCompare(String(y.data)) })
+  bozze.sort(function (x, y) { return y._giorni - x._giorni })
+  ordini.sort(function (x, y) { return String(x.ordine_pagamento_data).localeCompare(String(y.ordine_pagamento_data)) })
+  return { bozze: bozze, ordini: ordini, vecchie: vecchie }
+}
+function rigaDocAcquisto(a) {
+  return esc(fmtDate(a.data)) + ' · ' + esc(a.fornitore || '—') +
+    (a.numero_fornitore ? ' n. ' + esc(a.numero_fornitore) : '') + ' · ' + esc(fmtNumIt(a.importo)) + ' ' + esc(a.valuta || 'CHF')
+}
+function daFareAcquistiHtml(lista) {
+  var c = coseDaFareAcquisti(lista)
+  if (!c.bozze.length && !c.ordini.length && !c.vecchie.length) return ''
+  var out = ''
+  if (c.bozze.length) {
+    var vecchie = c.bozze.filter(function (b) { return b._giorni > GIORNI_BOZZA_FORTE }).length
+    var forte = vecchie > 0
+    out += '<div class="fase-banner ' + (forte ? 'err' : 'warn') + ' da-fare-voce" role="' + (forte ? 'alert' : 'status') + '">' +
+      '<span class="icon" aria-hidden="true">' + (forte ? '🔴' : '📝') + '</span><div class="msg">' +
+      '<strong>' + c.bozze.length + (c.bozze.length === 1 ? ' fattura d\'acquisto senza giustificativo' : ' fatture d\'acquisto senza giustificativo') +
+      ' — non contano finché manca</strong>' +
+      (forte ? ' · <strong>' + vecchie + (vecchie === 1 ? ' da più di una settimana' : ' da più di una settimana') + '</strong>' : '') +
+      '<ul class="da-fare-lista">' + c.bozze.map(function (b) {
+        return '<li>' + (b._giorni > GIORNI_BOZZA_FORTE ? '<strong>🔴 da ' + b._giorni + ' giorni</strong> · ' : '') + rigaDocAcquisto(b) +
+          ' <button type="button" class="link-btn" onclick="viewAcquisto(\'' + esc(b.id) + '\')">Apri</button></li>'
+      }).join('') + '</ul>' +
+      '<small>Allega il PDF o la foto dalla scheda (poi la guardi e premi «✅ Conferma»), oppure segna ' +
+        '«📄 Ricevuta cartacea in ufficio» con il posto dove sta.</small></div></div>'
+  }
+  if (c.ordini.length) {
+    out += '<div class="fase-banner warn da-fare-voce" role="status"><span class="icon" aria-hidden="true">📤</span><div class="msg">' +
+      '<strong>' + (c.ordini.length === 1 ? '1 ordine di pagamento con la data passata' : c.ordini.length + ' ordini di pagamento con la data passata') +
+      '</strong><ul class="da-fare-lista">' + c.ordini.map(function (a) {
+        return '<li>L\'ordine del <strong>' + esc(fmtDate(a.ordine_pagamento_data)) + '</strong> per ' + rigaDocAcquisto(a) +
+          ' è passato: <strong>è stato addebitato?</strong> ' +
+          '<button type="button" class="icon-btn incasso" onclick="ordineAddebitato(\'' + esc(a.id) + '\')">✅ Sì, pagata</button>' +
+          '<button type="button" class="icon-btn" onclick="ordineNonPartito(\'' + esc(a.id) + '\')">❌ No</button></li>'
+      }).join('') + '</ul>' +
+      '<small>Il programma il conto in banca non lo vede: lo confermi tu.</small></div></div>'
+  }
+  if (c.vecchie.length) {
+    // 89 — non diventano bozze (i totali non cambiano da soli, e alcune sono
+    // già consegnate): si dicono, con la data della consegna se c'era.
+    out += '<div class="fase-banner warn da-fare-voce" role="status"><span class="icon" aria-hidden="true">🗂️</span><div class="msg">' +
+      '<strong>' + c.vecchie.length + (c.vecchie.length === 1 ? ' fattura registrata prima della 89 senza giustificativo'
+        : ' fatture registrate prima della 89 senza giustificativo') + '</strong> — contano ancora nei totali: ' +
+      'allega il file o segna la ricevuta cartacea dalla scheda.' +
+      '<ul class="da-fare-lista">' + c.vecchie.map(function (a) {
+        return '<li>' + rigaDocAcquisto(a) +
+          (a._consegnata ? ' · <strong>consegnata al commercialista' + (a._consegnataIl ? ' il ' + esc(fmtDateTime(a._consegnataIl)) : '') + '</strong>' : '') +
+          ' <button type="button" class="link-btn" onclick="viewAcquisto(\'' + esc(a.id) + '\')">Apri</button></li>'
+      }).join('') + '</ul></div></div>'
+  }
+  return '<div class="card da-fare-card"><div class="card-title">📋 Da fare</div>' + out + '</div>'
+}
+
+// 89 — segna sulle righe le fatture registrate (non bozza) senza nessun
+// giustificativo, e se erano già consegnate al commercialista. Si fa solo se
+// gli allegati si sono letti: altrimenti sembrerebbero senza prova tutte.
+async function preparaDaFareAcquisti(lista) {
+  ;(lista || []).forEach(function (a) { a._vecchiaSenzaProva = false; a._consegnata = false; a._consegnataIl = null })
+  try { await loadAllegati() } catch (e) { console.warn('Da fare: allegati non letti, niente elenco delle vecchie:', e.message || e); return }
+  var senza = (lista || []).filter(function (a) {
+    return a.stato_conferma === 'confermato' && !a.giustificativo_cartaceo && !contaAllegati('tm_conta_fatture_acquisto', a.id)
+  })
+  if (!senza.length) return
+  var consegne = []
+  try {
+    await assicuraClassificazioni(true)
+    const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_export_log')
+      .select('id, periodo_da, periodo_a, created_at').eq('azienda_id', currentAziendaId).order('id') })
+    if (error) throw error
+    consegne = data || []
+  } catch (e) { console.warn('Da fare: consegne non lette:', e.message || e) }
+  senza.forEach(function (a) {
+    a._vecchiaSenzaProva = true
+    a._consegnata = classificazioniDi('acquisto', a.id).some(function (k) { return k.stato === 'bloccato' || k.stato === 'esportato' })
+    if (a._consegnata) {
+      consegne.forEach(function (e) {
+        if (a.data >= e.periodo_da && a.data <= e.periodo_a && (!a._consegnataIl || e.created_at > a._consegnataIl)) a._consegnataIl = e.created_at
+      })
+    }
+  })
+}
+
+// Le righe per il riquadro, lette da sole: Scadenze non carica l'elenco degli
+// acquisti. Senza l'SQL della 89 le colonne non ci sono: niente riquadro.
+async function caricaAcquistiDaFare() {
+  try {
+    const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture_acquisto')
+      .select('id, fornitore, numero_fornitore, data, importo, valuta, stato_pagamento, stato_conferma, created_at, ordine_pagamento_data, giustificativo_cartaceo')
+      .eq('azienda_id', currentAziendaId).order('id') })
+    if (error) throw error
+    return data || []
+  } catch (e) {
+    console.warn('Da fare (acquisti) non letto:', e.message || e)
+    return []
+  }
+}
+
+// ── La ricevuta cartacea, dalla scheda ──────────────────────────────────────
+function boxBozzaHtml(a) {
+  var g = giorniDaRegistrazione(a)
+  return '<div class="card avviso-bozza">' +
+    '<div class="card-title">📝 Bozza — manca il giustificativo</div>' +
+    '<div>Questa fattura <strong>non entra</strong> nella Situazione, nei margini dei cantieri, nell\'export e nel ' +
+      'pacchetto per il commercialista finché manca la prova. ' +
+      (g > GIORNI_BOZZA_FORTE ? '<strong>🔴 Registrata da ' + g + ' giorni.</strong>' : 'Registrata da ' + g + (g === 1 ? ' giorno.' : ' giorni.')) + '</div>' +
+    '<div class="form-hint" style="margin-top:8px">Allega il PDF o la foto nel riquadro «Allegati» qui sotto: passa a «⏳ da confermare», ' +
+      'guardi che il file sia quello giusto e premi «✅ Conferma». Le Scadenze la mostrano lo stesso: va pagata comunque.</div>' +
+    '<div class="cartaceo-box">' +
+      '<label class="check-riga" for="det-cartaceo"><input type="checkbox" id="det-cartaceo"> <span>📄 La ricevuta è su carta, in ufficio</span></label>' +
+      '<input type="text" id="det-cartaceo-pos" class="form-input" maxlength="200" placeholder="Dove sta? es. raccoglitore Fornitori 2026, ottobre">' +
+      '<button type="button" class="btn-secondary" onclick="salvaCartaceoAcquisto(\'' + esc(a.id) + '\')">💾 Segna la ricevuta cartacea</button>' +
+      '<div class="form-hint">Per il fiduciario: deve sapere dove cercarla. Resta scritto sulla fattura.</div>' +
+    '</div>' +
+  '</div>'
+}
+async function salvaCartaceoAcquisto(id) {
+  var spunta = el('det-cartaceo'), pos = String(getVal('det-cartaceo-pos') || '').trim()
+  if (!spunta || !spunta.checked) { window.alert('Spunta «La ricevuta è su carta, in ufficio» e scrivi dove sta.'); return }
+  if (pos.length < 3) { window.alert('Scrivi dove sta la ricevuta (almeno 3 caratteri): il fiduciario deve poterla trovare.'); return }
+  try {
+    await richiediSessione('la ricevuta cartacea NON è stata segnata')
+    const { error } = await sb.from('tm_conta_fatture_acquisto')
+      .update({ giustificativo_cartaceo: true, giustificativo_posizione: pos })
+      .eq('id', id).eq('azienda_id', currentAziendaId).select('id')
+    if (error) throw error
+    scadeCache('flussi'); exportDataset = null
+    await loadAcquistiList()
+    await viewAcquisto(id)
+    showFattureBanner('acquisti-list-banner', 'ok', 'Ricevuta cartacea segnata («' + pos + '»): la fattura non è più una bozza.')
+  } catch (e) {
+    window.alert('Ricevuta cartacea NON segnata: ' + (eErroreSql89(e) ? MSG_SQL89 : (e.message || e)))
+  }
+}
+function onCartaceoAcquisto() {
+  var on = !!(el('a-cartaceo') && el('a-cartaceo').checked)
+  var pos = el('a-cartaceo-pos')
+  if (pos) { pos.style.display = on ? '' : 'none'; if (on) pos.focus() }
+}
+
+// ── Gli allegati già salvati, nel modulo di modifica ────────────────────────
+function renderAcquistoAllegatoCorrente() {
+  var box = el('a-allegato-corrente')
+  if (!box) return
+  if (!editingAcquistoId) { box.style.display = 'none'; box.innerHTML = ''; return }
+  var lista = allegatiDi('tm_conta_fatture_acquisto', editingAcquistoId)
+  box.style.display = ''
+  box.innerHTML = lista.length
+    ? '<div class="alleg-modifica-titolo">Allegati già salvati (' + lista.length + ')</div>' + lista.map(function (a) {
+        var t = etichettaTipoAllegato(a.tipo)
+        return '<div class="alleg-riga">' +
+          '<span class="alleg-tipo-fisso">' + t.ic + ' ' + esc(t.et) + '</span>' +
+          '<span class="alleg-nome" title="' + esc(a.path) + '">' + esc(a.nome_file || allegatoNomeFile(a.path)) + '</span>' +
+          '<span class="alleg-azioni">' +
+            '<button type="button" class="icon-btn" onclick="openAllegato(\'' + esc(a.path) + '\', \'acquisti-edit-banner\')">📎 Apri</button>' +
+            '<button type="button" class="icon-btn danger" onclick="eliminaAllegatoDaModulo(\'' + esc(a.id) + '\')">🗑️ Elimina</button>' +
+          '</span></div>'
+      }).join('')
+    : '<div class="giust-manca">📝 Nessun allegato salvato: senza giustificativo la fattura resta una bozza.</div>'
+}
+async function eliminaAllegatoDaModulo(idAllegato) {
+  if (!editingAcquistoId) return
+  await eliminaAllegato(idAllegato, 'tm_conta_fatture_acquisto', editingAcquistoId, getVal('a-fornitore') || '')
+  try { await loadAllegati(true) } catch (_) { /* il riquadro dice quello che sa */ }
+  renderAcquistoAllegatoCorrente()
+}
+
+// ── 89·3 — prima il documento, poi «🤖 Leggi» su quel file ──────────────────
+// Il file scelto (o trascinato) va nella coda degli allegati della fattura: è
+// lui che diventa l'allegato al salvataggio, senza ricaricarlo. La lettura si
+// fa su un file della coda, con il bottone accanto.
+function caricaFileFattura(input) {
+  if (!input || !input.files || !input.files.length) return
+  var nomi = [].slice.call(input.files).map(function (f) { return f.name })
+  aggiungiAllaCoda('a-allegato', input.files)
+  input.value = ''
+  moduloModificato('acquisto')
+  showPonteBanner('ok', (nomi.length === 1 ? '«' + nomi[0] + '» caricato' : nomi.length + ' file caricati') +
+    ': diventa l\'allegato della fattura al salvataggio.' +
+    (puoLeggereFattura() ? ' Premi «🤖 Leggi» accanto al file per compilare i campi.' : ''))
+}
+function puoLeggereFattura() { return !editingAcquistoId && letturaAutomaticaAttiva() }
+function fileLeggibile(f) {
+  return !!f && (TIPI_LETTURA.test(f.type || '') || /\.(pdf|jpe?g|png|webp)$/i.test(f.name || ''))
+}
+function bottoneLeggiFile(i, f) {
+  if (!puoLeggereFattura() || !fileLeggibile(f)) return ''
+  return '<button type="button" class="icon-btn btn-leggi-file" onclick="leggiFileInCoda(' + i + ')">🤖 Leggi</button>'
+}
+// La coda, ripetuta nel riquadro della lettura in cima al modulo.
+function aggiornaFileNelPonte() {
+  var coda = codeFile['a-allegato'] || []
+  html('ponte-ai-file', coda.length
+    ? '<div class="ponte-file-titolo">📎 Documento caricato — diventa l\'allegato al salvataggio</div>' + coda.map(function (f, i) {
+        return '<div class="coda-file-riga"><span class="coda-file-nome">📎 ' + esc(f.name) + '</span>' +
+          '<span class="coda-file-dim">' + esc(fmtDimensioneFile(f.size)) + '</span>' + bottoneLeggiFile(i, f) + '</div>'
+      }).join('')
+    : '')
+}
+async function leggiFileInCoda(i) {
+  var f = (codeFile['a-allegato'] || [])[i]
+  if (f) await leggiFileFattura(f)
+}
+
+// ── 89·6 — le proposte della lettura: conto, gruppo, cantiere ───────────────
+// La lettura PROPONE: il gruppo e il cantiere si usano con un bottone, il conto
+// si salva come proposta (conto_proposto_id) e «Da classificare» lo mostra.
+var propostaLettura = null
+
+function elencoCantieriPerPrompt() {
+  var attivi = (cantieriCache || []).filter(cantiereAttivo)
+  if (!attivi.length) return '  (nessun cantiere attivo)'
+  return attivi.map(function (c) {
+    return '  ' + c.nome + (c.luogo ? ' — ' + c.luogo : '') + (c.committente ? ' (committente ' + c.committente + ')' : '')
+  }).join('\n')
+}
+function cantiereDaNome(nome) {
+  var n = String(nome || '').trim().toLowerCase()
+  if (!n) return null
+  var trovati = (cantieriCache || []).filter(function (c) { return String(c.nome || '').trim().toLowerCase() === n })
+  var attivi = trovati.filter(cantiereAttivo)
+  return (attivi.length === 1 ? attivi[0] : (trovati.length === 1 ? trovati[0] : null))
+}
+function propostaLetturaHtml() {
+  var p = propostaLettura
+  if (!p || (!p.conto && !p.gruppo && !p.cantiere)) return ''
+  return '<div class="lettura-nota proposta"><span aria-hidden="true">🤖</span><span><strong>Proposte della lettura</strong> ' +
+    '(niente è scritto finché non scegli):<ul style="margin:5px 0 0 18px">' +
+    (p.conto ? '<li>Conto <strong>' + esc(p.conto.codice_conto + ' · ' + p.conto.descrizione) + '</strong> — lo ritrovi proposto in ' +
+      '«Da classificare», dove lo confermi o lo cambi.</li>' : '') +
+    (p.gruppo ? '<li>Gruppo <strong>' + esc(etichettaGruppoCosto(p.gruppo)) + '</strong> ' +
+      '<button type="button" class="icon-btn" onclick="usaGruppoProposto()">Usa questo gruppo</button></li>' : '') +
+    (p.cantiere ? '<li>Cantiere <strong>' + esc(nomeCantiere(p.cantiere, true)) + '</strong> ' +
+      '<button type="button" class="icon-btn" onclick="usaCantiereProposto()">Usa questo cantiere</button></li>' : '') +
+    '</ul></span></div>'
+}
+async function usaGruppoProposto() {
+  if (!propostaLettura || !propostaLettura.gruppo) return
+  await riempiSelectGruppi('a-gruppo', propostaLettura.gruppo)
+  moduloModificato('acquisto')
+}
+function usaCantiereProposto() {
+  if (!propostaLettura || !propostaLettura.cantiere) return
+  impostaCantierePicker('a', propostaLettura.cantiere.id)
+  moduloModificato('acquisto')
+}
+
+// ── 89·7 — l'ordine di pagamento creato in banca ───────────────────────────
+// La fattura resta «da pagare» finché il pagamento non è registrato: il
+// programma il conto non lo vede. Passata la data prevista, chiede.
+function badgeOrdine(a) {
+  if (!a || !a.ordine_pagamento_data || a.stato_pagamento === 'pagato') return ''
+  return ordinePassato(a)
+    ? badge('warn', '📤 Ordine del ' + fmtDate(a.ordine_pagamento_data) + ' passato: addebitato?')
+    : badge('info', '📤 Ordine di pagamento creato · addebito il ' + fmtDate(a.ordine_pagamento_data))
+}
+function testoOrdineScheda(a) {
+  if (!a.ordine_pagamento_data) return ''
+  return '📤 Ordine di pagamento creato' + (a.ordine_pagamento_creato_il ? ' il ' + fmtDateTime(a.ordine_pagamento_creato_il) : '') +
+    ' · addebito previsto il ' + fmtDate(a.ordine_pagamento_data)
+}
+function bottoniOrdineHtml(a) {
+  if (a.stato_pagamento === 'pagato') return ''
+  if (!a.ordine_pagamento_data) {
+    return '<button class="btn-secondary" onclick="segnaOrdinePagamento(\'' + esc(a.id) + '\')">📤 Ordine di pagamento creato</button>'
+  }
+  return '<button class="btn-primary" onclick="ordineAddebitato(\'' + esc(a.id) + '\')">✅ Addebitato: registra il pagamento</button>' +
+    '<button class="btn-secondary" onclick="ordineNonPartito(\'' + esc(a.id) + '\')">❌ L\'ordine non è partito</button>'
+}
+function chiediDataOrdine(testo, proposta) {
+  var t = window.prompt(testo, proposta || '')
+  if (t === null) return { annullato: true }
+  t = String(t).trim()
+  if (!t) return { vuoto: true }
+  var d = dataDaTestoIt(t)
+  if (!d) { window.alert('«' + t + '» non è una data: scrivila come 20.10.2026.'); return { annullato: true } }
+  return { data: d }
+}
+async function scriviOrdine(id, valori) {
+  await richiediSessione('l\'ordine di pagamento NON è stato scritto')
+  const { error } = await sb.from('tm_conta_fatture_acquisto').update(valori)
+    .eq('id', id).eq('azienda_id', currentAziendaId).select('id')
+  if (error) throw error
+}
+async function dopoOrdine(id, tipo, msg) {
+  try { await loadAcquistiList() } catch (_) { /* il messaggio esce lo stesso */ }
+  var det = el('acquisti-detail-view')
+  if (det && det.style.display !== 'none') { try { await viewAcquisto(id) } catch (_) {} }
+  if (currentPage === 'scadenze') { try { await initScadenzePage() } catch (_) {} }
+  if (currentPage === 'scadenze') showScadenzeBanner(tipo, msg)
+  else showFattureBanner('acquisti-list-banner', tipo, msg)
+}
+async function segnaOrdinePagamento(id) {
+  var r = chiediDataOrdine('📤 Ordine di pagamento creato in banca.\n\nIn che data dovrebbe essere addebitato? (gg.mm.aaaa)',
+    fmtDate(addDays(oggiISO(), 1)))
+  if (r.annullato || r.vuoto) return
+  try {
+    await scriviOrdine(id, { ordine_pagamento_data: r.data, ordine_pagamento_creato_il: new Date().toISOString() })
+    await dopoOrdine(id, 'ok', 'Ordine di pagamento segnato: addebito previsto il ' + fmtDate(r.data) +
+      '. La fattura resta fra le da pagare finché non confermi l\'addebito.')
+  } catch (e) { window.alert('Ordine NON segnato: ' + (eErroreSql89(e) ? MSG_SQL89 : (e.message || e))) }
+}
+async function ordineAddebitato(id) {
+  try {
+    const { data: a, error } = await sb.from('tm_conta_fatture_acquisto')
+      .select('id, fornitore, numero_fornitore, importo, valuta, stato_pagamento, ordine_pagamento_data')
+      .eq('id', id).eq('azienda_id', currentAziendaId).single()
+    if (error) throw error
+    await loadPagamenti(true)
+    var residuo = round2((safeNum(a.importo) || 0) - totalePagatoDi('tm_conta_fatture_acquisto', id))
+    var oggi = oggiISO()
+    var dataPag = (a.ordine_pagamento_data && a.ordine_pagamento_data <= oggi) ? a.ordine_pagamento_data : oggi
+    if (residuo <= 0.005) {
+      await scriviOrdine(id, { ordine_pagamento_data: null, ordine_pagamento_creato_il: null })
+      await dopoOrdine(id, 'ok', 'La fattura risultava già pagata: ordine tolto.')
+      return
+    }
+    if (!window.confirm('✅ L\'ordine è stato addebitato?\n\n' + (a.fornitore || '') + (a.numero_fornitore ? ' n. ' + a.numero_fornitore : '') + '\n' +
+        'Registro il pagamento di ' + fmtNumIt(residuo) + ' ' + (a.valuta || 'CHF') + ' con data ' + fmtDate(dataPag) +
+        ' (metodo Bonifico).\n\nSe la data vera è un\'altra, premi Annulla e registralo con «💳 Paga».')) return
+    await scriviPagamento({ tabella: 'tm_conta_fatture_acquisto', id: id, importo: a.importo },
+      { data: dataPag, importo: residuo, metodo: 'Bonifico', riferimento: 'Ordine di pagamento' }, null, { confermaEccedenza: true })
+    invalidaCachePagamenti()
+    await scriviOrdine(id, { ordine_pagamento_data: null, ordine_pagamento_creato_il: null })
+    scadeCache('flussi'); exportDataset = null
+    await dopoOrdine(id, 'ok', 'Pagamento registrato il ' + fmtDate(dataPag) + ' (' + fmtNumIt(residuo) + ' ' + (a.valuta || 'CHF') + '): la fattura è pagata.')
+  } catch (e) { window.alert('Pagamento NON registrato: ' + (eErroreSql89(e) ? MSG_SQL89 : (e.message || e))) }
+}
+async function ordineNonPartito(id) {
+  var r = chiediDataOrdine('❌ L\'ordine non è partito.\n\nSe l\'hai ridato alla banca, scrivi la nuova data prevista (gg.mm.aaaa).\n' +
+    'Lascia vuoto per togliere l\'ordine: la fattura resta fra le da pagare, senza ordine.', '')
+  if (r.annullato) return
+  try {
+    if (r.vuoto) {
+      await scriviOrdine(id, { ordine_pagamento_data: null, ordine_pagamento_creato_il: null })
+      await dopoOrdine(id, 'ok', 'Ordine di pagamento tolto: la fattura resta da pagare.')
+    } else {
+      await scriviOrdine(id, { ordine_pagamento_data: r.data, ordine_pagamento_creato_il: new Date().toISOString() })
+      await dopoOrdine(id, 'ok', 'Nuovo ordine segnato: addebito previsto il ' + fmtDate(r.data) + '.')
+    }
+  } catch (e) { window.alert('Ordine NON cambiato: ' + (eErroreSql89(e) ? MSG_SQL89 : (e.message || e))) }
+}
+
+// ── 89·5 — i doppioni: anche senza numero, stesso importo e stessa data ─────
+var chiaviDoppioniImporto = {}   // fornitore|importo|data -> [righe]
+function chiaveDoppioneImporto(fornitore, importo, data) {
+  var f = normalizzaFornitore(fornitore), imp = safeNum(importo)
+  if (!f || imp == null || !data) return null
+  return f + '|' + round2(imp).toFixed(2) + '|' + data
+}
+// Gli altri documenti dello stesso fornitore con lo stesso numero, oppure con
+// lo stesso importo e la stessa data.
+function doppioniDiAcquisto(a) {
+  var visti = {}, out = []
+  doppioniDi(a.fornitore, a.numero_fornitore, a.id).concat(
+    (chiaviDoppioniImporto[chiaveDoppioneImporto(a.fornitore, a.importo, a.data)] || []).filter(function (r) { return r.id !== a.id })
+  ).forEach(function (r) { if (!visti[r.id]) { visti[r.id] = true; out.push(r) } })
+  return out
+}
+// «È un doppione: non la salvo». Niente si scrive; una fattura già salvata
+// che si stava modificando resta com'era.
+function scartaDoppioneAcquisto() {
+  var eraNuova = !editingAcquistoId
+  doppioneAccettato = false
+  clearAcquistoFileInput()
+  acquistoOriginal = null
+  propostaLettura = null
+  lettaDaAI = false
+  moduloPulito('acquisto')
+  acquistiBackToList()
+  showFattureBanner('acquisti-list-banner', 'ok', eraNuova
+    ? 'Non salvata: era un doppione di una fattura già registrata. Niente è stato scritto.'
+    : 'Modifiche non salvate: era un doppione. La fattura è rimasta com\'era.')
+}
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
