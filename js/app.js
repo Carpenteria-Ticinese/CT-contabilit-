@@ -314,6 +314,10 @@ function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
     return badge('warn', '📉 Stralciata — perdita ' + fmtNumIt(stB ? (safeNum(stB.importo) || 0) : 0) + ' CHF' +
       (stB && stB.data ? ' dal ' + fmtDate(stB.data) : ''))
   }
+  // 91 — incassata con lo sconto di cassa: si dice, con la cifra.
+  if (statoVero === 'pagato' && tabella === 'tm_conta_fatture' && cacheOk('stralci') && scontoCassaAttivo(id)) {
+    return badge('ok', '✅ Incassato — sconto di cassa ' + fmtNumIt(safeNum(scontoCassaAttivo(id).importo) || 0) + ' CHF')
+  }
   // 75·4 — pagato con una data che deve ancora venire: è un pagamento
   // programmato. Nessun avviso di scadenza (per il trigger è pagato), e la
   // scritta dice quando parte.
@@ -4097,7 +4101,8 @@ function perditeDelPeriodo(ds, da, a) {
   }).map(function (s) {
     var conto = contoPerCodice(s.conto_codice)
     return { stralcio: s, fattura: fatture[s.fattura_id], importo: round2(safeNum(s.importo) || 0),
-             conto: conto, lato: (conto && conto.tipo === 'ricavo') ? 'ricavi' : 'costi' }
+             conto: conto, lato: (conto && conto.tipo === 'ricavo') ? 'ricavi' : 'costi',
+             tipo: eScontoCassa(s) ? 'sconto_cassa' : 'perdita' }   // 91
   }).sort(function (x, y) { return String(x.stralcio.data).localeCompare(String(y.stralcio.data)) })
 }
 
@@ -4160,8 +4165,11 @@ function docsPeriodo(ds, da, a) {
   // 84 — le perdite su debitori del periodo: gli stralci ATTIVI con la data
   // nel periodo, di una fattura emessa. Il lato lo decide il tipo del conto:
   // costo (il 6900) → fra i costi; ricavo → ricavo in meno. Mai tutti e due.
-  var perdite = perditeDelPeriodo(ds, da, a)
-  return { vendite: vendite, note: note, acquisti: acquisti, spese: spese, perdite: perdite,
+  // 91 — gli sconti di cassa: stessa lettura, un elenco loro (sul 3090, ricavo in meno).
+  var tutteChiusure = perditeDelPeriodo(ds, da, a)
+  var perdite = tutteChiusure.filter(function (p) { return p.tipo !== 'sconto_cassa' })
+  var sconti = tutteChiusure.filter(function (p) { return p.tipo === 'sconto_cassa' })
+  return { vendite: vendite, note: note, acquisti: acquisti, spese: spese, perdite: perdite, sconti: sconti,
            classificatiTutti: classificatiTutti, righeClassificate: righeClassificate,
            scartatiDaConfermare: scartatiDaConfermare }
 }
@@ -4405,10 +4413,18 @@ function totaliSezioni(d) {
   })
   perditeCosti = round2(perditeCosti); perditeRicavi = round2(perditeRicavi)
   var totPerdite = round2(perditeCosti + perditeRicavi)
+  // 91 — gli sconti di cassa: stesso metodo, sul lato del loro conto (il 3090 è un ricavo).
+  var scontiCosti = 0, scontiRicavi = 0
+  ;(d.sconti || []).forEach(function (p) {
+    if (p.lato === 'ricavi') scontiRicavi += p.importo; else scontiCosti += p.importo
+  })
+  scontiCosti = round2(scontiCosti); scontiRicavi = round2(scontiRicavi)
+  var totSconti = round2(scontiCosti + scontiRicavi)
   return {
     vendite: totVendite, note: totNote, acquisti: totAcquisti, spese: totSpese,
     perdite: totPerdite, perditeCosti: perditeCosti, perditeRicavi: perditeRicavi,
-    saldo: round2(totVendite + totNote - totAcquisti - totSpese - totPerdite)
+    sconti: totSconti, scontiCosti: scontiCosti, scontiRicavi: scontiRicavi,
+    saldo: round2(totVendite + totNote - totAcquisti - totSpese - totPerdite - totSconti)
   }
 }
 
@@ -4416,6 +4432,17 @@ function totaliSezioni(d) {
 function buildSheetPerdite(perdite) {
   var aoa = [['Data stralcio', 'Fattura', 'Data fattura', 'Cliente', 'Totale fattura', 'Perdita', 'Conto', 'Motivo']]
   ;(perdite || []).forEach(function (p) {
+    aoa.push([p.stralcio.data, p.fattura.numero || '', p.fattura.data_emissione || '', p.fattura.cliente_nome || '',
+              safeNum(p.fattura.totale) || 0, p.importo,
+              p.conto ? p.conto.codice_conto + ' ' + p.conto.descrizione : p.stralcio.conto_codice, p.stralcio.motivo || ''])
+  })
+  return aoa
+}
+
+// 91 — il foglio degli sconti di cassa concessi.
+function buildSheetSconti(sconti) {
+  var aoa = [['Data incasso', 'Fattura', 'Data fattura', 'Cliente', 'Totale fattura', 'Sconto concesso', 'Conto', 'Condizione']]
+  ;(sconti || []).forEach(function (p) {
     aoa.push([p.stralcio.data, p.fattura.numero || '', p.fattura.data_emissione || '', p.fattura.cliente_nome || '',
               safeNum(p.fattura.totale) || 0, p.importo,
               p.conto ? p.conto.codice_conto + ' ' + p.conto.descrizione : p.stralcio.conto_codice, p.stralcio.motivo || ''])
@@ -4442,9 +4469,10 @@ function buildSheetRiepilogo(d, sez, da, a) {
   }
   // 84 — le perdite su debitori: sempre, se ce ne sono (non dipendono dalle spunte).
   if (d.perdite && d.perdite.length) aoa.push(['Perdite su debitori (stralci)', d.perdite.length, -t.perdite])
+  if (d.sconti && d.sconti.length) aoa.push(['Sconti di cassa concessi', d.sconti.length, -t.sconti])   // 91
   aoa.push(['', '', ''])
-  aoa.push([(d.perdite && d.perdite.length) ? 'SALDO (vendite − note − acquisti − spese − perdite)'
-                                            : 'SALDO (vendite − note − acquisti − spese)', '', t.saldo])
+  aoa.push(['SALDO (vendite − note − acquisti − spese' + ((d.perdite && d.perdite.length) ? ' − perdite' : '') +
+            ((d.sconti && d.sconti.length) ? ' − sconti di cassa' : '') + ')', '', t.saldo])
 
   // Riepiloghi per conto e per codice IVA (su tutto il classificato del periodo)
   var perConto = {}, perIva = {}
@@ -4463,10 +4491,13 @@ function buildSheetRiepilogo(d, sez, da, a) {
     perIva[ik].imp += imp; perIva[ik].iva += ivaImp
   }
   // 84 — le perdite nel riepilogo per conto, sul loro conto.
-  ;(d.perdite || []).forEach(function (p) {
+  // 91 — anche gli sconti di cassa. Sul lato ricavi la cifra va col meno: è un
+  // ricavo in meno (come in «Costi e ricavi per conto»).
+  ;(d.perdite || []).concat(d.sconti || []).forEach(function (p) {
     var ckP = p.conto ? contoLabel(p.conto.id) : (p.stralcio.conto_codice + ' · (conto non trovato)')
     if (!perConto[ckP]) perConto[ckP] = { imp: 0, iva: 0, tot: 0 }
-    perConto[ckP].imp += p.importo; perConto[ckP].tot += p.importo
+    var segnoP = p.lato === 'ricavi' ? -1 : 1
+    perConto[ckP].imp += segnoP * p.importo; perConto[ckP].tot += segnoP * p.importo
   })
   // FASE 26 — la spiegazione sta nel file, non solo a schermo: chi lo apre non
   // ha seguito nessuna conversazione.
@@ -4535,6 +4566,7 @@ function sezioniDaEsportare(d, sez, ds) {
   if (sez.acquisti && d.acquisti.length) out.push({ nome: 'Acquisti',           aoa: buildSheetAcquisti(d.acquisti, ds) })
   if (sez.spese    && d.spese.length)    out.push({ nome: 'Spese e movimenti',  aoa: buildSheetSpese(d.spese) })
   if (d.perdite && d.perdite.length)     out.push({ nome: 'Perdite su debitori', aoa: buildSheetPerdite(d.perdite) })   // 84
+  if (d.sconti && d.sconti.length)       out.push({ nome: 'Sconti di cassa', aoa: buildSheetSconti(d.sconti) })   // 91
   return out
 }
 
@@ -4621,6 +4653,14 @@ function elencoPerditeHtml(perdite) {
   }).join('') + '</div>'
 }
 
+// 91 — l'elenco degli sconti di cassa del periodo, sotto la riga.
+function elencoScontiHtml(sconti) {
+  return '<div class="exp-perdite">' + sconti.map(function (p) {
+    return '<div>✂️ ' + esc(fmtDate(p.stralcio.data)) + ' · fattura ' + esc(p.fattura.numero || '—') + ' · ' +
+      esc(p.fattura.cliente_nome || '—') + ' · <strong>' + esc(fmtNumIt(p.importo)) + ' CHF</strong></div>'
+  }).join('') + '</div>'
+}
+
 async function updateExportPreview() {
   var prev = el('exp-preview')
   if (!prev) return
@@ -4652,6 +4692,8 @@ async function updateExportPreview() {
       riga(sez.spese,    '🧾 Spese e movimenti',  docsDistinti(d.spese), t.spese) +
       // 84 — le perdite su debitori del periodo, con l'elenco.
       (d.perdite.length ? riga(true, '📉 Perdite su debitori', d.perdite.length, -t.perdite) + elencoPerditeHtml(d.perdite) : '') +
+      // 91 — gli sconti di cassa concessi del periodo, con l'elenco.
+      ((d.sconti || []).length ? riga(true, '✂️ Sconti di cassa concessi', d.sconti.length, -t.sconti) + elencoScontiHtml(d.sconti) : '') +
       '<div class="exp-riga" style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px">' +
         '<span><strong>Saldo del periodo</strong></span><span class="exp-amount">' + fmtNum2(t.saldo) + ' CHF</span></div>' +
       (nBlocc ? '<div class="exp-riga exp-vuoto"><span>' + nBlocc + ' movimenti già consegnati 🔒</span><span></span></div>' : '') +
@@ -6068,7 +6110,7 @@ function motivoNoCorrezione(f, pagamenti, note) {
   if (f.stato !== 'emessa') return 'Si correggono solo le fatture emesse: questa è «' + f.stato + '».'
   if (f.tipo === 'nota_credito') return 'Una nota di credito non si riapre: si annulla e se ne emette una nuova.'
   // 84 — una stralciata è ferma.
-  if (stralcioAttivo(f.id)) return 'La fattura è stralciata come perdita: togli prima lo stralcio.'
+  if (stralcioAttivo(f.id)) return testoFermaFattura(f.id)   // 91 — o lo sconto di cassa
   if (pagamenti && pagamenti.length) {
     var somma = pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
     return 'Su questa fattura ' +
@@ -6326,7 +6368,16 @@ function boxStralcioHtml(f) {
   if (!tutti.length) return ''
   var att = stralcioAttivo(f.id)
   var conto = att ? contoPerCodice(att.conto_codice) : null
-  var testa = att
+  var scAtt = eScontoCassa(att)   // 91
+  var testa = scAtt
+    ? '<div class="card-title">✂️ Chiusa con lo sconto di cassa</div>' +
+      '<div class="stralcio-cifra">Sconto concesso di <strong>' + esc(fmtNumIt(safeNum(att.importo) || 0)) + ' CHF</strong> il ' +
+        esc(fmtDate(att.data)) + ' · conto ' + esc(conto ? conto.codice_conto + ' · ' + conto.descrizione : att.conto_codice) + '</div>' +
+      '<div class="annullata-motivo">' + esc(att.motivo) + '</div>' +
+      '<div class="form-hint" style="margin-top:8px">La fattura è saldata: incasso più sconto. Il totale resta quello emesso; ' +
+        'lo sconto è un ricavo in meno sul suo conto, nei conti, nell\'export e nel margine del cantiere. Finché c\'è, la fattura è ferma. ' +
+        'Se era sbagliato, o il cliente paga la differenza: «↩️ Togli lo sconto».</div>'
+    : att
     ? '<div class="card-title">📉 Stralciata come perdita</div>' +
       '<div class="stralcio-cifra">Perdita di <strong>' + esc(fmtNumIt(safeNum(att.importo) || 0)) + ' CHF</strong> dal ' +
         esc(fmtDate(att.data)) + ' · conto ' + esc(conto ? conto.codice_conto + ' · ' + conto.descrizione : att.conto_codice) + '</div>' +
@@ -6334,15 +6385,15 @@ function boxStralcioHtml(f) {
       '<div class="form-hint" style="margin-top:8px">La fattura resta emessa e il ricavo resta. Esce da Scadenze, ' +
         'solleciti e «da incassare»; la perdita entra nei conti e nel margine del cantiere. Finché lo stralcio c\'è, ' +
         'la fattura è ferma. Se il cliente paga: «↩️ Togli lo stralcio», poi registra il pagamento.</div>'
-    : '<div class="card-title">📉 Stralci tolti</div>'
+    : '<div class="card-title">' + (tutti.some(eScontoCassa) ? '↩️ Sconti e stralci tolti' : '📉 Stralci tolti') + '</div>'
   var tolti = tutti.filter(function (s) { return s.tolto_il })
   var storia = tolti.length
     ? '<div class="stralcio-storia">' + tolti.map(function (s) {
-        return '<div>↩️ Stralcio del ' + esc(fmtDate(s.data)) + ' (' + esc(fmtNumIt(safeNum(s.importo) || 0)) + ' CHF) tolto il ' +
+        return '<div>↩️ ' + (eScontoCassa(s) ? 'Sconto di cassa' : 'Stralcio') + ' del ' + esc(fmtDate(s.data)) + ' (' + esc(fmtNumIt(safeNum(s.importo) || 0)) + ' CHF) tolto il ' +
           esc(fmtDateTime(s.tolto_il)) + ': «' + esc(s.tolto_motivo || '') + '»</div>'
       }).join('') + '</div>'
     : ''
-  return '<div class="card stralcio-box' + (att ? '' : ' tolto') + '">' + testa + storia + '</div>'
+  return '<div class="card stralcio-box' + (att ? (scAtt ? ' sconto' : '') : ' tolto') + '">' + testa + storia + '</div>'
 }
 
 async function stralciaFattura(id) {
@@ -7395,7 +7446,7 @@ async function creaNotaCredito(id) {
   // 84 — una nota su una fattura stralciata toglierebbe ricavo E lascerebbe la perdita.
   try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }
   if (stralcioAttivo(id)) {
-    window.alert('Nota di credito non creata.\n\nLa fattura è stralciata come perdita: togli prima lo stralcio, poi fai la nota di credito.')
+    window.alert('Nota di credito non creata.\n\n' + testoFermaFattura(id, 'poi fai la nota di credito'))   // 91
     return
   }
   if (!window.confirm('Creare una nota di credito che storna questa fattura? Viene creata come bozza, poi potrai emetterla con numerazione propria.')) return
@@ -7749,7 +7800,16 @@ async function viewFattura(id) {
     // 62c — se il documento e' annullato, il perche' sta in cima: e' la prima
     // cosa da sapere guardandolo.
     html('fatture-annullata', boxAnnullamentoHtml(f))
-    html('fatture-stralcio', boxStralcioHtml(f))   // 84
+    // 91 — la condizione di sconto sta sulla rata: senza i contratti il foglio
+    // non la saprebbe stampare, e lo si dice.
+    var avvisoContratti91 = ''
+    if (f.tipo !== 'nota_credito') {
+      try { await loadContrattiCantiere() } catch (eC91) {
+        avvisoContratti91 = '<div class="sol-stato-riga">⚠️ Contratti non letti (' + esc(eC91.message || String(eC91)) +
+          '): se la fattura viene da una rata con lo sconto di cassa, qui e in stampa non si vede.</div>'
+      }
+    }
+    html('fatture-stralcio', boxStralcioHtml(f) + rigaScontoCassaHtml(f) + avvisoContratti91)   // 84 · 91
     // 61g — i solleciti della fattura: servono al bottone e alla riga di stato.
     try { await loadSolleciti() } catch (_) { /* il bottone ripartira' dal primo */ }
     renderFatturaPrint(f, righe || [], rifInfo)
@@ -7862,6 +7922,17 @@ function paeseEsteroHtml(codice) {
   return '<div>' + esc(paeseValido(p) ? nomePaese(p) : p) + '</div>'
 }
 
+// 91 — «Se pagato entro 10 giorni (entro il 29.10.2026), sconto di cassa 2 %:  4'900.00 CHF».
+function rigaStampaScontoCassa(f, v) {
+  if (!f || f.tipo === 'nota_credito' || f.stato === 'annullata') return ''
+  var s = scontoCassaFattura(f)
+  if (!s) return ''
+  return '<div class="inv-sconto-cassa"><span>Se pagato entro ' + s.giorni + ' giorni' +
+    (s.entro ? ' (entro il ' + esc(fmtDate(s.entro)) + ')' : ' dalla data della fattura') +
+    ', sconto di cassa ' + (s.pct != null ? esc(fmtPctSconto(s.pct)) : fmtNum2(s.importoFisso) + ' ' + v) + ':</span>' +
+    '<span>' + fmtNum2(s.scontato) + ' ' + v + '</span></div>'
+}
+
 function renderFatturaPrint(f, righe, rifInfo) {
   var a = aziendaInfo || {}
   var v = esc(f.valuta || 'CHF')
@@ -7964,6 +8035,9 @@ function renderFatturaPrint(f, righe, rifInfo) {
       ? '<div><span>Totale IVA</span><span>' + fmtNum2(safeNum(f.totale_iva)) + ' ' + v + '</span></div>'
       : '') +
     '<div class="inv-grand"><span>Totale documento</span><span>' + fmtNum2(safeNum(f.totale)) + ' ' + v + '</span></div>' +
+    // 91 — lo sconto di cassa è una CONDIZIONE: il totale resta pieno, sotto si
+    // legge quanto pagare entro il termine.
+    rigaStampaScontoCassa(f, v) +
     '</div>'
 
   // Logo: logo_url se presente, altrimenti img/logo.png; onerror → fallback → nascondi
@@ -8162,7 +8236,7 @@ function motivoNoAnnullamento(f, pagamenti) {
   if (f.stato !== 'emessa') return 'Si annullano solo i documenti emessi.'
   // 84 — annullare una stralciata toglierebbe il ricavo e lascerebbe la perdita.
   if (f.tipo !== 'nota_credito' && stralcioAttivo(f.id)) {
-    return 'La fattura è stralciata come perdita: togli prima lo stralcio, poi annulla.'
+    return testoFermaFattura(f.id, 'poi annulla')   // 91
   }
   if (pagamenti && pagamenti.length) {
     var somma = pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
@@ -8348,7 +8422,12 @@ function renderDetailActions(f) {
     // 84 — stralciata: ferma. Incassi, note, correzione e annullamento
     // aspettano che lo stralcio si tolga.
     var stA = (f.tipo !== 'nota_credito') ? stralcioAttivo(f.id) : null
-    if (stA) {
+    if (stA && eScontoCassa(stA)) {
+      // 91 — chiusa con lo sconto di cassa: ferma come una stralciata.
+      a += '<span class="lock-tag" title="Finché c\'è lo sconto niente incassi, note di credito, correzioni né annullamento">✂️ Chiusa con lo sconto di cassa — ferma</span>'
+      a += '<button class="btn-secondary" onclick="togliScontoCassa(\'' + esc(f.id) + '\')" ' +
+           'title="Lo sconto era sbagliato, o il cliente paga la differenza: lo sconto esce dai conti, la riga resta nello storico">↩️ Togli lo sconto</button>'
+    } else if (stA) {
       a += '<span class="lock-tag" title="Finché c\'è lo stralcio niente incassi, note di credito, correzioni né annullamento">📉 Stralciata — ferma</span>'
       a += '<button class="btn-secondary" onclick="togliStralcio(\'' + esc(f.id) + '\')" ' +
            'title="Il cliente ha pagato, o lo stralcio era sbagliato: la perdita sparisce, la riga resta nello storico">↩️ Togli lo stralcio</button>'
@@ -8368,6 +8447,13 @@ function renderDetailActions(f) {
       // documento resta dov'e' ed e' per questo che si chiama «Annulla».
       a += '<button class="btn-secondary danger" onclick="annullaDocumento(\'' + esc(f.id) +
            '\')" title="Il documento tiene il suo numero e smette di contare. Serve una motivazione scritta.">🚫 Annulla documento</button>'
+      // 91 — pagato in tempo, manca al massimo lo sconto: si chiude con lo sconto.
+      var sC91 = scontoCassaFattura(f)
+      if (sC91 && cacheOk('pagamenti') &&
+          !motivoNoScontoCassa(f, sC91, residuoDocumento('tm_conta_fatture', f.id, f.totale), ultimoPagamentoDi('tm_conta_fatture', f.id))) {
+        a += '<button class="btn-primary" onclick="chiudiConScontoCassa(\'' + esc(f.id) + '\')" ' +
+             'title="Il cliente ha pagato lo scontato entro il termine: la differenza va sul 3090 Sconti di cassa concessi">✂️ Chiudi con lo sconto di cassa</button>'
+      }
       // 84 — scaduta e con qualcosa da incassare: si può stralciare.
       if (f.tipo !== 'nota_credito' && f.data_scadenza && f.data_scadenza < oggiISO() &&
           cacheOk('pagamenti') && residuoDocumento('tm_conta_fatture', f.id, f.totale) > 0.005) {
@@ -17932,6 +18018,7 @@ function contiFuoriCantiere() {
     fatturato: { importo: 0, righe: [] },
     fornitori: { importo: 0, righe: [] },
     perdite:   { importo: 0, righe: [] },   // 84
+    sconti:    { importo: 0, righe: [] },   // 91 — sconti di cassa concessi
     perGruppo: {}
   }
   ;(flussiCache || []).forEach(function (r) {
@@ -17953,10 +18040,11 @@ function contiFuoriCantiere() {
     var rf = rigaFlussoFattura(s.fattura_id)
     var qf = rf ? quotaFuoriCantiere(rf) : null
     if (!qf) return
-    f.perdite.importo += (safeNum(s.importo) || 0) * qf.frazione
-    f.perdite.righe.push(rf)
+    var dove = eScontoCassa(s) ? f.sconti : f.perdite   // 91
+    dove.importo += (safeNum(s.importo) || 0) * qf.frazione
+    dove.righe.push(rf)
   })
-  f.margine = f.fatturato.importo - f.fornitori.importo - f.perdite.importo
+  f.margine = f.fatturato.importo - f.fornitori.importo - f.perdite.importo - f.sconti.importo   // 91
   return f
 }
 
@@ -18008,6 +18096,7 @@ function contiCantiere(cantiereId) {
     fornitoriDaPagare: 0,
     spese:       { importo: 0, righe: [] },
     perdite:     { importo: 0, righe: [] },   // 84 — fatture stralciate
+    sconti:      { importo: 0, righe: [] },   // 91 — sconti di cassa concessi (ricavo in meno)
     regiaAperta: { importo: 0, righe: [] },
     ore: 0,
     giornate:    [],
@@ -18057,8 +18146,10 @@ function contiCantiere(cantiereId) {
     var rf = rigaFlussoFattura(s.fattura_id)
     var qf = rf ? quotaCantiere(rf, cantiereId) : null
     if (!qf) return
-    c.perdite.importo += (safeNum(s.importo) || 0) * qf.frazione
-    c.perdite.righe.push(rf)
+    // 91 — lo sconto di cassa: stesse quote, ma è un ricavo in meno, non una perdita.
+    var dove = eScontoCassa(s) ? c.sconti : c.perdite
+    dove.importo += (safeNum(s.importo) || 0) * qf.frazione
+    dove.righe.push(rf)
   })
 
   // ── Spese di App Cantieri: blocco separato, MAI sommato alle fatture
@@ -18097,7 +18188,7 @@ function contiCantiere(cantiereId) {
 
   // Senza costo orario la manodopera non entra nel conto, e il margine cambia
   // NOME: «senza manodopera». Un margine falso e' peggio di uno mancante.
-  c.margine = c.fatturato.importo - c.fornitori.importo - c.spese.importo - c.perdite.importo   // 84
+  c.margine = c.fatturato.importo - c.fornitori.importo - c.spese.importo - c.perdite.importo - c.sconti.importo   // 84 · 91
             - (c.costoManodopera != null ? c.costoManodopera : 0)
   c.margineCompleto = (c.costoManodopera != null)
 
@@ -18454,7 +18545,7 @@ function renderElencoCantieri() {
   var tot = { fatturato: 0, costi: 0, margine: 0 }
   var body = righe.map(function (x) {
     var k = x.k
-    var costi = k.fornitori.importo + k.spese.importo + k.perdite.importo + (k.costoManodopera || 0)   // 84
+    var costi = k.fornitori.importo + k.spese.importo + k.perdite.importo + k.sconti.importo + (k.costoManodopera || 0)   // 84 · 91 (sconti: ricavo in meno, qui per far tornare fatturato − costi = margine)
     tot.fatturato += k.fatturato.importo
     tot.costi     += costi
     tot.margine   += k.margine
@@ -18486,7 +18577,7 @@ function renderElencoCantieri() {
   // totale non sarebbe il totale di niente.
   var fuori = contiFuoriCantiere()
   tot.fatturato += fuori.fatturato.importo
-  tot.costi     += fuori.fornitori.importo + fuori.perdite.importo   // 84
+  tot.costi     += fuori.fornitori.importo + fuori.perdite.importo + fuori.sconti.importo   // 84 · 91
   tot.margine   += fuori.margine
 
   var percTot = (tot.fatturato > 0) ? (tot.margine / tot.fatturato * 100) : null
@@ -18511,7 +18602,7 @@ function renderElencoCantieri() {
       '<td><strong>Fuori cantiere</strong> ' +
         '<span class="dim">non ancora assegnato</span></td>' +   // 76 — il magazzino ha il suo cantiere
       '<td class="num">' + esc(fmtNumIt(fuori.fatturato.importo)) + ' CHF</td>' +
-      '<td class="num">' + esc(fmtNumIt(fuori.fornitori.importo + fuori.perdite.importo)) + ' CHF</td>' +
+      '<td class="num">' + esc(fmtNumIt(fuori.fornitori.importo + fuori.perdite.importo + fuori.sconti.importo)) + ' CHF</td>' +
       '<td class="num">' + esc(fmtNumIt(fuori.margine)) + ' CHF</td>' +
       '<td class="num"><span class="dim">—</span></td>' +
     '</tr>' +
@@ -18582,6 +18673,11 @@ function renderSchedaCantiere() {
   // ── ENTRATE
   var entrate = '<div class="card cant-blocco"><div class="card-title">💰 Entrate</div>' +
     rigaClic('fatturato',   'Fatturato',    k.fatturato.importo,   k.fatturato.righe.length) +
+    // 91 — gli sconti di cassa concessi: sotto il fatturato, che resta quello emesso.
+    (k.sconti.importo > 0.005
+      ? rigaClic('sconti', '✂️ Sconti di cassa concessi', k.sconti.importo, k.sconti.righe.length) +
+        '<div class="cant-sub">ricavo in meno (conto ' + CONTO_SCONTO_CASSA + '): tolto dal margine</div>'
+      : '') +
     rigaClic('incassato',   'Incassato',    k.incassato.importo,   k.incassato.righe.length) +
     // 70·R — il rimborso sotto l'incassato, col suo segno: si vede quanto è
     // arrivato E quanto è tornato indietro, non solo la differenza.
@@ -18701,6 +18797,7 @@ function apriElencoCantiere(chiave) {
   else if (chiave === 'fornitori')   { righe = k.fornitori.righe;   titolo = '💸 Fatture fornitori' }
   else if (chiave === 'spese')       { righe = k.spese.righe;       titolo = '🧾 Spese di cantiere'; tipo = 'spesa' }
   else if (chiave === 'perdite')     { righe = k.perdite.righe;     titolo = '📉 Perdite su crediti' }   // 84
+  else if (chiave === 'sconti')      { righe = k.sconti.righe;      titolo = '✂️ Sconti di cassa concessi' }   // 91
   else if (chiave === 'regia')       { righe = k.regiaAperta.righe; titolo = '🧾 Regia non fatturata'; tipo = 'regia' }
   else if (chiave === 'ore')         { righe = k.giornate;          titolo = '👷 Giornate registrate'; tipo = 'giornata' }
 
@@ -19337,6 +19434,9 @@ async function htmlFatturaPerPdf(idFattura) {
     .eq('fattura_id', idFattura).order('ordine')
   if (eR) throw eR
   var rifInfo = null
+  // 91 — lo sconto di cassa sta sulla rata: senza i contratti il PDF non lo
+  // stamperebbe. Se non si leggono, il PDF non si fa (fallire chiuso).
+  if (f.tipo !== 'nota_credito') await loadContrattiCantiere()
   if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
     const { data: rif } = await sb.from('tm_conta_fatture').select('numero, data_emissione')
       .eq('id', f.rif_fattura_id).eq('azienda_id', currentAziendaId).maybeSingle()
@@ -19460,6 +19560,7 @@ function costruisciWorkbookPacchetto(r, mappa, da, a) {
   if (d.acquisti.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetAcquisti(d.acquisti, ds, mappa)), 'Acquisti')
   if (d.spese.length)    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetSpese(d.spese, mappa)), 'Spese e movimenti')
   if (d.perdite && d.perdite.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetPerdite(d.perdite)), 'Perdite su debitori')   // 84
+  if (d.sconti && d.sconti.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSheetSconti(d.sconti)), 'Sconti di cassa')   // 91
 
   // Le spese di cantiere stanno in un foglio SEPARATO e non si sommano mai agli
   // acquisti: lo stesso scontrino puo' essere gia' fra le fatture ricevute.
@@ -19862,9 +19963,16 @@ function residuoDocumento(tabella, id, totale) {
 async function loadStralci(force) {
   if (cacheOk('stralci') && !force) return stralciCache || []
   await richiediAccesso('loadStralci')   // mai un elenco vuoto per silenzio
-  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_stralci')
-    .select('id, fattura_id, data, importo, motivo, conto_codice, created_at, tolto_il, tolto_motivo')
+  var colonneStralci = 'id, fattura_id, data, importo, motivo, conto_codice, created_at, tolto_il, tolto_motivo'
+  var { data, error } = await leggiTutto(function () { return sb.from('tm_conta_stralci')
+    .select(colonneStralci + ', tipo, pagamento_id')   // 91 — perdita o sconto di cassa
     .eq('azienda_id', currentAziendaId).order('data').order('id') })
+  // 91 — senza l'SQL della 91 le due colonne non ci sono: tutti gli stralci
+  // sono perdite, ed è vero. Si rilegge senza.
+  if (error && eErroreSql91(error) && !tabellaStralciMancante(error)) {
+    ;({ data, error } = await leggiTutto(function () { return sb.from('tm_conta_stralci')
+      .select(colonneStralci).eq('azienda_id', currentAziendaId).order('data').order('id') }))
+  }
   if (error) {
     // La tabella che non c'è ancora (SQL della 84 non lanciato) vuol dire
     // «nessuno stralcio», ed è vero: si va avanti, e il bottone lo dirà.
@@ -19910,7 +20018,8 @@ function contoPerCodice(codice) {
 // Non si scrive niente nel database: e' solo la parola che si legge.
 function statoConStorno(tabella, id, totale, statoDb) {
   // 84 — stralciata prima di tutto: non è incassata e non è da incassare.
-  if (tabella === 'tm_conta_fatture' && cacheOk('stralci') && stralcioAttivo(id)) return 'stralciata'
+  // 91 — chiusa con lo sconto di cassa: incassata (il resto è sconto concesso).
+  if (tabella === 'tm_conta_fatture' && cacheOk('stralci') && stralcioAttivo(id)) return eScontoCassa(stralcioAttivo(id)) ? 'pagato' : 'stralciata'
   if (tabella !== 'tm_conta_fatture' || !cacheOk('noteCredito')) return statoDb
   if (stornoAncoraDovuto(id) <= 0.005) return statoDb   // 70·R
   var res = residuoDocumento(tabella, id, totale)
@@ -20138,7 +20247,7 @@ async function apriModificaPagamento(idPagamento) {
     if (pg.tabella_origine === 'tm_conta_fatture') {
       await loadStralci(true)
       if (stralcioAttivo(pg.id_origine)) {
-        window.alert('Pagamento non modificato.\n\nLa fattura è stralciata come perdita: togli prima lo stralcio.')
+        window.alert('Pagamento non modificato.\n\n' + testoFermaFattura(pg.id_origine))   // 91
         return
       }
     }
@@ -20210,8 +20319,8 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
   // li conterebbe due volte. (Lo ricontrolla anche il database.)
   if (tabella === 'tm_conta_fatture' && !rimborso && stralcioAttivo(id)) {
     docPagamentoCorrente = null
-    window.alert('Pagamento non registrato.\n\nQuesta fattura è stralciata come perdita: togli prima lo stralcio ' +
-      '(dalla scheda della fattura, «↩️ Togli lo stralcio»), poi registra il pagamento.')
+    window.alert('Pagamento non registrato.\n\n' + testoFermaFattura(id, 'poi registra il pagamento') +
+      ' Il bottone è nella scheda della fattura.')   // 91
     return
   }
 
@@ -20245,10 +20354,25 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
         html('pag-avviso-conferma', bloccoAvvisoConferma(aPag))
       } catch (_) { /* senza avviso, ma il pagamento si registra */ }
     }
+    // 91 — se la fattura viene da una rata con lo sconto di cassa, la cifra
+    // scontata si vede qui, prima di scrivere l'importo.
+    var rigaSc91 = ''
+    if (tabella === 'tm_conta_fatture') {
+      try {
+        await loadContrattiCantiere()
+        var f91 = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura
+                : (fattureList || []).filter(function (x) { return x.id === id })[0]
+        var s91 = f91 ? scontoCassaFattura(f91) : null
+        if (s91 && residuo > s91.sconto + 0.005) {
+          rigaSc91 = rigaPag('Con lo sconto di cassa (' + descrizioneScontoRata(s91.pct != null ? { pct: s91.pct } : { importo: s91.importoFisso }) +
+            (s91.entro ? ', entro il ' + fmtDate(s91.entro) : '') + ')', round2(residuo - s91.sconto))
+        }
+      } catch (_) { /* lo si ricontrolla dopo la scrittura */ }
+    }
     html('pag-riepilogo',
       rigaPag('Importo del documento', docPagamentoCorrente.importo) +
       rigaPag('Già ' + etichettaPagamento(docPagamentoCorrente.verso, 'pagato').testo.toLowerCase(), gia) +
-      rigaPag('Residuo', residuo, true))
+      rigaPag('Residuo', residuo, true) + rigaSc91)
     proposta = residuo
   }
 
@@ -20581,6 +20705,10 @@ async function salvaPagamento() {
       riferimento: getVal('pag-riferimento') || null
     }
 
+    // 91 — prima di scrivere: la condizione di sconto e il residuo di adesso.
+    var prepSconto = (d.tabella === 'tm_conta_fatture' && !d.rimborso && !pagamentoInModifica)
+      ? await preparaScontoCassa(d) : null
+
     var creato
     try {
       creato = await scriviPagamento(d, valori, pagamentoInModifica, {})
@@ -20608,6 +20736,9 @@ async function salvaPagamento() {
 
     invalidaCachePagamenti()
     chiudiRegistraPagamento()
+    // 91 — pagato meno del residuo ma dentro lo sconto: si chiede se chiudere
+    // (entro il termine) o si dice quanto manca (oltre). Il pagamento è già scritto.
+    if (creato && prepSconto) await dopoIncassoScontoCassa(prepSconto, creato)
     await ricaricaDopoPagamento(d)
     // 61e — la ricevuta si CHIEDE, dopo che tutto il resto e' andato a posto e
     // gli elenchi sono stati riletti (datiRicevuta legge da li'). Solo su un
@@ -20768,7 +20899,7 @@ async function eliminaPagamento(idPagamento, importoTesto, dataTesto) {
   var pg = (pagamentiCache || []).filter(function (p) { return p.id === idPagamento })[0]
   // 84 — su una fattura stralciata i pagamenti non si toccano.
   if (pg && pg.tabella_origine === 'tm_conta_fatture' && stralcioAttivo(pg.id_origine)) {
-    window.alert('Pagamento non eliminato.\n\nLa fattura è stralciata come perdita: togli prima lo stralcio.')
+    window.alert('Pagamento non eliminato.\n\n' + testoFermaFattura(pg.id_origine))   // 91
     return
   }
   // E1 — se sul documento ci sono altri pagamenti, la conferma lo dice:
@@ -21698,7 +21829,8 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
   var stralcio = (tabella === 'tm_conta_fatture' && cacheOk('stralci')) ? importoStralcioAttivo(id) : 0
   var residuo = residuoDocumento(tabella, id, importoDoc)
   var rate = rateDi(tabella, id)
-  var e = stralcio > 0.005 ? etichettaPagamento(verso, 'stralciata')
+  var sconto91 = stralcio > 0.005 && !!scontoCassaAttivo(id)   // 91 — è uno sconto di cassa, non una perdita
+  var e = stralcio > 0.005 ? etichettaPagamento(verso, sconto91 ? 'pagato' : 'stralciata')
         : etichettaPagamento(verso, (gia + storno) <= 0.005 ? 'aperto' : (residuo > 0.005 ? 'parziale' : 'pagato'))
   var argomenti = "'" + esc(tabella) + "', '" + esc(id) + "', " + (safeNum(importoDoc) || 0) +
                   ", '" + esc(verso) + "', '" + esc(String(nome || '').replace(/'/g, '')) + "'"
@@ -21714,7 +21846,7 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
       // senza note di credito uno «− 0,00» sarebbe solo una domanda in piu'.
       (storno > 0.005 ? rigaPagSegno('Note di credito', -storno) : '') +
       (rimborsato > 0.005 ? rigaPagSegno('Rimborsato al cliente', rimborsato) : '') +
-      (stralcio > 0.005 ? rigaPagSegno('Stralciato come perdita', -stralcio) : '') +   // 84
+      (stralcio > 0.005 ? rigaPagSegno(sconto91 ? 'Sconto di cassa concesso' : 'Stralciato come perdita', -stralcio) : '') +   // 84 · 91
       rigaPagSegno('Residuo', residuo, true, '=') +
       '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + e.testo) + '</div>' +
     '</div>' +
@@ -21722,7 +21854,9 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
     '<div class="form-actions" style="margin-top:12px">' +
       // 84 — stralciata: pagamenti e rate fermi finché c'è lo stralcio.
       (stralcio > 0.005
-        ? '<span class="lock-tag" title="Togli prima lo stralcio dai bottoni della scheda">📉 Stralciata: pagamenti e rate fermi</span>'
+        ? (sconto91
+            ? '<span class="lock-tag" title="Togli prima lo sconto dai bottoni della scheda">✂️ Chiusa con lo sconto di cassa: pagamenti e rate fermi</span>'
+            : '<span class="lock-tag" title="Togli prima lo stralcio dai bottoni della scheda">📉 Stralciata: pagamenti e rate fermi</span>')
         : '<button type="button" class="btn-primary" onclick="apriRegistraPagamento(' + argomenti + ')">' +
             '➕ Registra pagamento</button>' +
           '<button type="button" class="btn-secondary" onclick="apriPianoRateale(\'' + esc(tabella) + '\', \'' +
@@ -22498,7 +22632,7 @@ function calcolaPerConto(ds, da, a) {
   })
 
   // 84 — le perdite su debitori: sul lato del loro conto, una volta sola.
-  ;(d.perdite || []).forEach(function (p) {
+  ;(d.perdite || []).concat(d.sconti || []).forEach(function (p) {   // 91 — anche gli sconti di cassa
     var segno = p.lato === 'ricavi' ? -1 : 1
     acc(p.lato, p.conto ? p.conto.id : null, segno * p.importo, 0, segno * p.importo,
         'stralcio:' + p.stralcio.id, false)
@@ -22530,8 +22664,8 @@ function calcolaPerConto(ds, da, a) {
     return { righe: righe, nonClassificato: nc, tot: { netto: round2(tot.netto), iva: round2(tot.iva), tot: round2(tot.tot) } }
   }
   var ricavi = chiudi('ricavi'), costi = chiudi('costi')
-  var attesoRicavi = round2(t.vendite + t.note - t.perditeRicavi)   // le note sono gia' negative
-  var attesoCosti  = round2(t.acquisti + t.spese + t.perditeCosti)   // 84
+  var attesoRicavi = round2(t.vendite + t.note - t.perditeRicavi - (t.scontiRicavi || 0))   // le note sono gia' negative · 91
+  var attesoCosti  = round2(t.acquisti + t.spese + t.perditeCosti + (t.scontiCosti || 0))   // 84 · 91
   return {
     d: d, sezioni: t, ricavi: ricavi, costi: costi, fuori: fuori,
     ivaRicevuta: ricavi.tot.iva, ivaPagata: costi.tot.iva,
@@ -22640,10 +22774,12 @@ function renderPerConto(p) {
   var s = r.sezioni
   var htmlRicavi = tabella('Ricavi', 'ricavi', r.ricavi,
     'vendite ' + fmtNumIt(s.vendite) + ' + note ' + fmtNumIt(s.note) +
-    (s.perditeRicavi ? ' − perdite ' + fmtNumIt(s.perditeRicavi) : ''), r.verifica.ricavi)
+    (s.perditeRicavi ? ' − perdite ' + fmtNumIt(s.perditeRicavi) : '') +
+    (s.scontiRicavi ? ' − sconti di cassa ' + fmtNumIt(s.scontiRicavi) : ''), r.verifica.ricavi)   // 91
   var htmlCosti = tabella('Costi', 'costi', r.costi,
     'acquisti ' + fmtNumIt(s.acquisti) + ' + spese ' + fmtNumIt(s.spese) +
-    (s.perditeCosti ? ' + perdite su crediti ' + fmtNumIt(s.perditeCosti) : ''), r.verifica.costi)
+    (s.perditeCosti ? ' + perdite su crediti ' + fmtNumIt(s.perditeCosti) : '') +
+    (s.scontiCosti ? ' + sconti di cassa ' + fmtNumIt(s.scontiCosti) : ''), r.verifica.costi)   // 91
 
   cont.innerHTML =
     '<div class="form-hint" style="margin-top:0">Periodo ' + esc(fmtDate(p.da)) + ' → ' + esc(fmtDate(p.a)) +
@@ -24059,7 +24195,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '90'
+var VERSIONE = '91'
 
 function controllaVersionePagina() {
   try {
@@ -25227,9 +25363,10 @@ function rigaNuovaRataHtml(c, prossimo) {
         ' · Termine <input type="number" id="acc-r-giorni" class="cell-input num rata-giorni" min="0" max="365" step="1"' +
         ' value="' + giorni + '" onfocus="this.select()" oninput="onGiorniNuovaRata()"> giorni ' +
         '<span id="acc-r-scad" class="dim">' + esc(testoScadenzaRata(giorni)) + '</span></div>' +
+      campiScontoRataHtml('acc-r-sc', null, 'onScontoNuovaRata()') +   // 91
       '<div id="acc-r-avviso" class="rata-avviso">' + (p.avviso ? '⚠️ ' + esc(p.avviso) : '') + '</div>' +
     '</td>' +
-    '<td><input type="number" id="acc-r-imp" class="cell-input num" step="0.01" min="0" placeholder="0.00" onfocus="this.select()"></td>' +
+    '<td><input type="number" id="acc-r-imp" class="cell-input num" step="0.01" min="0" placeholder="0.00" onfocus="this.select()" oninput="onScontoNuovaRata()"></td>' +
     '<td></td>' +
     '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiAcconto(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
   '</tr>'
@@ -25257,15 +25394,19 @@ function cellaRataHtml(c, a, libera) {
   if (!libera) {
     // Fatturata: si legge. La scadenza vera è quella della fattura.
     var scad = a.fattura && a.fattura.data_scadenza ? ' · scadenza ' + fmtDate(a.fattura.data_scadenza) : ''
+    // 91 — e lo sconto di cassa, se c'era: è sulla fattura emessa.
+    var cSc = condizioneScontoRata(a)
     return '<div class="rata-termine dim">' + esc(TIPI_RATA[tipo]) + (a.tipo ? '' : ' (dall\'ordine)') +
-      (a.termine_giorni != null ? ' · termine ' + a.termine_giorni + ' giorni' : '') + esc(scad) + '</div>'
+      (a.termine_giorni != null ? ' · termine ' + a.termine_giorni + ' giorni' : '') + esc(scad) + '</div>' +
+      (cSc ? '<div class="rata-termine dim">Sconto di cassa ' + esc(descrizioneScontoRata(cSc)) + ' entro ' + cSc.giorni + ' giorni</div>' : '')
   }
   return '<div class="rata-termine">' +
     '<select class="cell-input rata-tipo" aria-label="Tipo di rata" onchange="modificaAcconto(\'' + esc(a.id) + '\', \'tipo\', this.value)">' +
       opzioniTipoRata(tipo) + '</select>' + (a.tipo ? '' : ' <span class="dim">(dall\'ordine: sceglilo)</span>') +
     ' · Termine <input type="number" class="cell-input num rata-giorni" min="0" max="365" step="1" value="' + esc(String(giorni)) + '"' +
       ' onfocus="this.select()" onchange="modificaAcconto(\'' + esc(a.id) + '\', \'termine_giorni\', this.value)"> giorni ' +
-    '<span class="dim">' + esc(testoScadenzaRata(giorni)) + '</span></div>'
+    '<span class="dim">' + esc(testoScadenzaRata(giorni)) + '</span></div>' +
+    campiScontoRataHtml('acc-sc-' + a.id, a, 'salvaScontoRata(\'' + esc(a.id) + '\')')   // 91
 }
 
 // ── In fattura: il termine della rata aperta nell'editor ────────────────────
@@ -25312,6 +25453,316 @@ function ripristinaTestiRate() {
   })
   showFattureBanner('imp-rata-banner', 'warn',
     'Testi e termini di partenza rimessi nei campi. Non sono ancora salvati: premi «💾 Salva testi e termini».')
+}
+
+// ══ 91 · LO SCONTO DI CASSA ═════════════════════════════════════════════════
+// Sulla RATA: «sconto se pagato entro N giorni», in percentuale o in importo
+// (tm_conta_cantiere_acconti.sconto_cassa_*, SQL_FASE91). È una CONDIZIONE: la
+// fattura si stampa col totale pieno e, sotto, «se pagato entro N giorni: CHF …».
+// Il totale non si tocca mai.
+// All'INCASSO: se il cliente paga meno del residuo, la differenza sta dentro lo
+// sconto e la data del pagamento è entro il termine, il programma propone di
+// chiudere la fattura come saldata: la differenza diventa uno «sconto
+// concesso», una riga di tm_conta_stralci con tipo 'sconto_cassa' sul conto
+// 3090 «Sconti di cassa concessi» (tipo ricavo: un ricavo in meno, non una
+// perdita). Se paga lo scontato ma tardi: «pagato oltre il termine dello sconto,
+// mancano CHF X», e la fattura resta aperta per la differenza.
+// Stessa tabella degli stralci apposta: uno solo attivo per fattura, fattura
+// ferma finché c'è, si toglie e non si cancella — le regole della 84, nel database.
+// Il termine dello sconto si conta dalla data della fattura (data_emissione).
+var CONTO_SCONTO_CASSA = '3090'
+var MSG_SQL91 = 'manca l\'SQL della 91 (sql/da_applicare/SQL_FASE91_sconto_cassa.sql): lancialo nel SQL Editor di Supabase, poi riprova. Non è cambiato niente'
+function eErroreSql91(e) {
+  var m = String((e && e.message) || e || '')
+  return /sconto_cassa|pagamento_id|tipo/.test(m) && /column|colonna|schema cache/i.test(m)
+}
+function eScontoCassa(s) { return !!s && s.tipo === 'sconto_cassa' }
+function scontoCassaAttivo(fatturaId) { var s = stralcioAttivo(fatturaId); return eScontoCassa(s) ? s : null }
+// La frase dei blocchi su una fattura ferma, giusta per quello che la ferma.
+function testoFermaFattura(fatturaId, poi) {
+  var s = stralcioAttivo(fatturaId)
+  if (!s) return ''
+  return eScontoCassa(s)
+    ? 'La fattura è chiusa con lo sconto di cassa: togli prima lo sconto' + (poi ? ', ' + poi : '') + '.'
+    : 'La fattura è stralciata come perdita: togli prima lo stralcio' + (poi ? ', ' + poi : '') + '.'
+}
+
+// La condizione scritta sulla rata. null se non c'è (o è incompleta).
+function condizioneScontoRata(a) {
+  var g = safeNum(a && a.sconto_cassa_giorni)
+  if (g == null || g < 1) return null
+  var pct = safeNum(a.sconto_cassa_pct), imp = safeNum(a.sconto_cassa_importo)
+  if (pct != null && pct > 0) return { giorni: g, pct: pct, importo: null }
+  if (imp != null && imp > 0) return { giorni: g, pct: null, importo: imp }
+  return null
+}
+// «2 %» o «2,5 %»: una percentuale non ha bisogno di due decimali.
+function fmtPctSconto(p) { return String(round2(p)).replace('.', ',') + ' %' }
+function descrizioneScontoRata(c) {
+  return c.pct != null ? fmtPctSconto(c.pct) : 'CHF ' + fmtNumIt(c.importo)
+}
+// La condizione applicata a una fattura: quanto si sconta, quanto si paga, fino a quando.
+function scontoCassaDi(f, a) {
+  var c = condizioneScontoRata(a)
+  if (!c || !f) return null
+  var tot = safeNum(f.totale) || 0
+  var sconto = c.pct != null ? round2(tot * c.pct / 100) : round2(Math.min(c.importo, tot))
+  return { giorni: c.giorni, pct: c.pct, importoFisso: c.importo, totale: round2(tot),
+           sconto: sconto, scontato: round2(tot - sconto),
+           entro: f.data_emissione ? addDays(f.data_emissione, c.giorni) : null }
+}
+// La condizione di una fattura, dalla sua rata (serve contrattiCache).
+function scontoCassaFattura(f) {
+  if (!f || f.tipo === 'nota_credito') return null
+  var t = trovaAccontoPerFattura(f.id)
+  return t ? scontoCassaDi(f, t.a) : null
+}
+function testoCondizioneSconto(s) {
+  return 'se pagato entro ' + s.giorni + ' giorni' + (s.entro ? ' (entro il ' + fmtDate(s.entro) + ')' : ' dalla data della fattura') +
+    ', sconto ' + descrizioneScontoRata(s.pct != null ? { pct: s.pct } : { importo: s.importoFisso }) +
+    ': CHF ' + fmtNumIt(s.scontato) + ' invece di CHF ' + fmtNumIt(s.totale)
+}
+
+// Dopo un incasso: che cosa fare con lo sconto. Pura.
+//   null      → niente da proporre (pagato tutto, o manca più dello sconto);
+//   'dentro'  → pagato entro il termine, manca al massimo lo sconto: si propone di chiudere;
+//   'fuori'   → manca al massimo lo sconto, ma pagato dopo il termine (o senza data della fattura).
+function valutaScontoCassa(s, residuoPrima, pag) {
+  if (!s || !pag) return null
+  var resto = round2((safeNum(residuoPrima) || 0) - (safeNum(pag.importo) || 0))
+  if (resto <= 0.005 || resto > s.sconto + 0.005) return null
+  var inTempo = !!s.entro && !!pag.data && pag.data <= s.entro
+  return { caso: inTempo ? 'dentro' : 'fuori', differenza: resto }
+}
+
+// Perché il bottone «✂️ Chiudi con lo sconto di cassa» non c'è. null = c'è.
+function motivoNoScontoCassa(f, s, residuo, ultimo) {
+  if (!f || f.tipo === 'nota_credito' || f.stato !== 'emessa') return 'Lo sconto di cassa si scrive solo su una fattura emessa.'
+  if (!s) return 'La rata di questa fattura non ha uno sconto di cassa.'
+  if (stralcioAttivo(f.id)) return testoFermaFattura(f.id)
+  if (residuo <= 0.005) return 'Su questa fattura non resta niente da incassare.'
+  if (residuo > s.sconto + 0.005) {
+    return 'Mancano CHF ' + fmtNumIt(residuo) + ': più dello sconto (CHF ' + fmtNumIt(s.sconto) + '). Prima va registrato l\'incasso.'
+  }
+  if (!ultimo) return 'Nessun incasso registrato.'
+  if (!s.entro || ultimo.data > s.entro) {
+    return 'Pagato oltre il termine dello sconto, mancano CHF ' + fmtNumIt(residuo) + '.' +
+      (s.entro ? ' Lo sconto valeva fino al ' + fmtDate(s.entro) + ', l\'ultimo incasso è del ' + fmtDate(ultimo.data) + '.' : '')
+  }
+  return null
+}
+
+// La riga sopra la fattura: la condizione e, se serve, cosa manca.
+function rigaScontoCassaHtml(f) {
+  if (!f || f.tipo === 'nota_credito' || f.stato !== 'emessa') return ''
+  var s = scontoCassaFattura(f)
+  if (!s) return ''
+  var testo = '✂️ Sconto di cassa della rata: ' + testoCondizioneSconto(s) + '.'
+  if (!stralcioAttivo(f.id) && cacheOk('pagamenti')) {
+    var res = residuoDocumento('tm_conta_fatture', f.id, f.totale)
+    var no = motivoNoScontoCassa(f, s, res, ultimoPagamentoDi('tm_conta_fatture', f.id))
+    if (!no) testo += ' Pagato in tempo, mancano CHF ' + fmtNumIt(res) + ': «✂️ Chiudi con lo sconto di cassa».'
+    else if (/oltre il termine/.test(no)) testo += ' ' + no
+  }
+  return '<div class="sol-stato-riga">' + esc(testo) + '</div>'
+}
+
+// Lo sconto concesso, scritto. Il conto 3090 deve esserci, ed essere un ricavo.
+async function scriviScontoCassa(f, s, pag, differenza) {
+  try { await ensureContiIva() } catch (_) { /* si cerca lo stesso nella cache */ }
+  var conto = contoPerCodice(CONTO_SCONTO_CASSA)
+  if (!conto) {
+    throw new Error('manca il conto ' + CONTO_SCONTO_CASSA + ' «Sconti di cassa concessi»: crealo da Elenco codici → Nuovo conto ' +
+      '(numero 3090, tipo ricavo), poi chiudi la fattura dalla sua scheda con «✂️ Chiudi con lo sconto di cassa»')
+  }
+  if (conto.tipo !== 'ricavo') {
+    throw new Error('il conto ' + CONTO_SCONTO_CASSA + ' è di tipo «' + conto.tipo + '»: dev\'essere di tipo ricavo ' +
+      '(uno sconto è un ricavo in meno). Correggilo da Elenco codici, poi chiudi la fattura dalla sua scheda')
+  }
+  var motivo = 'Sconto di cassa ' + descrizioneScontoRata(s.pct != null ? { pct: s.pct } : { importo: s.importoFisso }) +
+    ': pagato CHF ' + fmtNumIt(pag.importo) + ' il ' + fmtDate(pag.data) + ', entro il ' + fmtDate(s.entro)
+  const { error } = await sb.from('tm_conta_stralci').insert({
+    azienda_id: currentAziendaId, fattura_id: f.id, data: pag.data, importo: round2(differenza), motivo: motivo,
+    conto_codice: CONTO_SCONTO_CASSA, tipo: 'sconto_cassa', pagamento_id: pag.id
+  }).select('id')
+  if (error) throw error
+  await loadStralci(true)
+}
+
+// Prima di un incasso: la fattura, la sua condizione e il residuo di adesso.
+// Non lancia mai: se qualcosa non si legge, torna un avviso da dire dopo.
+async function preparaScontoCassa(d) {
+  try {
+    const { data: f, error } = await sb.from('tm_conta_fatture')
+      .select('id, numero, tipo, stato, totale, data_emissione')
+      .eq('id', d.id).eq('azienda_id', currentAziendaId).maybeSingle()
+    if (error) throw error
+    if (!f || f.tipo === 'nota_credito') return null
+    await loadContrattiCantiere()
+    var s = scontoCassaFattura(f)
+    if (!s) return null
+    await caricaPerResiduo(true)
+    return { f: f, s: s, residuo: residuoDocumento('tm_conta_fatture', f.id, f.totale) }
+  } catch (e) {
+    return { avviso: 'Lo sconto di cassa non si è potuto controllare (' + (e.message || e) + '). ' +
+      'Se la fattura viene da una rata con lo sconto, chiudila dalla sua scheda.' }
+  }
+}
+
+// Dopo l'incasso: la domanda (dentro il termine) o l'avviso (fuori).
+async function dopoIncassoScontoCassa(prep, creato) {
+  if (!prep) return
+  if (prep.avviso) { window.alert('Pagamento registrato.\n\n' + prep.avviso); return }
+  var v = valutaScontoCassa(prep.s, prep.residuo, creato)
+  if (!v) return
+  var f = prep.f, s = prep.s
+  if (v.caso === 'fuori') {
+    window.alert('Pagato oltre il termine dello sconto, mancano CHF ' + fmtNumIt(v.differenza) + '.\n\n' +
+      (s.entro ? 'Lo sconto valeva fino al ' + fmtDate(s.entro) + '; il pagamento è del ' + fmtDate(creato.data) + '. ' : '') +
+      'La fattura n. ' + (f.numero || '—') + ' resta aperta per la differenza.')
+    return
+  }
+  if (!window.confirm('Il cliente ha pagato CHF ' + fmtNumIt(creato.importo) + ' il ' + fmtDate(creato.data) +
+      ', entro il termine dello sconto di cassa (' + descrizioneScontoRata(s.pct != null ? { pct: s.pct } : { importo: s.importoFisso }) +
+      ' fino al ' + fmtDate(s.entro) + ').\n\n' +
+      'Mancano CHF ' + fmtNumIt(v.differenza) + '. Chiudere la fattura n. ' + (f.numero || '—') + ' come saldata, ' +
+      'con CHF ' + fmtNumIt(v.differenza) + ' di sconto concesso sul conto ' + CONTO_SCONTO_CASSA + ' «Sconti di cassa concessi»?\n\n' +
+      'OK = chiusa con lo sconto · Annulla = resta aperta per la differenza')) return
+  try {
+    await scriviScontoCassa(f, s, creato, v.differenza)
+  } catch (e) {
+    window.alert('Pagamento registrato. Lo sconto NON è stato scritto: ' + (eErroreSql91(e) ? MSG_SQL91 : (e.message || e)) +
+      '.\n\nLa fattura resta aperta per CHF ' + fmtNumIt(v.differenza) + '.')
+  }
+}
+
+// «✂️ Chiudi con lo sconto di cassa», dalla scheda: per l'incasso già registrato
+// (lo sconto non scritto al momento, o il conto 3090 creato dopo).
+async function chiudiConScontoCassa(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f) { window.alert('Fattura non trovata: riaprila dall\'elenco.'); return }
+  try {
+    await richiediSessione('lo sconto NON è stato scritto')
+    await caricaPerResiduo(true)
+    await loadContrattiCantiere()
+    var s = scontoCassaFattura(f)
+    var residuo = residuoDocumento('tm_conta_fatture', f.id, f.totale)
+    var ultimo = ultimoPagamentoDi('tm_conta_fatture', f.id)
+    var no = motivoNoScontoCassa(f, s, residuo, ultimo)
+    if (no) { window.alert('Sconto non scritto.\n\n' + no); return }
+    if (!window.confirm('Chiudere la fattura n. ' + f.numero + ' come saldata?\n\n' +
+        'Ultimo incasso: CHF ' + fmtNumIt(ultimo.importo) + ' il ' + fmtDate(ultimo.data) + ', entro il termine dello sconto (' + fmtDate(s.entro) + ').\n' +
+        'Mancano CHF ' + fmtNumIt(residuo) + ': vanno come sconto concesso sul conto ' + CONTO_SCONTO_CASSA + ' «Sconti di cassa concessi».')) return
+    html('fatture-detail-banner', loadingRow('Scrivo lo sconto…'))
+    await scriviScontoCassa(f, s, ultimo, residuo)
+    await loadFattureList()
+    try { await refreshScadenzeCount() } catch (_) {}
+    await viewFattura(f.id)
+    showFattureBanner('fatture-detail-banner', 'ok', 'Fattura n. ' + f.numero + ' chiusa con lo sconto di cassa: CHF ' +
+      fmtNumIt(residuo) + ' sul conto ' + CONTO_SCONTO_CASSA + '.')
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Sconto non scritto: ' + (eErroreSql91(e) ? MSG_SQL91 : messaggioStralcio(e)))
+  }
+}
+
+// «↩️ Togli lo sconto»: la fattura torna aperta per la differenza.
+async function togliScontoCassa(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f) { window.alert('Fattura non trovata: riaprila dall\'elenco.'); return }
+  try {
+    await richiediSessione('lo sconto NON è stato tolto')
+    await loadStralci(true)
+    var sc = scontoCassaAttivo(id)
+    if (!sc) { window.alert('Questa fattura non è chiusa con lo sconto di cassa.'); return }
+    var motivo = window.prompt('Togliere lo sconto di cassa della fattura n. ' + f.numero + ' (CHF ' +
+      fmtNumIt(safeNum(sc.importo) || 0) + ' dal ' + fmtDate(sc.data) + ')?\n\n' +
+      'Lo sconto esce dai conti e la fattura torna aperta per CHF ' + fmtNumIt(safeNum(sc.importo) || 0) + '. ' +
+      'Non si cancella: resta nello storico della fattura, con il perché.\n\n' +
+      'Scrivi PERCHÉ lo togli (obbligatorio):', '')
+    if (motivo === null) return
+    motivo = String(motivo).trim()
+    if (motivo.length < 5) { window.alert('Sconto non tolto: il motivo è obbligatorio (almeno 5 caratteri).'); return }
+    html('fatture-detail-banner', loadingRow('Tolgo lo sconto…'))
+    const { data: agg, error } = await sb.from('tm_conta_stralci')
+      .update({ tolto_il: new Date().toISOString(), tolto_motivo: motivo })
+      .eq('id', sc.id).eq('azienda_id', currentAziendaId).is('tolto_il', null)
+      .select('id')
+    if (error) throw error
+    if (!agg || agg.length !== 1) throw new Error('lo sconto non risulta tolto: ricarica la scheda e riprova')
+    await loadStralci(true)
+    await loadFattureList()
+    try { await refreshScadenzeCount() } catch (_) {}
+    await viewFattura(f.id)
+    showFattureBanner('fatture-detail-banner', 'ok', 'Sconto tolto: la fattura n. ' + f.numero +
+      ' è di nuovo aperta per la differenza.')
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Sconto non tolto: ' + messaggioStralcio(e))
+  }
+}
+
+// ── Sulla rata: i tre campi ──────────────────────────────────────────────────
+// Tutti vuoti = nessuno sconto. Giorni E valore = sconto. Uno solo = incompleto.
+function leggiScontoRata(g, v, t) {
+  var gs = String(g == null ? '' : g).trim(), vs = String(v == null ? '' : v).trim()
+  if (!gs && !vs) return { campi: { sconto_cassa_giorni: null, sconto_cassa_pct: null, sconto_cassa_importo: null } }
+  var incompleto = !gs || !vs
+  var gg = safeNum(gs), vv = safeNum(vs)
+  if (gg == null || gg < 1 || gg > 365 || Math.round(gg) !== gg) {
+    return { errore: 'Sconto di cassa: scrivi i giorni, un numero intero da 1 a 365.', incompleto: incompleto }
+  }
+  if (vv == null || vv <= 0) return { errore: 'Sconto di cassa: scrivi la percentuale o l\'importo, maggiore di zero.', incompleto: incompleto }
+  if (t === 'pct') {
+    if (vv >= 100) return { errore: 'Sconto di cassa: la percentuale dev\'essere sotto 100.' }
+    return { campi: { sconto_cassa_giorni: gg, sconto_cassa_pct: round2(vv), sconto_cassa_importo: null } }
+  }
+  return { campi: { sconto_cassa_giorni: gg, sconto_cassa_pct: null, sconto_cassa_importo: round2(vv) } }
+}
+// «→ CHF 4.900,00 se pagata entro 10 giorni», sull'importo della rata.
+function anteprimaScontoRata(importoRata, campi) {
+  var c = condizioneScontoRata(campi || {})
+  var imp = safeNum(importoRata)
+  if (!c || imp == null || imp <= 0) return ''
+  var sc = scontoCassaDi({ totale: imp, data_emissione: null }, campi)
+  return '→ CHF ' + fmtNumIt(sc.scontato) + ' se pagata entro ' + c.giorni + ' giorni (sul totale della fattura)'
+}
+// I tre campi in una riga. `pre` distingue la rata nuova dalle altre.
+function campiScontoRataHtml(pre, a, onchange) {
+  var c = condizioneScontoRata(a || {})
+  var tipo = c && c.importo != null ? 'chf' : 'pct'
+  var val = c ? (c.pct != null ? c.pct : c.importo) : ''
+  return '<div class="rata-sconto">Sconto di cassa: entro ' +
+    '<input type="number" id="' + pre + '-g" class="cell-input num rata-giorni" min="1" max="365" step="1"' +
+      ' value="' + esc(c ? String(c.giorni) : '') + '" placeholder="—" aria-label="Sconto di cassa: giorni" onchange="' + onchange + '"> giorni, ' +
+    '<input type="number" id="' + pre + '-v" class="cell-input num rata-sconto-val" min="0" step="0.01"' +
+      ' value="' + esc(String(val)) + '" placeholder="—" aria-label="Sconto di cassa: valore" onchange="' + onchange + '"> ' +
+    '<select id="' + pre + '-t" class="cell-input rata-sconto-tipo" aria-label="Percentuale o importo" onchange="' + onchange + '">' +
+      '<option value="pct"' + (tipo === 'pct' ? ' selected' : '') + '>%</option>' +
+      '<option value="chf"' + (tipo === 'chf' ? ' selected' : '') + '>CHF</option></select> ' +
+    '<span id="' + pre + '-msg" class="dim">' + esc(a ? anteprimaScontoRata(a.importo, a) : '') + '</span></div>'
+}
+function onScontoNuovaRata() {
+  var r = leggiScontoRata(getVal('acc-r-sc-g'), getVal('acc-r-sc-v'), getVal('acc-r-sc-t'))
+  html('acc-r-sc-msg', r.errore ? (r.incompleto ? '' : '⚠️ ' + esc(r.errore))
+                                : esc(anteprimaScontoRata(getVal('acc-r-imp'), r.campi)))
+}
+async function salvaScontoRata(id) {
+  var pre = 'acc-sc-' + id
+  var r = leggiScontoRata(getVal(pre + '-g'), getVal(pre + '-v'), getVal(pre + '-t'))
+  if (r.errore) {
+    // A metà (scritti i giorni, non ancora il valore): si aspetta, senza errori.
+    html(pre + '-msg', r.incompleto ? 'completa giorni e sconto' : '⚠️ ' + esc(r.errore))
+    return
+  }
+  try {
+    const { error } = await sb.from('tm_conta_cantiere_acconti').update(r.campi).eq('id', id).select('id')
+    if (error) throw error
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', r.campi.sconto_cassa_giorni ? 'Sconto di cassa della rata salvato alle ' + oraAdesso() + '.'
+                                                         : 'Sconto di cassa della rata tolto.')
+  } catch (e) {
+    showCantieriBanner('err', 'Sconto NON salvato: ' + (eErroreSql91(e) ? MSG_SQL91 : (e.message || e)))
+    renderSchedaCantiere()
+  }
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -25937,6 +26388,8 @@ function accontiHtml(c, t) {
       rigaStornoContrattoHtml(c) +
       // 62e — quanto e' arrivato davvero, e quanto e' fatturato ma fermo.
       rigaPag('Già incassato', inc.incassato) +
+      // 91 — lo sconto di cassa concesso: la parte fatturata che non arriverà, per scelta.
+      (inc.scontato > 0.005 ? rigaPag('Sconti di cassa concessi', -inc.scontato) : '') +
       // 70·R — quanto è tornato al cliente, e il netto. Tre righe e non una:
       // «2.256» da solo non dice che sono arrivati 2.350 e ne sono tornati 94.
       (inc.rimborsato > 0.005
@@ -26305,6 +26758,9 @@ function incassoDiRata(a) {
 function testoIncassoRata(a) {
   var i = incassoDiRata(a)
   if (!i) return ''
+  // 91 — saldata con lo sconto di cassa: si dice, con la cifra.
+  var sc91 = (i.stato === 'pagato' && cacheOk('stralci') && a.fattura) ? scontoCassaAttivo(a.fattura.id) : null
+  if (sc91) return '<span class="acc-inc ok">✅ incassata, sconto di cassa ' + esc(fmtNumIt(safeNum(sc91.importo) || 0)) + ' CHF</span>'
   if (i.stato === 'pagato')   return '<span class="acc-inc ok">✅ incassata</span>'
   if (i.stato === 'parziale') return '<span class="acc-inc parz">⏳ incassata in parte, residuo ' +
                                      esc(fmtNumIt(i.residuo)) + ' CHF</span>'
@@ -26314,7 +26770,7 @@ function testoIncassoRata(a) {
 // Le due cifre nuove del riepilogo. Solo sulle rate fatturate e non annullate:
 // una rata ancora da fatturare non ha niente da incassare.
 function totaliIncassoContratto(c) {
-  var incassato = 0, rimborsato = 0, daIncassare = 0, leggibile = true
+  var incassato = 0, rimborsato = 0, daIncassare = 0, scontato = 0, leggibile = true
   ;(c.acconti || []).forEach(function (a) {
     if (accontoAnnullato(a) || a.stato !== 'fatturata') return
     var i = incassoDiRata(a)
@@ -26325,9 +26781,11 @@ function totaliIncassoContratto(c) {
     // invece di 1.838 e non tornava più con «resta da incassare».
     daIncassare += i.residuo
     if (cacheOk('noteCredito')) rimborsato += rimborsatoSullaFattura(a.fattura.id)
+    // 91 — lo sconto di cassa concesso: fatturato − incassato − sconto = 0.
+    if (cacheOk('stralci') && scontoCassaAttivo(a.fattura.id)) scontato += safeNum(scontoCassaAttivo(a.fattura.id).importo) || 0
   })
   incassato = round2(incassato); rimborsato = round2(rimborsato)
-  return { incassato: incassato, rimborsato: rimborsato,
+  return { incassato: incassato, rimborsato: rimborsato, scontato: round2(scontato),
            incassatoNetto: round2(incassato - rimborsato),
            daIncassare: round2(daIncassare), leggibile: leggibile }
 }
@@ -27023,17 +27481,23 @@ async function aggiungiAcconto(contrattoId) {
   if (!desc) { showCantieriBanner('err', 'Scrivi il testo della rata (quello che andrà in fattura).'); return }
   if (imp == null || imp <= 0) { showCantieriBanner('err', 'Scrivi l\'importo della rata, IVA esclusa, maggiore di zero.'); return }
   if (giorni == null) { showCantieriBanner('err', 'Il termine dev\'essere un numero intero di giorni fra 0 e 365.'); return }
+  // 91 — lo sconto di cassa: tutto vuoto, o giorni E valore.
+  var sc = leggiScontoRata(getVal('acc-r-sc-g'), getVal('acc-r-sc-v'), getVal('acc-r-sc-t'))
+  if (sc.errore) { showCantieriBanner('err', sc.errore); return }
   var t = trovaContrattoPerId(contrattoId)
   var ordine = (t ? t.acconti : []).reduce(function (m, a) { return Math.max(m, a.ordine || 0) }, 0) + 1
   try {
-    const { error } = await sb.from('tm_conta_cantiere_acconti')
-      .insert({ contratto_id: contrattoId, ordine: ordine, descrizione: desc, importo: imp, tipo: tipo, termine_giorni: giorni }).select('id')
+    var nuova = { contratto_id: contrattoId, ordine: ordine, descrizione: desc, importo: imp, tipo: tipo, termine_giorni: giorni }
+    // 91 — le colonne dello sconto solo se c'è: senza l'SQL della 91 una rata senza sconto si scrive lo stesso.
+    if (sc.campi.sconto_cassa_giorni) Object.assign(nuova, sc.campi)
+    const { error } = await sb.from('tm_conta_cantiere_acconti').insert(nuova).select('id')
     if (error) throw error
     await ricordaTermineRata(tipo, giorni)   // 90 — la volta dopo si propone questo
     await ricaricaContrattoERidisegna()
     showCantieriBanner('ok', 'Rata n. ' + ordine + ' scritta (' + TIPI_RATA[tipo] + ', ' + giorni + ' giorni).')
   } catch (e) {
-    showCantieriBanner('err', 'Rata NON salvata: ' + (eErroreSql90(e) ? MSG_SQL90 : (e.message || e)))
+    showCantieriBanner('err', 'Rata NON salvata: ' + (eErroreSql91(e) && /sconto_cassa/.test(String(e.message || e)) ? MSG_SQL91
+                                                     : eErroreSql90(e) ? MSG_SQL90 : (e.message || e)))
   }
 }
 
@@ -27305,7 +27769,14 @@ function mostraRifAcconto(c, a, avvisoTesto) {
     '</div>' +
     // 90 — perché la descrizione è vuota o senza data, detto qui sopra.
     (avvisoTesto ? '<div class="nota-cruscotto avviso" style="margin-top:8px"><span aria-hidden="true">⚠️</span><span>' +
-      esc(avvisoTesto) + '</span></div>' : ''))
+      esc(avvisoTesto) + '</span></div>' : '') +
+    // 91 — lo sconto di cassa della rata: si stamperà sotto il totale.
+    (condizioneScontoRata(a)
+      ? '<div class="nota-cruscotto" style="margin-top:8px"><span aria-hidden="true">✂️</span><span>Sconto di cassa della rata: ' +
+        esc(descrizioneScontoRata(condizioneScontoRata(a))) + ' se pagata entro ' + condizioneScontoRata(a).giorni +
+        ' giorni dalla data della fattura. Si stampa sotto il totale, come condizione: il totale resta pieno. ' +
+        'Si cambia sulla rata, finché la fattura non è emessa.</span></div>'
+      : ''))
 }
 
 // Riaprendo una bozza: se e' nata da una rata, lo si rivede.
