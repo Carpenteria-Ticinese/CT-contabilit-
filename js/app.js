@@ -6863,12 +6863,28 @@ var _scadenzaBozzaAperta = null
 
 function segnaTerminiToccati() { terminiFatturaToccati = true }
 
-// I giorni proposti per una fattura nuova: prima il cliente collegato, poi il
-// predefinito aziendale, in ultimo trenta. E' la stessa precedenza di
-// giorniPagamentoFattura, e le due devono restare identiche.
-// 75·2 — i giorni quando non c'è altro: 30 per una vendita, 10 per un acconto.
-var GIORNI_SCADENZA_VENDITA = 30
-var GIORNI_SCADENZA_ACCONTO = 10
+// ══ 92 · I GIORNI DI PAGAMENTO DI BASE — UN POSTO SOLO ══════════════════════
+// Il numero sta QUI e in nessun altro punto del programma. Lo usano: le
+// fatture (quando il cliente non ha un termine suo), il nuovo termine dei
+// solleciti, il saldo delle rate del contratto (valore di partenza).
+// L'ordine, dappertutto:
+//   1. il termine del cliente in rubrica (vince, se c'è — solo sulle fatture);
+//   2. «Termine di pagamento» in ⚙️ Impostazioni ditta, se è scritto;
+//   3. GIORNI_PAGAMENTO_BASE.
+// Il database ha un suo ripiego a 30 in tm_conta_emetti_fattura (SQL_FASE27):
+// non ci arriva più, perché il programma scrive la scadenza sulla bozza PRIMA
+// di emetterla (assicuraScadenzaBozza).
+var GIORNI_PAGAMENTO_BASE = 15
+// La base: Impostazioni ditta, poi il numero qui sopra. `a` = i dati della
+// ditta (se manca, quelli già letti).
+function giorniPagamentoBase(a) {
+  var ga = safeNum(((a === undefined ? aziendaInfo : a) || {}).termini_pagamento_giorni)
+  return (ga != null) ? ga : GIORNI_PAGAMENTO_BASE
+}
+
+// I giorni proposti per una fattura nuova: prima il cliente collegato, poi la
+// base. E' la stessa precedenza di giorniPagamentoFattura, e le due devono
+// restare identiche.
 
 function giorniPropostiFattura() {
   // 75·2 (A) — una fattura d'acconto propone 10 giorni, non quelli del
@@ -6880,8 +6896,7 @@ function giorniPropostiFattura() {
     var g = c ? safeNum(c.giorni_pagamento) : null
     if (g != null) return g
   }
-  var ga = safeNum((aziendaInfo || {}).termini_pagamento_giorni)
-  return (ga != null) ? ga : 30
+  return giorniPagamentoBase()   // 92
 }
 
 // Riempie i due campi. `forza` serve all'apertura di una bozza salvata: li'
@@ -7016,11 +7031,11 @@ function collectFatturaHeader() {
     data_emissione:    dataVal || null,
     // FASE 27 — la scadenza scelta su QUESTA fattura. E' l'unico dato che si
     // salva: i giorni si ricavano da qui e dalla data di emissione.
-    // 75·2 — vuota non resta: 30 giorni dalla data (10 su un acconto). Senza
-    // data di emissione ci pensa completaScadenzaEmessa() dopo l'emissione.
+    // 75·2 — vuota non resta: i giorni proposti (la rata, il cliente, la base).
+    // 92 — senza data di emissione la scrive assicuraScadenzaBozza() prima di emettere.
     data_scadenza:     (el('f-fat-scadenza') && el('f-fat-scadenza').value) ||
                        (editorTipo !== 'nota_credito' && dataVal
-                          ? addDays(dataVal, editorAccontoId ? giorniRataAperta() : GIORNI_SCADENZA_VENDITA)   // 90
+                          ? addDays(dataVal, giorniPropostiFattura())   // 90 · 92 — rata, cliente, base
                           : null),
     anno:              anno,
     tipo:              editorTipo,
@@ -7166,21 +7181,47 @@ async function saveBozza() {
 // data di emissione vera (quella che la RPC ha appena scritto se era vuota).
 // data_scadenza non è fra i campi congelati (SQL_PASSO1): si scrive anche su un
 // documento emesso. Non fa mai fallire l'emissione.
+// 92 — i giorni di una fattura già salvata: la sua rata, se ne ha una; poi il
+// cliente in rubrica; poi la base. Una sola regola per prima e dopo l'emissione.
+async function giorniDiFatturaDb(f) {
+  // 90 — il termine della rata, se c'è (senza l'SQL della 90 si rilegge senza).
+  var rR = await sb.from('tm_conta_cantiere_acconti').select('id, ordine, tipo, termine_giorni').eq('fattura_id', f.id)
+  if (rR.error) rR = await sb.from('tm_conta_cantiere_acconti').select('id, ordine').eq('fattura_id', f.id)
+  if (rR.error) throw rR.error
+  var rate = rR.data
+  if ((rate || []).length) {
+    return rate[0].termine_giorni != null ? rate[0].termine_giorni : termineRataProposto(tipoDiRata(rate[0]))
+  }
+  try { await loadContatti() } catch (_) { /* senza rubrica: la base */ }
+  try { await loadAziendaInfo() } catch (_) { /* senza ditta: il numero di base */ }
+  return giorniPagamentoFattura(f, aziendaInfo)
+}
+
+// 92 — prima di emettere: una bozza senza scadenza la prende ADESSO dal
+// programma (rata, cliente, base), dalla data di emissione o, se manca, da oggi
+// (è quella che la RPC userà). Così il ripiego a 30 del database non si usa
+// mai. Se non si riesce a scrivere, non si emette: lancia.
+async function assicuraScadenzaBozza(idFattura) {
+  const { data: f, error } = await sb.from('tm_conta_fatture')
+    .select('id, tipo, stato, contatto_id, data_emissione, data_scadenza')
+    .eq('id', idFattura).eq('azienda_id', currentAziendaId).single()
+  if (error) throw error
+  if (!f || f.tipo === 'nota_credito' || f.stato !== 'bozza' || f.data_scadenza) return
+  var giorni = await giorniDiFatturaDb(f)
+  const { error: eU } = await sb.from('tm_conta_fatture')
+    .update({ data_scadenza: addDays(f.data_emissione || oggiISO(), giorni) })
+    .eq('id', idFattura).eq('azienda_id', currentAziendaId).eq('stato', 'bozza').select('id')
+  if (eU) throw new Error('la scadenza della bozza non si è scritta (' + (eU.message || eU) + '): non emetto')
+}
+
 async function completaScadenzaEmessa(idFattura) {
   try {
     const { data: f, error } = await sb.from('tm_conta_fatture')
-      .select('id, tipo, data_emissione, data_scadenza')
+      .select('id, tipo, contatto_id, data_emissione, data_scadenza')
       .eq('id', idFattura).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
     if (!f || f.tipo === 'nota_credito' || f.data_scadenza || !f.data_emissione) return ''
-    // 90 — il termine della rata, se c'è (senza l'SQL della 90 si rilegge senza).
-    var rR = await sb.from('tm_conta_cantiere_acconti').select('id, ordine, tipo, termine_giorni').eq('fattura_id', idFattura)
-    if (rR.error) rR = await sb.from('tm_conta_cantiere_acconti').select('id, ordine').eq('fattura_id', idFattura)
-    if (rR.error) throw rR.error
-    var rate = rR.data
-    var giorni = (rate || []).length
-      ? (rate[0].termine_giorni != null ? rate[0].termine_giorni : termineRataProposto(tipoDiRata(rate[0])))
-      : GIORNI_SCADENZA_VENDITA
+    var giorni = await giorniDiFatturaDb(f)   // 92 — rata, cliente, base
     var scad = addDays(f.data_emissione, giorni)
     const { error: eU } = await sb.from('tm_conta_fatture')
       .update({ data_scadenza: scad })
@@ -7330,6 +7371,7 @@ async function doEmitCorrente() {
     // FASE 58 — se la rata non e' collegata, emettere adesso darebbe una
     // fattura d'acconto che il cantiere non vede. Si ferma prima del numero.
     if (_avvisoAccontoBozza) throw new Error('la bozza è salvata ma ' + _avvisoAccontoBozza + '. Emissione fermata: riprova.')
+    await assicuraScadenzaBozza(editorFatturaId)   // 92 — la scadenza la decide il programma, non il ripiego del database
     const { data, error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: editorFatturaId })
     if (error) throw error
     var emessa = Array.isArray(data) ? data[0] : data
@@ -7385,6 +7427,7 @@ async function emettiFatturaById(id) {
 async function doEmitById(id) {
   html('fatture-detail-banner', loadingRow('Emissione in corso…'))
   try {
+    await assicuraScadenzaBozza(id)   // 92
     const { error } = await sb.rpc('tm_conta_emetti_fattura', { p_fattura_id: id })
     if (error) throw error
     // 72·3 — su una fattura normale torna vuoto dopo una lettura.
@@ -7884,9 +7927,7 @@ function giorniPagamentoFattura(f, a) {
     var gContatto = x ? safeNum(x.giorni_pagamento) : null
     if (gContatto != null) return gContatto
   }
-  var gAzienda = safeNum((a || {}).termini_pagamento_giorni)
-  if (gAzienda != null) return gAzienda
-  return 30
+  return giorniPagamentoBase(a || null)   // 92 — Impostazioni ditta, poi la base
 }
 
 // FASE 20 — unisce dei pezzi di testo con un separatore, saltando quelli che
@@ -10158,6 +10199,10 @@ function fillImpostazioniForm(a) {
   impostaPaese('imp-paese', a.paese || 'CH')
   setVal('imp-iban',     a.iban)
   setVal('imp-termini',  a.termini_pagamento_giorni == null ? '' : a.termini_pagamento_giorni)
+  // 92 — vuoto vale la base del programma: lo dice il campo, col numero di GIORNI_PAGAMENTO_BASE.
+  if (el('imp-termini')) el('imp-termini').placeholder = String(GIORNI_PAGAMENTO_BASE)
+  html('imp-termini-base', 'Vuoto = ' + GIORNI_PAGAMENTO_BASE + ' giorni, la base del programma. Il termine del cliente in rubrica vince, se c\'è; ' +
+    'su ogni fattura resta modificabile.')
   setVal('imp-email',    a.email)
   setVal('imp-telefono', a.telefono)
   setVal('imp-sito',     a.sito_web)                   // sito = colonna esistente "sito_web"
@@ -12079,7 +12124,8 @@ function disegnaBusta() {
   // L'anteprima e' la stessa busta rimpicciolita: se le due divergessero,
   // quella a schermo non varrebbe niente.
   html('busta-anteprima-wrap',
-    '<div class="busta-scala">' + bustaHtml(true) + '</div>')
+    '<div class="busta-scala"><div class="busta-scatola">' + bustaHtml(true) + '</div></div>')
+  adattaAnteprimaBusta()   // 92
   // Il controllo si fa a ogni ridisegno, cosi' l'avviso compare mentre si
   // scrive l'indirizzo e non solo quando si preme Stampa. Ha un posto suo e
   // non il banner generale: li' ci scrivono anche il logo e la taratura, e si
@@ -12095,6 +12141,33 @@ function disegnaBusta() {
     html('busta-avviso-indirizzo', '')
   }
 }
+
+// 92 — L'ANTEPRIMA, A MISURA. Prima la busta si rimpiccioliva col CSS
+// (scale .62) e lo spazio vuoto sotto si toglieva con margin-bottom: -38 %. Ma
+// in CSS un margine in percentuale si calcola sulla LARGHEZZA del contenitore,
+// non sull'altezza della busta: su uno schermo largo (riquadro di ~1'020 px)
+// toglieva 389 px a una busta alta 431, e restava una striscia di 71 px.
+// Adesso la scala si calcola qui: grandezza vera se ci sta in larghezza,
+// altrimenti quanto basta per farla stare; e la scatola intorno prende
+// l'altezza della busta rimpicciolita, misurata, non indovinata.
+function adattaAnteprimaBusta() {
+  var sc = document.querySelector('#busta-anteprima-wrap .busta-scala')
+  var scatola = sc ? sc.querySelector('.busta-scatola') : null
+  var b = scatola ? scatola.querySelector('.busta') : null
+  if (!b) return
+  b.style.transform = ''
+  var w = b.offsetWidth, h = b.offsetHeight
+  var cs = getComputedStyle(sc)
+  var spazio = sc.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)
+  if (!(w > 0) || !(h > 0) || !(spazio > 0)) return   // pagina nascosta: si rifà quando si vede
+  var k = Math.min(1, spazio / w)
+  b.style.transform = 'scale(' + k + ')'
+  scatola.style.width = Math.floor(w * k) + 'px'
+  scatola.style.height = Math.ceil(h * k) + 'px'
+}
+window.addEventListener('resize', function () {
+  if (el('busta-anteprima-wrap') && el('busta-anteprima-wrap').offsetWidth) adattaAnteprimaBusta()
+})
 
 // Il foglio A4, per la prova. Se la busta ci sta per il lungo si stampa
 // verticale, altrimenti orizzontale.
@@ -21385,12 +21458,11 @@ function giorniRitardo(f, oggi) {
   return (g != null && g > 0) ? g : 0
 }
 
-// Il termine del sollecito: +15 giorni se la fattura era a 30, +10 se era a 10.
-// La regola generale, con la stessa soglia: un termine lungo si riapre lungo.
+// Il termine del sollecito, proposto: la base (92 — prima era 15 o 10 a
+// seconda della fattura). Si cambia ogni volta, preparando il sollecito.
 // La scadenza della FATTURA resta dov'e': questo vive sul sollecito.
 function giorniNuovoTermine(f) {
-  var g = (f && f.data_scadenza && f.data_emissione) ? diffGiorni(f.data_scadenza, f.data_emissione) : null
-  return (g != null && g >= 30) ? 15 : 10
+  return giorniPagamentoBase()
 }
 
 // ── Le fatture scadute ──────────────────────────────────────────────────────
@@ -21453,12 +21525,12 @@ function compilaTestoSollecito(testo, v) {
 }
 
 // Tutto quello che serve alla lettera, in un oggetto solo.
-function datiSollecito(f, livello, aperturaScritta) {
+function datiSollecito(f, livello, aperturaScritta, giorniScelti) {
   var oggi = oggiISO()
   var s1 = sollecitoDiLivello(f.id, 1)
   var s2 = sollecitoDiLivello(f.id, 2)
   var residuo = residuoDocumento('tm_conta_fatture', f.id, f.totale)
-  var giorniT = giorniNuovoTermine(f)
+  var giorniT = (giorniScelti != null) ? giorniScelti : giorniNuovoTermine(f)   // 92 — quello scritto, se c'è
   var nuovoTermine = addDays(oggi, giorniT)
   // La data che conta per i solleciti precedenti e' quella di INVIO; se non e'
   // stata registrata si ripiega su quella di preparazione, dicendo il vero.
@@ -21606,7 +21678,19 @@ async function preparaSollecito(idFattura) {
   if (apertura === null) return          // annullato: non si prepara niente
   apertura = String(apertura).trim() || aperturaProposta
 
-  var d = datiSollecito(f, livello, apertura)
+  // 92 — il nuovo termine: proposto dalla base, si cambia ogni volta.
+  var giorniProp = giorniNuovoTermine(f)
+  var rispG = window.prompt('Nuovo termine per pagare: fra quanti giorni da oggi?\n\n' +
+    'Di base ' + giorniProp + ' giorni (il ' + fmtDate(addDays(oggiISO(), giorniProp)) + '). Puoi cambiarlo.',
+    String(giorniProp))
+  if (rispG === null) return
+  var giorniSol = validaGiorniRata(String(rispG).trim())
+  if (giorniSol == null || giorniSol < 1) {
+    window.alert('Sollecito non preparato: il nuovo termine dev\'essere un numero intero di giorni da 1 a 365.')
+    return
+  }
+
+  var d = datiSollecito(f, livello, apertura, giorniSol)
   try { await loadAziendaInfo() } catch (_) { /* l'intestazione esce con quello che c'e' */ }
   renderSollecitoPrint(d)
 
@@ -24195,7 +24279,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '91'
+var VERSIONE = '92'
 
 function controllaVersionePagina() {
   try {
@@ -25280,7 +25364,7 @@ var TESTI_RATA_SEME = {
   intermedia: '[n]° acconto per [lavoro], come da offerta del [data]',
   saldo:      'Saldo per [lavoro], come da offerta del [data]'
 }
-var TERMINE_RATA_SEME = { acconto: 3, intermedia: 3, saldo: 30 }
+var TERMINE_RATA_SEME = { acconto: 3, intermedia: 3, saldo: GIORNI_PAGAMENTO_BASE }   // 92 — il saldo prende la base
 var MSG_SQL90 = 'manca l\'SQL della 90 (sql/da_applicare/SQL_FASE90_rate_tipo_termine.sql): lancialo nel SQL Editor di Supabase, poi riprova'
 
 function chiaveTestoRata(tipo) { return 'testo_rata_' + tipo }
@@ -25412,7 +25496,7 @@ function cellaRataHtml(c, a, libera) {
 // ── In fattura: il termine della rata aperta nell'editor ────────────────────
 function giorniRataAperta() {
   var t = editorAccontoId ? trovaAcconto(editorAccontoId) : null
-  if (!t) return GIORNI_SCADENZA_ACCONTO
+  if (!t) return termineRataProposto('acconto')   // 92 — rata non trovata: il termine di un acconto
   return t.a.termine_giorni != null ? t.a.termine_giorni : termineRataProposto(tipoDiRata(t.a))
 }
 
