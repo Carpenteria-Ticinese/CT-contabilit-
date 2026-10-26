@@ -62,7 +62,8 @@ let fatturaRighe      = []     // righe in editor: {descrizione, quantita, prezz
 let aziendaInfo       = null   // dati azienda (best-effort) per l'intestazione fattura
 let currentDetailFattura = null
 // 83 — la correzione in corso di una fattura EMESSA: { id, numero, motivo,
-// totalePrima, imponibileFisso }. null = l'editor lavora su una bozza.
+// totalePrima, rata }. null = l'editor lavora su una bozza. (93: `rata` = la rata
+// collegata, che segue l'imponibile; prima era imponibileFisso, che lo bloccava.)
 let editorCorrezione = null
 // 83 — le versioni precedenti della fattura aperta (solo l'elenco, senza i dati).
 let versioniDetail = []
@@ -6094,10 +6095,10 @@ function impostaModoCorrezione(c) {
         '(totale di adesso ' + esc(fmtNumIt(editorCorrezione.totalePrima)) + ' CHF). ' +
         'Motivo: «' + esc(editorCorrezione.motivo) + '». ' +
         'Salvando, la versione di adesso va nello storico della fattura e non si cancella.' +
-        (editorCorrezione.imponibileFisso != null
-          ? ' È la fattura di una rata d\'acconto: l\'imponibile resta ' +
-            esc(fmtNumIt(editorCorrezione.imponibileFisso)) + ' CHF.'
-          : '') +
+        (editorCorrezione.rata
+          ? ' È la fattura della rata «' + esc(editorCorrezione.rata.descrizione || '') + '» (oggi ' +
+            esc(fmtNumIt(editorCorrezione.rata.importo)) + ' CHF, IVA esclusa): se cambi l\'imponibile, la rata lo segue.'
+          : '') +   // 93
       '</div></div>'
     : '')
 }
@@ -6109,20 +6110,47 @@ function motivoNoCorrezione(f, pagamenti, note) {
   if (f.stato === 'bozza') return 'È una bozza: si modifica con «✏️ Modifica bozza».'
   if (f.stato !== 'emessa') return 'Si correggono solo le fatture emesse: questa è «' + f.stato + '».'
   if (f.tipo === 'nota_credito') return 'Una nota di credito non si riapre: si annulla e se ne emette una nuova.'
-  // 84 — una stralciata è ferma.
-  if (stralcioAttivo(f.id)) return testoFermaFattura(f.id)   // 91 — o lo sconto di cassa
+  // 93 — i blocchi restano (è aritmetica: un incasso che nessun documento
+  // spiega), ma dicono cosa fare, passo per passo. Le stesse parole le dice il
+  // database (SQL_FASE93), se ci si arriva da un'altra strada.
+  // 84 · 91 — stralcio o sconto di cassa: prima si toglie (lo sconto c'è sempre
+  // insieme a un incasso, quindi viene prima dei pagamenti).
+  var st = stralcioAttivo(f.id)
+  if (st && eScontoCassa(st)) {
+    return 'La fattura è chiusa con lo sconto di cassa: prima si toglie lo sconto, poi i pagamenti.\n\n' +
+      '1. Qui nella scheda: «↩️ Togli lo sconto», col motivo.\n' +
+      '2. Riquadro Pagamenti: annota data e importo di ogni pagamento, poi eliminalo.\n' +
+      '3. «✏️ Riapri e correggi».\n' +
+      '4. Registra di nuovo i pagamenti con le loro date: se rientrano nello sconto, il programma lo ripropone.'
+  }
+  if (st) {
+    return 'La fattura è stralciata come perdita: prima si toglie lo stralcio.\n\n' +
+      '1. Qui nella scheda: «↩️ Togli lo stralcio», col motivo.\n' +
+      '2. «✏️ Riapri e correggi».\n' +
+      '3. Se la perdita resta, stralcia di nuovo col nuovo importo («📉 Stralcia come perdita»).'
+  }
   if (pagamenti && pagamenti.length) {
-    var somma = pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0)
+    var somma = round2(pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0))
+    var elenco = pagamenti.slice().sort(function (a, b) { return String(a.data).localeCompare(String(b.data)) })
+      .map(function (p) { return '   · ' + fmtDate(p.data) + ' — ' + fmtNumIt(safeNum(p.importo) || 0) + ' CHF' }).join('\n')
     return 'Su questa fattura ' +
       (pagamenti.length === 1 ? 'c\'è un pagamento registrato' : 'ci sono ' + pagamenti.length + ' pagamenti registrati') +
-      ', per ' + fmtNumIt(somma) + ' CHF.\n\n' +
-      'Una fattura incassata, anche in parte, non si riapre: si corregge con una nota di credito ' +
-      '(in meno) o con una fattura integrativa (in più).'
+      ', per ' + fmtNumIt(somma) + ' CHF: prima si tolgono, poi si corregge, poi si rimettono.\n' +
+      'Correggendo con i pagamenti dentro, resterebbero in cassa soldi che nessun documento spiega.\n\n' +
+      '1. Annota i pagamenti:\n' + elenco + '\n' +
+      '2. Riquadro Pagamenti, qui nella scheda: elimina ' + (pagamenti.length === 1 ? 'il pagamento' : 'i pagamenti') + '.\n' +
+      '3. «✏️ Riapri e correggi».\n' +
+      '4. «➕ Registra incasso» di nuovo, con le stesse date.\n\n' +
+      'Se il nuovo totale è più basso di ' + fmtNumIt(somma) + ' CHF, la differenza non entra nella fattura: ' +
+      'decidi prima se restituirla al cliente.'
   }
   var vive = (note || []).filter(function (n) { return n.stato !== 'annullata' })
   if (vive.length) {
     return 'Questa fattura ha ' + (vive.length === 1 ? 'una nota di credito' : vive.length + ' note di credito') +
-      ' (n. ' + vive.map(function (n) { return n.numero || '—' }).join(', ') + '): non si riapre.'
+      ' (n. ' + vive.map(function (n) { return n.numero || 'bozza' }).join(', ') + '): prima si annulla la nota, poi si corregge.\n\n' +
+      '1. Apri la nota di credito: se è una bozza «🗑️ Elimina», se è emessa «🚫 Annulla documento» col motivo.\n' +
+      '2. «✏️ Riapri e correggi» questa fattura.\n' +
+      '3. Se serve ancora, crea una nota di credito nuova dalla fattura corretta.'
   }
   return null
 }
@@ -6150,8 +6178,8 @@ async function riapriPerCorreggere(id) {
       'Riaprire e correggere la fattura n. ' + f.numero + ' di ' + fmtNumIt(safeNum(f.totale) || 0) + ' ' + (f.valuta || 'CHF') + '?\n\n' +
       'Restano lo stesso numero e la stessa data di emissione. La versione di adesso va nello ' +
       'storico della fattura, con il motivo, e non si cancella.' +
-      (rata ? '\n\nÈ la fattura della rata «' + rata.descrizione + '»: l\'imponibile resta ' +
-              fmtNumIt(safeNum(f.totale_imponibile) || 0) + ' CHF, il resto si corregge.' : '') +
+      (rata ? '\n\nÈ la fattura della rata «' + rata.descrizione + '»: se cambi l\'imponibile ' +
+              '(oggi ' + fmtNumIt(safeNum(f.totale_imponibile) || 0) + ' CHF), la rata lo segue, insieme alla fattura.' : '') +   // 93
       '\n\nScrivi PERCHÉ la correggi (obbligatorio, resta nello storico):', '')
     if (motivo === null) return
     motivo = String(motivo).trim()
@@ -6169,7 +6197,8 @@ async function riapriPerCorreggere(id) {
     await editFattura(id, {
       id: id, numero: f.numero, motivo: motivo,
       totalePrima: safeNum(f.totale) || 0,
-      imponibileFisso: rata ? (safeNum(f.totale_imponibile) || 0) : null
+      // 93 — la rata collegata: non blocca più l'imponibile, lo segue (SQL_FASE93).
+      rata: rata ? { descrizione: rata.descrizione, ordine: rata.ordine, importo: safeNum(rata.importo) || 0 } : null
     })
   } catch (e) {
     showFattureBanner('fatture-detail-banner', 'err', 'Riapertura: ' + (e.message || e))
@@ -6180,6 +6209,8 @@ async function riapriPerCorreggere(id) {
 // che non c'è ancora, cioè l'SQL della 83 non lanciato.
 function messaggioCorrezione(e) {
   var m = (e && e.message) ? e.message : String(e || 'Errore sconosciuto')
+  // 93 — i passi stanno nel HINT del database: si mostrano anche quelli.
+  if (e && e.hint) m += '\n\n' + String(e.hint).replace(/ (\d)\. /g, '\n$1. ')
   if (/tm_conta_correggi_fattura/.test(m) || (e && e.code === 'PGRST202')) {
     return 'Manca l\'SQL della 83 (sql/da_applicare/SQL_FASE83_correzione_fatture.sql): ' +
       'lancialo nel SQL Editor di Supabase, poi riprova. Non è cambiato niente.'
@@ -6197,15 +6228,14 @@ async function salvaCorrezione() {
     var header = collectFatturaHeader()
     var righe = righeFatturaPayload(c.id)
     if (!righe.length) throw new Error('Una fattura senza righe non si salva.')
-    if (c.imponibileFisso != null &&
-        Math.abs((safeNum(header.totale_imponibile) || 0) - c.imponibileFisso) > 0.005) {
-      throw new Error('È la fattura di una rata d\'acconto: l\'imponibile deve restare ' +
-        fmtNumIt(c.imponibileFisso) + ' CHF (adesso è ' + fmtNumIt(safeNum(header.totale_imponibile) || 0) + '). ' +
-        'Correggi gli altri dati; per un importo diverso serve una fattura integrativa o una nota di credito.')
-    }
     var dopo = safeNum(header.totale) || 0
+    // 93 — la rata collegata segue l'imponibile: lo si dice prima di salvare.
+    var impDopo = round2(safeNum(header.totale_imponibile) || 0)
+    var rataCambia = !!(c.rata && Math.abs(impDopo - c.rata.importo) > 0.005)
     if (!window.confirm('Salvare la correzione della fattura n. ' + c.numero + '?\n\n' +
         'Totale: ' + fmtNumIt(c.totalePrima) + ' → ' + fmtNumIt(dopo) + ' ' + (header.valuta || 'CHF') + '\n' +
+        (rataCambia ? 'Rata «' + c.rata.descrizione + '»: ' + fmtNumIt(c.rata.importo) + ' → ' + fmtNumIt(impDopo) +
+                      ' CHF (IVA esclusa), insieme alla fattura.\n' : '') +
         'Motivo: «' + c.motivo + '»\n\n' +
         'Numero e data di emissione restano. La versione di prima va nello storico della fattura e non si cancella.')) return
     await maybeSaveNewIbanToRubrica()
@@ -6215,12 +6245,19 @@ async function salvaCorrezione() {
       p_testata: header, p_righe: righe })
     if (error) throw error
     impostaModoCorrezione(null)
+    // 93 — la rata può essere cambiata nel database: i contratti si rileggono,
+    // così «Contratto e acconti» (qui e nella scheda del cantiere) rifà le cifre.
+    contrattiCache = null
     await loadFattureList()
     await viewFattura(c.id)
+    var rataOra = null
+    try { await loadContrattiCantiere(); var tr93 = trovaAccontoPerFattura(c.id); if (tr93) rataOra = tr93.a } catch (_) { /* lo dice la scheda */ }
     var avvisi = avvisiDopoCorrezione(currentDetailFattura, versioniDetail)
     showFattureBanner('fatture-detail-banner', avvisi.length ? 'warn' : 'ok',
       'Fattura n. ' + c.numero + ' corretta: totale ' + fmtNumIt(c.totalePrima) + ' → ' + fmtNumIt(dopo) + ' ' +
       (header.valuta || 'CHF') + '. La versione di prima è nello storico, qui sotto.' +
+      (rataCambia && rataOra ? ' La rata «' + rataOra.descrizione + '» ora è ' + fmtNumIt(safeNum(rataOra.importo) || 0) +
+                               ' CHF: le cifre del contratto si sono rifatte.' : '') +
       (avvisi.length ? '\n\n' + avvisi.join('\n') : ''))
   } catch (e) {
     showFattureBanner('fatture-edit-banner', 'err', 'Correzione non salvata: ' + messaggioCorrezione(e))
@@ -24279,7 +24316,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '92'
+var VERSIONE = '93'
 
 function controllaVersionePagina() {
   try {
