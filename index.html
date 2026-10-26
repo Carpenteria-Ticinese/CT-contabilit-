@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=91" />
+  <link rel="stylesheet" href="css/style.css?v=92" />
 </head>
-<body data-versione="91">
+<body data-versione="92">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 91</span>
+      <span id="sidebar-versione">Versione 92</span>
     </div>
 
   </aside>
@@ -908,7 +908,7 @@
       </div>
 
       <div class="card no-print">
-        <div class="card-title">👁️ Anteprima <span class="dim">(in scala)</span></div>
+        <div class="card-title">👁️ Anteprima <span class="dim">(a grandezza vera, se ci sta nella pagina)</span></div>
         <!-- FASE 22 — l'avviso di sbordo ha un posto suo: nel banner in alto
              ci scrivono anche il logo e la taratura. -->
         <div id="busta-avviso-indirizzo" role="status" aria-live="polite"></div>
@@ -1716,7 +1716,7 @@
           </div>
 
           <!-- FASE 27 — il termine è una condizione DI QUESTA FATTURA, non del
-               cliente: sullo stesso cliente si fanno 30 giorni di norma e
+               cliente: sullo stesso cliente si fanno i giorni di base di norma e
                pagamento anticipato su un acconto. I due campi si tengono
                allineati: cambiando l'uno si ricalcola l'altro. -->
           <div class="form-row">
@@ -2624,7 +2624,8 @@
         <div class="form-row">
           <div class="form-group" style="flex:1">
             <label for="imp-termini" class="form-label">Termine di pagamento (giorni)</label>
-            <input type="number" id="imp-termini" class="form-input" min="0" max="365" step="1" placeholder="30" />
+            <input type="number" id="imp-termini" class="form-input" min="0" max="365" step="1" />
+            <div class="form-hint" id="imp-termini-base"></div>
           </div>
           <div class="form-group" style="flex:2">
             <label for="imp-email" class="form-label">Email</label>
@@ -2745,7 +2746,7 @@
             <div class="form-hint" style="margin-bottom:10px">
               Le lettere dei tre livelli, le spese e il tasso di mora. La scadenza della
               fattura non cambia mai: ogni sollecito ha un termine suo
-              (+15 giorni se la fattura era a 30, +10 se era a 10).
+              (proposto dai giorni di pagamento di base, e lo cambi ogni volta che prepari il sollecito).
             </div>
             <div class="form-row">
               <div class="form-group" style="flex:1">
@@ -2897,7 +2898,7 @@
             <input type="number" id="imp-rata-giorni-saldo" class="form-input" min="0" max="365" step="1" />
           </div>
         </div>
-        <div class="form-hint">Di partenza 3, 3 e 30. Si aggiornano da soli con l&rsquo;ultimo termine che usi su una rata di quel tipo.</div>
+        <div class="form-hint">Di partenza 3 giorni per acconti e intermedi; il saldo parte dai giorni di pagamento di base (Impostazioni ditta). Si aggiornano da soli con l&rsquo;ultimo termine che usi su una rata di quel tipo.</div>
         <div class="form-actions">
           <button type="button" class="btn-primary" onclick="salvaImpostazioniRate()">💾 Salva testi e termini</button>
           <button type="button" class="btn-secondary" onclick="ripristinaTestiRate()">↺ Ripristina quelli di partenza</button>
@@ -3472,7 +3473,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=91"></script>
+<script src="js/app.js?v=92"></script>
 
 </body>
 </html>
