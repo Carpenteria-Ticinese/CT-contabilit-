@@ -625,11 +625,13 @@ tr.riga-orig-ai > td:first-child { box-shadow: inset 4px 0 0 #7c3aed; }
   background: var(--bg);
   padding: 10px;
 }
+/* 92 — la scala la calcola adattaAnteprimaBusta(): grandezza vera se ci sta,
+   e la scatola prende l'altezza della busta rimpicciolita. Niente margine
+   negativo in percentuale (si calcolava sulla LARGHEZZA: era la striscia). */
+.busta-scala .busta-scatola { overflow: hidden; }
 .busta-scala .busta {
-  transform: scale(.62);
   transform-origin: top left;
   box-shadow: 0 2px 10px rgba(0,0,0,.18);
-  margin-bottom: -38%;
 }
 .busta-prova-nota { font-size: 9pt; color: #444; margin-bottom: 4mm; font-family: Arial, sans-serif; }
 /* FASE 22 — quando il formato e' piu' grande di un A4 la prova lo dice, invece
