@@ -1042,9 +1042,11 @@ function renderListeDaClassificare() {
   var passaD = function (m) {
     var pag = m.origine_tipo === 'proprio' ? pagamentiDi('tm_conta_movimenti_propri', m.origine_id) : []
     // 88 — per le spese la cifra e il cantiere della regola (importoRiga, testoExtraRiga)
+    // 96 — una spesa classificata per un'altra cifra si trova con tutte e due.
+    var app96 = (m.origine_tipo === 'spesa' && m.importo != null) ? [safeNum(m.importo)] : []
     if (!corrispondeTesto(fidD.testo, [m.descrizione || '', testoExtraRiga(m) || '', m._sorgente || '', m._tipo_label || ''],
-          [importoRiga(m)].concat(pag.map(function (p) { return p.importo })))) return false
-    return corrispondeImportoData(fidD, { importo: importoRiga(m), date: { documento: m.data }, pagamenti: pag })
+          [importoRiga(m)].concat(app96, pag.map(function (p) { return p.importo })))) return false
+    return corrispondeImportoData(fidD, { importo: importoRiga(m), altriImporti: app96, date: { documento: m.data }, pagamenti: pag })
   }
   var cercando = fidD.attivo || !!fidD.testo
   var daClass = cercando ? daClassTutti.filter(passaD) : daClassTutti
@@ -1691,7 +1693,8 @@ function giustificativoRigaHtml(m, classificata) {
 function importoAppCantieriHtml(m) {
   if (m.origine_tipo !== 'spesa' || !spesaClassificata(m) || m.importo == null) return ''
   if (Math.abs(importoSpesa(m) - (safeNum(m.importo) || 0)) < 0.005) return ''
-  return '<div class="importo-classificato">🏗️ nell\'App Cantieri ' + esc(fmtNumIt(m.importo)) + '</div>'
+  return '<div class="importo-classificato" title="' + esc(testoDoveSiCorregge(true)) + '">🏗️ ' +
+    esc(testoDueCifreSpesa(importoSpesa(m), m.importo)) + '</div>'   // 96
 }
 function giustificativoOrfanaHtml(o) {
   if (o.origine_tipo !== 'spesa') return ''
@@ -1824,40 +1827,94 @@ function candidatiImporto(m) {
   })
   return out
 }
+// 96 — LA CIFRA SI SCRIVE A MANO (Classifica e Riclassifica di una spesa
+// dell'App Cantieri). La classificazione e' NOSTRA e dalla 88 vince sulla
+// cifra dell'operaio: quindi il campo c'e', sempre. L'originale nell'App
+// Cantieri non si tocca mai. Sotto il campo, SEMPRE: la cifra dell'operaio e
+// dove la si corregge. Se la cifra e' diversa da quella dell'operaio, il motivo
+// e' obbligatorio e finisce nella nota: «Classificata per X (nell'App Cantieri
+// Y): motivo». In Riclassifica il campo parte dalla cifra GIA' classificata
+// (riaprire non deve riportarla indietro in silenzio, 88), con un bottone per
+// tornare a quella dell'operaio.
+var PREFISSO_NOTA_IMPORTO = 'Classificata per '
+function notaSenzaImporto(nota) {
+  return String(nota || '').split(' · ').filter(function (x) { return x.trim() && x.indexOf(PREFISSO_NOTA_IMPORTO) !== 0 }).join(' · ')
+}
+function motivoImportoDaNota(nota) {
+  var parte = String(nota || '').split(' · ').filter(function (x) { return x.indexOf(PREFISSO_NOTA_IMPORTO) === 0 })[0] || ''
+  var k = parte.indexOf('): ')
+  return k === -1 ? '' : parte.slice(k + 3).trim()
+}
+// Dove si corregge l'originale. Se la spesa e' gia' classificata, anche la
+// trappola: correggere la' non basta, perche' qui vince la classificazione.
+function testoDoveSiCorregge(giaClassificata) {
+  return 'L\'originale nell\'App Cantieri non si tocca da qui. Se è sbagliato anche là, si corregge nell\'App Cantieri: ' +
+    'apri la spesa → ✏️ Modifica → 💾 Salva.' +
+    (giaClassificata ? ' Attenzione: qui vince la classificazione. Dopo aver corretto là, torna qui e riclassifica, ' +
+      'altrimenti il programma continua a usare la cifra vecchia.' : '')
+}
+// «classificata per X, nell'App Cantieri Y» — vuoto se le due cifre coincidono.
+function testoDueCifreSpesa(classificata, app) {
+  var c = safeNum(classificata), a = safeNum(app)
+  if (c == null || a == null || Math.abs(c - a) < 0.005) return ''
+  return 'classificata per ' + fmtNumIt(c) + ', nell\'App Cantieri ' + fmtNumIt(a)
+}
 function disegnaSceltaImporto() {
   var box = el('cls-importo-scelta')
   if (!box) return
   var m = classifyTargets[0]
   if (classifyMode !== 'single' || !m || m.origine_tipo !== 'spesa') { box.innerHTML = ''; return }
-  var cand = candidatiImporto(m)
-  if (cand.length < 2) { box.innerHTML = ''; return }
-  var attuale = round2(safeNum(importoDiClassifica(m)) || 0).toFixed(2)
-  box.innerHTML = '<div class="importo-scelta" role="radiogroup" aria-label="Quale importo classificare">' +
-    '<div class="importo-scelta-titolo">⚠️ Due cifre diverse per la stessa spesa: scegli quale classificare</div>' +
-    cand.map(function (x) {
-      return '<label class="importo-scelta-opz"><input type="radio" name="cls-importo-scelta" value="' + x.k + '"' +
-        (x.k === attuale ? ' checked' : '') + ' onchange="scegliImportoClassifica(' + x.k + ')"> <strong>' +
-        esc(fmtNumIt(x.importo) + ' ' + (m.valuta || 'CHF')) + '</strong> — ' + esc(x.et) + '</label>'
-    }).join('') +
-    '<div class="form-hint">Si classifica la cifra scelta. Nell\'App Cantieri resta quella dell\'operaio: là non si scrive.</div></div>'
+  var operaio = safeNum(m.importo)
+  var attuale = safeNum(importoDiClassifica(m))
+  var giaClass = !!(m._class && spesaClassificata(m))
+  var diverso = importoSceltoClassifica != null
+  // Il motivo: quello gia' scritto nel campo PER QUESTA SPESA (si ridisegna
+  // dopo un clic), se no quello della classificazione che si sta riaprendo.
+  var campoM = el('cls-importo-motivo')
+  var stessa = !!(campoM && campoM.getAttribute && campoM.getAttribute('data-spesa') === String(m.origine_id))
+  var motivo = stessa ? campoM.value : motivoImportoDaNota(m._class && m._class.note)
+  box.innerHTML = '<div class="importo-scelta">' +
+    '<label for="cls-importo-man" class="form-label">Importo da classificare <span class="dim">(' + esc(m.valuta || 'CHF') + ')</span></label>' +
+    '<input type="number" step="0.01" id="cls-importo-man" class="form-input importo-man" value="' +
+      (attuale != null ? round2(attuale).toFixed(2) : '') + '" oninput="scriviImportoClassifica(this.value)" />' +
+    '<div class="importo-app">🏗️ nell\'App Cantieri: <strong>' + esc(operaio != null ? fmtNumIt(operaio) : '—') + '</strong></div>' +
+    '<div id="cls-importo-rapide">' + bottoniImportoRapideHtml(m, attuale) + '</div>' +
+    '<div id="cls-importo-motivo-box" style="margin-top:8px;display:' + (diverso ? 'block' : 'none') + '">' +
+      '<label for="cls-importo-motivo" class="form-label">Motivo <span class="dim">(obbligatorio: la cifra è diversa da quella dell\'operaio)</span></label>' +
+      '<input type="text" id="cls-importo-motivo" class="form-input" data-spesa="' + esc(String(m.origine_id)) + '" value="' + esc(motivo || '') + '" ' +
+        'placeholder="es. l\'operaio ha scritto 1000 invece di 100; scontrino controllato" />' +
+    '</div>' +
+    '<div class="form-hint">' + esc(testoDoveSiCorregge(giaClass)) + '</div>' +
+  '</div>'
 }
-function scegliImportoClassifica(v) {
+// Le altre cifre (operaio, già classificata, letta dallo scontrino) come
+// bottoni: tutte tranne quella che c'è nel campo. Si rifanno mentre si scrive.
+function bottoniImportoRapideHtml(m, attuale) {
+  var altre = candidatiImporto(m).filter(function (x) { return attuale == null || Math.abs(x.importo - attuale) >= 0.005 })
+  if (!altre.length) return ''
+  return '<div class="importo-rapide">' + altre.map(function (x) {
+    return '<button type="button" class="btn-secondary" onclick="usaImportoClassifica(\'' + x.k + '\')">↩️ Usa ' +
+      esc(fmtNumIt(x.importo)) + ' — ' + esc(x.et) + '</button>'
+  }).join('') + '</div>'
+}
+function scriviImportoClassifica(v) {
   var m = classifyTargets[0]
   if (!m) return
   var n = safeNum(v)
   var operaio = safeNum(m.importo)
   importoSceltoClassifica = (n == null || (operaio != null && Math.abs(n - operaio) < 0.005)) ? null : round2(n)
-  // La differenza si scrive nella nota (proposta: si può cancellare prima di
-  // confermare). Dalla sola classificazione non si capirebbe perché le due
-  // cifre non coincidono.
-  var nota = el('cls-note')
-  if (nota && importoSceltoClassifica != null && operaio != null && nota.value.indexOf('nell\'App Cantieri ') === -1) {
-    nota.value = (nota.value.trim() ? nota.value.trim() + ' · ' : '') + 'Classificata per ' + fmtNumIt(importoSceltoClassifica) +
-      ' (nell\'App Cantieri ' + fmtNumIt(operaio) + ')'
-  }
+  var boxM = el('cls-importo-motivo-box')
+  if (boxM) boxM.style.display = importoSceltoClassifica != null ? 'block' : 'none'
+  if (el('cls-importo-rapide')) html('cls-importo-rapide', bottoniImportoRapideHtml(m, n))
   recalcIvaDisplay()
   if (divisioneAttiva) aggiornaQuadratura()
   if (letturaScontrino) disegnaPropostaScontrino()
+}
+function usaImportoClassifica(v) {
+  var c = el('cls-importo-man')
+  if (c) c.value = v
+  scriviImportoClassifica(v)
+  disegnaSceltaImporto()
 }
 
 // ── «🤖 Leggi lo scontrino» ─────────────────────────────────────────────────
@@ -2674,7 +2731,7 @@ async function openSingleClassify(m, prefill) {
   el('cls-suggest').style.display = 'none'
   el('cls-nuovo-conto').style.display = 'none'
   if (el('cls-nuovo-cantiere')) el('cls-nuovo-cantiere').style.display = 'none'
-  el('cls-note').value = (prefill && prefill.note) ? prefill.note : ''
+  el('cls-note').value = (prefill && prefill.note) ? notaSenzaImporto(prefill.note) : ''   // 96 — la parte della cifra sta sopra
   el('cls-conto-search').value = ''
   el('cls-cantiere-group').style.display = 'block'
   el('cls-cantiere-bulk-group').style.display = 'none'
@@ -2684,7 +2741,10 @@ async function openSingleClassify(m, prefill) {
     '<div class="cls-sum-desc">' + esc(m.descrizione) + '</div>' +
     '<div class="cls-sum-meta">' +
       '<span>📅 ' + esc(fmtDate(m.data)) + '</span>' +
-      '<span class="cls-sum-amount">' + fmtImporto(m.importo, m.valuta) + '</span>' +
+      '<span class="cls-sum-amount">' + fmtImporto(m.origine_tipo === 'spesa' ? importoRiga(m) : m.importo, m.valuta) + '</span>' +
+      // 96 — le due cifre, se sono diverse
+      (m.origine_tipo === 'spesa' && testoDueCifreSpesa(importoRiga(m), m.importo)
+        ? '<span class="importo-classificato">🏗️ ' + esc(testoDueCifreSpesa(importoRiga(m), m.importo)) + '</span>' : '') +
       '<span>' + esc(m._sorgente + ' · ' + m._tipo_label) + '</span>' +
     '</div>'
 
@@ -3300,6 +3360,25 @@ async function saveClassificazione() {
   var contoId = el('cls-conto') ? el('cls-conto').value : ''
   var ivaId   = el('cls-iva') ? el('cls-iva').value : ''
   var note    = el('cls-note') ? el('cls-note').value.trim() : ''
+  // 96 — la cifra scritta a mano: un numero vero; se è diversa da quella
+  // dell'operaio, il motivo è obbligatorio e va nella nota, in testa.
+  if (classifyMode === 'single' && classifyTargets[0] && classifyTargets[0].origine_tipo === 'spesa' && el('cls-importo-man')) {
+    var m96 = classifyTargets[0]
+    var n96 = safeNum(el('cls-importo-man').value)
+    if (n96 == null || Math.abs(n96) < 0.005) { showClsBanner('err', 'Scrivi l\'importo da classificare.'); return }
+    scriviImportoClassifica(el('cls-importo-man').value)
+    note = notaSenzaImporto(note)
+    if (importoSceltoClassifica != null) {
+      var mot96 = el('cls-importo-motivo') ? el('cls-importo-motivo').value.trim() : ''
+      if (!mot96) {
+        showClsBanner('err', 'La cifra ' + fmtNumIt(importoSceltoClassifica) + ' è diversa da quella dell\'operaio nell\'App Cantieri (' +
+          fmtNumIt(safeNum(m96.importo) || 0) + '): scrivi il motivo.')
+        return
+      }
+      note = [PREFISSO_NOTA_IMPORTO + fmtNumIt(importoSceltoClassifica) + ' (nell\'App Cantieri ' + fmtNumIt(safeNum(m96.importo) || 0) + '): ' +
+        mot96.replace(/ · /g, ', ')].concat(note ? [note] : []).join(' · ')
+    }
+  }
   // FASE 25 — con la divisione attiva conto e IVA stanno sulle righe, non nei
   // campi in alto: la validazione e' quella di righeDivisioneValidate().
   var righeDiv = null
@@ -5828,19 +5907,23 @@ function renderFattureTable() {
 // l'elenco e non e' un filtro: e' un'altra tabella, con il ritardo, il residuo
 // e lo stato dei solleciti, in ordine di ritardo.
 function barraScaduteHtml() {
-  var n = fattureScadute().length
+  // 95 — il numero conta quelle DA SOLLECITARE; quelle che aspettano il
+  // termine di un sollecito si dicono accanto, ma non sono un lavoro di oggi.
+  var div = divisioneScadute(oggiISO())
+  var n = div.daSollecitare.length, k = div.inAttesa.length
   if (vistaFattureScadute) {
     return '<div class="scadute-barra aperta">' +
-      '<strong>🔴 Fatture scadute</strong> — non incassate oltre la scadenza, dalla più vecchia. ' +
+      '<strong>🔴 Fatture scadute</strong> — sopra quelle da sollecitare, dalla più vecchia (conta il termine del sollecito, se c\'è); ' +
+      'sotto quelle in attesa del termine. ' +
       '<button type="button" class="btn-secondary" onclick="mostraFattureScadute(false)">← Torna all\'elenco completo</button>' +
     '</div>'
   }
-  if (!n) return ''
+  if (!n && !k) return ''
   return '<div class="scadute-barra">' +
     '<button type="button" class="btn-secondary" onclick="mostraFattureScadute(true)">' +
       '🔴 Scadute (' + n + ')</button>' +
-    '<span class="dim">' + (n === 1 ? 'una fattura è scaduta' : n + ' fatture sono scadute') +
-    ' e non incassata' + (n === 1 ? '' : 'e') + '.</span>' +
+    '<span class="dim">' + (n === 0 ? 'nessuna fattura da sollecitare' : n === 1 ? 'una fattura da sollecitare' : n + ' fatture da sollecitare') +
+    (k ? ' · ' + (k === 1 ? 'una in attesa' : k + ' in attesa') + ' del termine di un sollecito' : '') + '.</span>' +
   '</div>'
 }
 
@@ -7897,8 +7980,15 @@ async function viewFattura(id) {
     renderDetailActions(f)
     // La riga che racconta il ritardo e i solleciti, sopra il documento.
     var statoSol = (f.stato === 'emessa' && f.tipo !== 'nota_credito') ? testoStatoSolleciti(f) : ''
-    html('fatture-stato-solleciti', statoSol
-      ? '<div class="sol-stato-riga">⏰ ' + esc(statoSol) + '</div>' : '')
+    // 95 — un sollecito preparato e non inviato: e' la cosa che si dimentica.
+    var nonInv95 = (f.stato === 'emessa' && f.tipo !== 'nota_credito') ? statoSollecitoFattura(f.id).nonInviati : []
+    html('fatture-stato-solleciti', (statoSol
+      ? '<div class="sol-stato-riga">⏰ ' + esc(statoSol) + '</div>' : '') +
+      nonInv95.map(function (s) {
+        return '<div class="sol-stato-riga sol-non-inviato-riga">⚠️ <strong>Il ' + s.livello + 'º sollecito è preparato ma NON inviato.</strong> ' +
+          'Finché non segni la data di invio, il cliente non ha nessun termine e la fattura resta fra quelle da sollecitare. ' +
+          '<button type="button" class="btn-secondary" onclick="segnaSollecitoInviato(\'' + esc(s.id) + '\')">📅 Segna la data di invio</button></div>'
+      }).join(''))
     // FASE 8 — pagamenti e rate. Solo sui documenti veri: su una bozza non
     // esiste ancora niente da pagare.
     try {
@@ -8463,8 +8553,13 @@ function renderDetailActions(f) {
       f.data_scadenza < oggiISO() &&
       residuoDocumento('tm_conta_fatture', f.id, f.totale) > 0.005) {
     var liv = prossimoLivelloSollecito(f.id)
+    // 95 — col termine di un sollecito ancora aperto il bottone resta (a volte
+    // serve anticipare), ma lo dice; preparando, chiede.
+    var stSol95 = statoSollecitoFattura(f.id)
+    var titSol95 = (stSol95.termine && stSol95.termine >= oggiISO())
+      ? ' title="Il cliente ha ancora tempo: termine del ' + stSol95.ultimoInviato.livello + 'º sollecito il ' + esc(fmtDate(stSol95.termine)) + '"' : ''
     a += liv
-      ? '<button class="btn-secondary" onclick="preparaSollecito(\'' + esc(f.id) + '\')">📨 Prepara ' + liv + 'º sollecito</button>'
+      ? '<button class="btn-secondary"' + titSol95 + ' onclick="preparaSollecito(\'' + esc(f.id) + '\')">📨 Prepara ' + liv + 'º sollecito</button>'
       : '<button class="btn-secondary" disabled title="I tre solleciti sono già stati preparati">📨 Solleciti: tre su tre</button>'
   }
   // Stesso CSS di stampa, stesso risultato: cambia solo il nome del file proposto.
@@ -9845,12 +9940,15 @@ async function saveAcquisto() {
   // 75·6 — senza cantiere si chiede, una volta: il vuoto dev'essere una scelta.
   if (!(await confermaCantiereAcquisto())) return
 
-  // 94 — «già pagata»: se mancano data o metodo del pagamento si chiede, PRIMA di salvare.
+  // 95 — «già pagata»: data e metodo obbligatori, controllati PRIMA di salvare la fattura.
   var spunta94 = el('a-gia-pagata'), box94 = el('a-gia-pagata-box')
   if (spunta94 && spunta94.checked && !(box94 && box94.style.display === 'none')) {
-    var dm94 = chiediDatiMancantiPagamento(getVal('a-pag-data'), getVal('a-pag-metodo'), getVal('a-data') || oggiISO())
-    if (!dm94) return
-    setVal('a-pag-data', dm94.data)
+    var manca95a = mancaDatoPagamento(getVal('a-pag-data'), getVal('a-pag-metodo'))
+    if (manca95a) {
+      showFattureBanner('acquisti-edit-banner', 'err', 'Fattura NON salvata. ' + manca95a +
+        ' Compilali nel riquadro «già pagata», oppure togli la spunta se non è ancora pagata.')
+      return
+    }
   }
 
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
@@ -10509,16 +10607,16 @@ async function handleInserimentoSubmit(event) {
     var giaPagato = el('f-gia-pagata') ? el('f-gia-pagata').checked : false
     var dataPag   = el('f-data-pagamento') ? el('f-data-pagamento').value : ''
     var metodoPag = el('f-pag-metodo') ? el('f-pag-metodo').value : ''   // 94
-    // 94 — il pagamento si crea solo su un movimento nuovo: lì, se mancano data
-    // o metodo, si chiede prima di salvare.
+    // 95 — il pagamento si crea solo su un movimento nuovo: lì data e metodo
+    // sono obbligatori, controllati prima di salvare.
     if (giaPagato && !editingMovimentoId) {
-      var dm94 = chiediDatiMancantiPagamento(dataPag, metodoPag, dataVal)
-      if (!dm94) {
-        var eAnn = new Error('Movimento NON salvato: compila data e metodo del pagamento, poi salva di nuovo.')
+      var manca95m = mancaDatoPagamento(dataPag, metodoPag)
+      if (manca95m) {
+        var eAnn = new Error('Movimento NON salvato. ' + manca95m +
+          ' Compilali, oppure togli la spunta «già pagata» se non è ancora pagato.')
         eAnn.annullato = true
         throw eAnn
       }
-      dataPag = dm94.data; metodoPag = dm94.metodo || ''
     }
 
     var payload = {
@@ -10609,7 +10707,7 @@ async function handleInserimentoSubmit(event) {
     } catch (_) { /* ignora: dati già salvati */ }
 
   } catch (e) {
-    if (e && e.annullato) showInserimentoBanner('warn', 'Non salvato', e.message)   // 94 — una scelta, non un errore
+    if (e && e.annullato) showInserimentoBanner('err', 'Non salvato', e.message)   // 95 — manca un dato obbligatorio
     else showInserimentoBanner('err', 'Errore', e.message)
   } finally {
     if (btn) { btn.textContent = editingMovimentoId ? '💾 Salva modifiche' : '💾 Salva movimento'; btn.disabled = moduloIntatto('movimento') }   // 75·5
@@ -16670,7 +16768,8 @@ function calcolaScadenze(righe, oggi, preavviso) {
   var b = {
     scaduto:   { chiave: 'scaduto',   icona: '🔴', titolo: 'Scaduto da pagare',    righe: [], somma: 0 },
     inScadenza:{ chiave: 'inScadenza',icona: '🟠', titolo: 'In scadenza',          righe: [], somma: 0 },
-    incasso:   { chiave: 'incasso',   icona: '🔵', titolo: 'Incasso non arrivato', righe: [], somma: 0 },
+    // 95 — attesa: quante aspettano il termine di un sollecito (ci sono, non sono avvisi).
+    incasso:   { chiave: 'incasso',   icona: '🔵', titolo: 'Incasso non arrivato', righe: [], somma: 0, attesa: 0, sommaAttesa: 0 },
     senzaData: { chiave: 'senzaData', icona: '⚪', titolo: 'Senza scadenza — da completare', righe: [], somma: 0 },
     // Non e' un blocco: e' il resto. Posizioni aperte che non sono ancora un
     // avviso — uscite oltre il preavviso, entrate non ancora scadute.
@@ -16678,6 +16777,10 @@ function calcolaScadenze(righe, oggi, preavviso) {
     altre:     { chiave: 'altre',     righe: [], somma: 0 }
   }
   var limite = addDays(oggi, preavviso)
+  function aIncasso(riga, imp) {
+    b.incasso.righe.push(riga); b.incasso.somma += imp
+    if (riga._inAttesa) { b.incasso.attesa += 1; b.incasso.sommaAttesa += imp }
+  }
 
   for (var i = 0; i < (righe || []).length; i++) {
     var r = righe[i]
@@ -16707,6 +16810,14 @@ function calcolaScadenze(righe, oggi, preavviso) {
       r = Object.assign({}, r, { residuo: res })
     }
     var imp = res
+    // 95 — sollecitata: si aspetta il termine del sollecito. La scadenza resta
+    // quella (r.data_scadenza): il termine serve all'ordine e agli avvisi.
+    if (r.tabella_origine === 'tm_conta_fatture') {
+      var st95 = statoSollecitoFattura(r.id_origine, oggi)
+      if (st95.termine) r._termine = st95.termine
+      if (st95.inAttesa) r._inAttesa = true
+      if (st95.nonInviati.length) r._nonInviati = st95.nonInviati
+    }
 
     // FASE 8 — un documento con un piano rateale compare per la PROSSIMA RATA
     // non pagata, non per il residuo totale: e' quella la cifra che scade a
@@ -16732,7 +16843,7 @@ function calcolaScadenze(righe, oggi, preavviso) {
         if (pross.data_prevista < oggi) { b.scaduto.righe.push(rr); b.scaduto.somma += imp }
         else if (pross.data_prevista <= limite) { b.inScadenza.righe.push(rr); b.inScadenza.somma += imp }
       } else {
-        if (pross.data_prevista < oggi) { b.incasso.righe.push(rr); b.incasso.somma += imp }
+        if (pross.data_prevista < oggi) aIncasso(rr, imp)
       }
       continue
     }
@@ -16746,15 +16857,18 @@ function calcolaScadenze(righe, oggi, preavviso) {
       else { b.altre.righe.push(r); b.altre.somma += imp }
     } else {
       // Un incasso e' «non arrivato» dal giorno DOPO la scadenza.
-      if (r.data_scadenza < oggi) { b.incasso.righe.push(r); b.incasso.somma += imp }
+      if (r.data_scadenza < oggi) aIncasso(r, imp)
       else { b.altre.righe.push(r); b.altre.somma += imp }
     }
   }
 
   // La piu' urgente in cima: chi e' scaduto da piu' tempo, per primo.
+  // 95 — per una fattura sollecitata conta il termine del sollecito; quelle
+  // che lo aspettano ancora vanno in fondo.
   ;['scaduto', 'inScadenza', 'incasso', 'senzaData'].forEach(function (k) {
     b[k].righe.sort(function (x, y) {
-      return String(x.data_scadenza || '9999-12-31').localeCompare(String(y.data_scadenza || '9999-12-31'))
+      if (!!x._inAttesa !== !!y._inAttesa) return x._inAttesa ? 1 : -1
+      return String(x._termine || x.data_scadenza || '9999-12-31').localeCompare(String(y._termine || y.data_scadenza || '9999-12-31'))
     })
   })
   return b
@@ -16763,7 +16877,8 @@ function calcolaScadenze(righe, oggi, preavviso) {
 // Il conteggio del badge: i TRE blocchi, senza il grigio.
 // Il blocco grigio e' un promemoria di compilazione, non una scadenza.
 function contaScadenzeUrgenti(b) {
-  return b.scaduto.righe.length + b.inScadenza.righe.length + b.incasso.righe.length
+  // 95 — senza quelle che aspettano il termine di un sollecito.
+  return b.scaduto.righe.length + b.inScadenza.righe.length + b.incasso.righe.length - (b.incasso.attesa || 0)
 }
 
 // ── La schermata ─────────────────────────────────────────────────────────────
@@ -16781,6 +16896,12 @@ async function initScadenzePage() {
     // lettura non riesce, l'errore si vede (mai una cifra con un pezzo in meno).
     await caricaPerResiduo(true)
     await loadRate(true)
+    // 95 — i solleciti: una fattura col termine di un sollecito ancora aperto
+    // non e' un avviso. Se non si leggono si dice, e contano tutte come avvisi.
+    var avvisoSol95 = ''
+    try { await loadSolleciti(true) } catch (eS95) {
+      avvisoSol95 = 'Solleciti non letti (' + (eS95.message || eS95) + '): le fatture sollecitate compaiono come se non lo fossero.'
+    }
     // 89 — bozze e ordini di pagamento: il riquadro «Da fare» e i segni sulle righe.
     var acqDaFare = await caricaAcquistiDaFare()
     await preparaDaFareAcquisti(acqDaFare)   // 89 — le vecchie senza giustificativo
@@ -16788,6 +16909,7 @@ async function initScadenzePage() {
     acqDaFare.forEach(function (a) { if (a.ordine_pagamento_data && a.stato_pagamento !== 'pagato') ordiniPagamentoMap[a.id] = a })
     html('scadenze-da-fare', daFareAcquistiHtml(acqDaFare))
     renderScadenze()
+    if (avvisoSol95) showScadenzeBanner('warn', avvisoSol95)
     await refreshScadenzeCount()
   } catch (e) {
     html('scad-blocchi', '')
@@ -16822,8 +16944,10 @@ function renderScadenze() {
     }
     var filtra = function (blocco) {
       var righe = blocco.righe.filter(passa)
-      return Object.assign({}, blocco, { righe: righe, somma: round2(righe.reduce(function (s, r) {
-        return s + (r._importoRata != null ? r._importoRata : (safeNum(r.residuo) || 0)) }, 0)) })
+      var cifra = function (s, r) { return s + (r._importoRata != null ? r._importoRata : (safeNum(r.residuo) || 0)) }
+      var att = righe.filter(function (r) { return r._inAttesa })   // 95
+      return Object.assign({}, blocco, { righe: righe, somma: round2(righe.reduce(cifra, 0)),
+        attesa: att.length, sommaAttesa: round2(att.reduce(cifra, 0)) })
     }
     b = { scaduto: filtra(b.scaduto), inScadenza: filtra(b.inScadenza), incasso: filtra(b.incasso),
           senzaData: filtra(b.senzaData), altre: filtra(b.altre) }
@@ -16839,7 +16963,8 @@ function renderScadenze() {
   html('scad-blocchi',
     bloccoScadenze(b.scaduto,    'rosso',   'Fatture da pagare la cui data di scadenza è già passata.') +
     bloccoScadenze(b.inScadenza, 'arancio', 'Da pagare entro i prossimi ' + pre + (pre === 1 ? ' giorno' : ' giorni') + '.') +
-    bloccoScadenze(b.incasso,    'blu',     'Fatture emesse e non ancora incassate, con la scadenza già passata.') +
+    bloccoScadenze(b.incasso,    'blu',     'Fatture emesse e non ancora incassate, con la scadenza già passata. ' +
+      'Quelle sollecitate col termine ancora aperto stanno in fondo e non contano negli avvisi.') +
     bloccoScadenze(b.senzaData,  'grigio',  'Documenti aperti a cui manca la data di scadenza: senza quella non si può dire se sono in ritardo.') +
     rigaAltrePosizioni(b.altre)
   )
@@ -16872,6 +16997,8 @@ function rigaAltrePosizioni(altre) {
 function bloccoScadenze(blocco, colore, spiegazione) {
   var n = blocco.righe.length
   var conta = (n === 0) ? 'nessun documento' : (n === 1 ? '1 documento' : n + ' documenti')
+  // 95 — ci sono, ma non sono avvisi: aspettano il termine di un sollecito.
+  if (blocco.attesa) conta += ' · ' + blocco.attesa + ' in attesa del termine'
 
   var corpo = n
     ? blocco.righe.map(function (r) { return rigaScadenza(r, blocco.chiave) }).join('')
@@ -16919,6 +17046,22 @@ function rigaScadenza(r, blocco) {
   var quando = r.data_scadenza
     ? 'Scadenza ' + fmtDate(r.data_scadenza) + ' — ' + q.testo
     : 'Nessuna data di scadenza registrata'
+  // 95 — la fattura di vendita scaduta: la scadenza E i solleciti, tutte e due.
+  if (r.tabella_origine === 'tm_conta_fatture' && r.data_scadenza && r.data_scadenza < oggi) {
+    var partiS = partiSolleciti(r.id_origine, oggi)
+    quando = r._rata
+      ? quando + (partiS.length ? ' · ' + partiS.join(' · ') : '')
+      : testoStatoSolleciti({ id: r.id_origine, data_scadenza: r.data_scadenza }, oggi)
+    if (r._inAttesa) {
+      q = { cls: 'attesa', testo: q.testo }
+      segni89 += '<div class="scad-segno"><span class="spia-attesa">⏳ In attesa: il cliente ha tempo fino al ' +
+        esc(fmtDate(r._termine)) + '</span></div>'
+    }
+    ;(r._nonInviati || []).forEach(function (s) {
+      segni89 += '<div class="scad-segno"><span class="spia-non-inviato">⚠️ ' +
+        esc(s.livello + 'º sollecito preparato, NON inviato: spediscilo e segnane la data') + '</span></div>'
+    })
+  }
 
   // FASE 8 — se si sta guardando una rata, la riga lo dice: «rata 2 di 4».
   // Senza, sembrerebbe che scada l'intera fattura.
@@ -17017,6 +17160,7 @@ async function refreshScadenzeCount() {
     await loadImpostazioniConta()
     var righe = await loadFlussi()
     await caricaPerResiduo()   // 84 — il pallino nel menu conta come la pagina
+    try { await loadSolleciti() } catch (_) { /* 95 — senza, contano tutte: un avviso in piu', non in meno */ }
     var b = calcolaScadenze(righe, oggiISO(), giorniPreavviso())
     scadenzeCache = b
     var n = contaScadenzeUrgenti(b)
@@ -17073,17 +17217,22 @@ function mostraFinestraScadenze(b) {
   if (!b) return
   // Solo il riepilogo: la finestra si legge in due secondi, il dettaglio sta
   // nella schermata. Le righe a zero non si mostrano.
+  // 95 — gli incassi senza quelli che aspettano il termine di un sollecito.
+  var nInc = b.incasso.righe.length - (b.incasso.attesa || 0)
   var righe = [
-    { icona: '🔴', testo: etichettaBlocco(b.scaduto.righe.length, 'fattura scaduta', 'fatture scadute'), dato: b.scaduto },
-    { icona: '🟠', testo: etichettaBlocco(b.inScadenza.righe.length, 'in scadenza', 'in scadenza'),      dato: b.inScadenza },
-    { icona: '🔵', testo: etichettaBlocco(b.incasso.righe.length, 'incasso non arrivato', 'incassi non arrivati'), dato: b.incasso }
-  ].filter(function (x) { return x.dato.righe.length > 0 })
+    { icona: '🔴', n: b.scaduto.righe.length, somma: b.scaduto.somma,
+      testo: etichettaBlocco(b.scaduto.righe.length, 'fattura scaduta', 'fatture scadute') },
+    { icona: '🟠', n: b.inScadenza.righe.length, somma: b.inScadenza.somma,
+      testo: etichettaBlocco(b.inScadenza.righe.length, 'in scadenza', 'in scadenza') },
+    { icona: '🔵', n: nInc, somma: round2(b.incasso.somma - (b.incasso.sommaAttesa || 0)),
+      testo: etichettaBlocco(nInc, 'incasso non arrivato', 'incassi non arrivati') }
+  ].filter(function (x) { return x.n > 0 })
 
   html('scad-modal-body', righe.map(function (x) {
     return '<div class="scad-sommario-riga">' +
       '<span aria-hidden="true">' + x.icona + '</span>' +
       '<span class="scad-sommario-testo">' + esc(x.testo) + '</span>' +
-      '<span class="scad-sommario-imp">' + esc(fmtNumIt(x.dato.somma)) + ' CHF</span>' +
+      '<span class="scad-sommario-imp">' + esc(fmtNumIt(x.somma)) + ' CHF</span>' +
     '</div>'
   }).join(''))
 
@@ -18255,7 +18404,7 @@ function contiCantiere(cantiereId) {
     quoteSpesaCantieri(s).forEach(function (q) {
       if (q.cantiere_id !== cantiereId) return
       c.spese.importo += q.importo
-      c.spese.righe.push(Object.assign({}, s, { importo: q.importo, _importoApp: s.importo, _classificata: q.classificata }))
+      c.spese.righe.push(Object.assign({}, s, { importo: q.importo, _importoApp: s.importo, _importoClass: importoSpesa(s), _classificata: q.classificata }))   // 96
     })
   })
 
@@ -18904,8 +19053,10 @@ function apriElencoCantiere(chiave) {
       if (tipo === 'spesa') {
         // 75·9 — una spesa dell'App Cantieri non e' un documento di qui: non si
         // apre, e lo dice.
+        // 96 — le due cifre, se sono diverse: «classificata per X, nell'App Cantieri Y».
+        var due96 = r._classificata ? testoDueCifreSpesa(r._importoClass, r._importoApp) : ''
         return rigaElencoCant(fmtDate(r.data), (r.descrizione || '—') +
-                              (r._classificata ? ' (dall\'App Cantieri, classificata)' : ' (dall\'App Cantieri)'),
+                              (r._classificata ? ' (dall\'App Cantieri, ' + (due96 || 'classificata') + ')' : ' (dall\'App Cantieri)'),
                               fmtNumIt(safeNum(r.importo) || 0) + ' CHF')   // 88 — la quota della regola
       }
       if (tipo === 'regia') {
@@ -20524,19 +20675,17 @@ function ultimoMetodoUsato(tabella) {
   return lista.length ? lista[lista.length - 1].metodo : ''
 }
 
-// Mancano la data, il metodo o tutti e due? Si chiede. Torna i dati da usare,
-// oppure null se si vuole tornare a compilarli. Senza data un pagamento non
-// esiste (il database la vuole): se manca si usa `dataRipiego`, e lo si dice.
-function chiediDatiMancantiPagamento(data, metodo, dataRipiego) {
+// 95 — data e metodo OBBLIGATORI (Umberto, 27.10.2026). Nella 94 si chiedeva
+// e con OK si registrava lo stesso: «chiedo e poi registro» vuol dire premere
+// OK senza leggere, e un pagamento senza data o metodo non serve a niente.
+// Torna il messaggio da mostrare, oppure '' se ci sono tutti e due.
+function mancaDatoPagamento(data, metodo) {
   var manca = []
   if (!data) manca.push('la data')
   if (!metodo) manca.push('il metodo')
-  if (!manca.length) return { data: data, metodo: metodo }
-  if (!window.confirm('Manca ' + manca.join(' e ') + ' del pagamento.\n\n' +
-      (!data ? 'Senza data un pagamento non si registra: metto il ' + fmtDate(dataRipiego) + '.\n' : '') +
-      (!metodo ? 'Il metodo resta «non indicato»: lo puoi aggiungere dopo, correggendo il pagamento.\n' : '') +
-      '\nOK = registro così · Annulla = torno a compilarli')) return null
-  return { data: data || dataRipiego, metodo: metodo || null }
+  if (!manca.length) return ''
+  return 'Manca ' + manca.join(' e ') + ' del pagamento: ' + (manca.length === 2 ? 'sono obbligatori' : 'è obbligatori' + (data ? 'o' : 'a')) +
+    '. Senza, il pagamento non si registra.'
 }
 
 function rigaPag(etichetta, importo, forte) {
@@ -20605,7 +20754,7 @@ var METODI_PAGAMENTO = [
 ]
 
 function buildMetodoOptions(selected) {
-  var out = '<option value="">— non indicato —</option>'
+  var out = '<option value="">— scegli (obbligatorio) —</option>'   // 95
   METODI_PAGAMENTO.forEach(function (m) {
     out += '<option value="' + esc(m) + '"' + (m === selected ? ' selected' : '') + '>' + esc(m) + '</option>'
   })
@@ -20838,14 +20987,13 @@ async function salvaPagamento() {
       metodo: getVal('pag-metodo') || null,
       riferimento: getVal('pag-riferimento') || null
     }
-    // 94 — data e metodo: non obbligatori, ma se mancano si chiede.
-    var dm94 = chiediDatiMancantiPagamento(valori.data, valori.metodo, oggiISO())
-    if (!dm94) {
-      html('pag-banner', '<div class="fase-banner warn"><span class="icon" aria-hidden="true">✏️</span>' +
-        '<div class="msg">Non registrato: compila data e metodo, poi premi di nuovo «Registra».</div></div>')
+    // 95 — data e metodo obbligatori: senza, non si scrive niente e la finestra resta aperta.
+    var manca95 = mancaDatoPagamento(valori.data, valori.metodo)
+    if (manca95) {
+      html('pag-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span>' +
+        '<div class="msg">' + esc(manca95) + '</div></div>')
       return
     }
-    valori.data = dm94.data; valori.metodo = dm94.metodo
 
     // 91 — prima di scrivere: la condizione di sconto e il residuo di adesso.
     var prepSconto = (d.tabella === 'tm_conta_fatture' && !d.rimborso && !pagamentoInModifica)
@@ -21551,25 +21699,92 @@ function fattureScadute(oggi) {
     if (!f.data_scadenza || f.data_scadenza >= oggi) return false
     return residuoDocumento('tm_conta_fatture', f.id, f.totale) > 0.005
   }).sort(function (a, b) {
-    // Il ritardo piu' lungo in cima: e' l'ordine in cui si telefona.
-    return String(a.data_scadenza).localeCompare(String(b.data_scadenza))
+    // 95 — prima la data che si aspetta da piu' tempo: il termine del
+    // sollecito se c'e', se no la scadenza. E' l'ordine in cui si telefona.
+    return String(dataAttesaFattura(a, oggi)).localeCompare(String(dataAttesaFattura(b, oggi)))
   })
 }
 
-// La riga che racconta lo stato, per l'elenco e per la scheda:
-// «scaduta da 34 giorni · 1º sollecito inviato il 12.09.2026 · nuovo termine 27.09.2026»
+// ── 95 · La scadenza e il termine del sollecito, tutte e due ────────────────
+// La scadenza della fattura non si sposta: da li' contano i giorni di ritardo,
+// lo stralcio e (quando ci saranno) gli interessi. Ma quello che si aspetta
+// OGGI e' il termine dell'ultimo sollecito INVIATO: finche' non e' passato, il
+// cliente e' in tempo, e la fattura non e' da sollecitare di nuovo.
+// Un sollecito preparato e non inviato non da' nessun termine (il cliente non
+// l'ha ricevuto): la fattura resta fra le cose da fare. E' quella che si
+// dimentica, e si fa vedere da lontano.
+function statoSollecitoFattura(fatturaId, oggi) {
+  oggi = oggi || oggiISO()
+  var sol = sollecitiDi(fatturaId)
+  var inviati = sol.filter(function (s) { return !!s.data_inviato })
+  var ultimo = inviati.length ? inviati[inviati.length - 1] : null
+  var nonInviati = sol.filter(function (s) { return !s.data_inviato })
+  var termine = (ultimo && ultimo.nuovo_termine) || null
+  return {
+    ultimoInviato: ultimo,
+    nonInviati: nonInviati,
+    termine: termine,
+    inAttesa: !!termine && termine >= oggi && !nonInviati.length,
+    termineScaduto: !!termine && termine < oggi,
+    giorniAlTermine: termine ? diffGiorni(termine, oggi) : null
+  }
+}
+
+// La data che si aspetta: serve solo a ORDINARE (il ritardo resta sulla scadenza).
+function dataAttesaFattura(f, oggi) {
+  return statoSollecitoFattura(f.id, oggi).termine || f.data_scadenza
+}
+
+// Il termine passato: cosa viene dopo. Niente, se c'e' ancora un sollecito da spedire.
+function testoTermineScaduto(st) {
+  if (!st.termineScaduto || st.nonInviati.length) return ''
+  var l = st.ultimoInviato.livello
+  return 'il termine del ' + l + 'º sollecito è scaduto: ' +
+    (l < 3 ? 'pronta per il ' + (l + 1) + 'º' : 'niente 4º, si valuta la procedura di incasso')
+}
+
+// «scaduta il 28.10.2026 (30 gg fa)». Vuoto se non e' scaduta.
+function testoScadutaIl(f, oggi) {
+  var gg = giorniRitardo(f, oggi)
+  if (!gg) return ''
+  return 'scaduta il ' + fmtDate(f.data_scadenza) + ' (' + (gg === 1 ? '1 giorno fa' : gg + ' gg fa') + ')'
+}
+
+// I solleciti in fila, e in fondo cosa viene dopo. Il nuovo termine si scrive
+// solo per gli inviati: quello di una lettera mai spedita non vale.
+function partiSolleciti(fatturaId, oggi) {
+  var parti = []
+  sollecitiDi(fatturaId).forEach(function (s) {
+    var ordinale = s.livello + 'º sollecito'
+    if (s.data_inviato) {
+      parti.push(ordinale + ' inviato il ' + fmtDate(s.data_inviato))
+      if (s.nuovo_termine) parti.push('nuovo termine ' + fmtDate(s.nuovo_termine))
+    } else {
+      parti.push(ordinale + ' preparato, NON inviato')
+    }
+  })
+  var dopo = testoTermineScaduto(statoSollecitoFattura(fatturaId, oggi))
+  if (dopo) parti.push(dopo)
+  return parti
+}
+
+// La riga che racconta lo stato, per la scheda e per le Scadenze:
+// «scaduta il 28.10.2026 (30 gg fa) · 1º sollecito inviato il 10.11.2026 · nuovo termine 25.11.2026»
 function testoStatoSolleciti(f, oggi) {
   var parti = []
-  var gg = giorniRitardo(f, oggi)
-  if (gg) parti.push('scaduta da ' + gg + (gg === 1 ? ' giorno' : ' giorni'))
-  sollecitiDi(f.id).forEach(function (s) {
-    var ordinale = s.livello + 'º sollecito'
-    parti.push(s.data_inviato
-      ? ordinale + ' inviato il ' + fmtDate(s.data_inviato)
-      : ordinale + ' preparato, NON inviato')
-    if (s.nuovo_termine) parti.push('nuovo termine ' + fmtDate(s.nuovo_termine))
+  var sc = testoScadutaIl(f, oggi)
+  if (sc) parti.push(sc)
+  return parti.concat(partiSolleciti(f.id, oggi)).join(' · ')
+}
+
+// Le scadute in due: da sollecitare (nessun sollecito, termine passato, o un
+// sollecito ancora da spedire) e in attesa del termine di un sollecito.
+function divisioneScadute(oggi, lista) {
+  var da = [], attesa = []
+  ;(lista || fattureScadute(oggi)).forEach(function (f) {
+    (statoSollecitoFattura(f.id, oggi).inAttesa ? attesa : da).push(f)
   })
-  return parti.join(' · ')
+  return { daSollecitare: da, inAttesa: attesa }
 }
 
 // ── La lettera ──────────────────────────────────────────────────────────────
@@ -21735,6 +21950,25 @@ async function preparaSollecito(idFattura) {
     return
   }
 
+  // 95 — il cliente ha ancora tempo. Un sollecito mandato prima che il termine
+  // del precedente sia passato indebolisce, se poi si arriva all'incasso.
+  var stP = statoSollecitoFattura(f.id)
+  if (stP.ultimoInviato && stP.termine && stP.termine >= oggiISO()) {
+    var gT = stP.giorniAlTermine
+    if (!window.confirm('Il cliente ha ancora tempo per pagare: il termine del ' + stP.ultimoInviato.livello + 'º sollecito è il ' +
+        fmtDate(stP.termine) + (gT === 0 ? ' (oggi)' : ' (fra ' + gT + (gT === 1 ? ' giorno)' : ' giorni)')) + '.\n\n' +
+        'Un ' + livello + 'º sollecito mandato prima che quel termine sia passato ti indebolisce, se poi arrivi all\'incasso: ' +
+        'per il cliente era ancora in tempo.\n\n' +
+        'OK = preparo lo stesso il ' + livello + 'º · Annulla = aspetto il termine')) return
+  }
+  // 95 — e se ce n'e' uno preparato e mai spedito, prima quello.
+  if (stP.nonInviati.length) {
+    var sNI = stP.nonInviati[0]
+    if (!window.confirm('Il ' + sNI.livello + 'º sollecito è preparato ma NON inviato: il cliente non l\'ha ricevuto.\n\n' +
+        'Di solito prima si spedisce quello e se ne segna la data.\n\n' +
+        'OK = preparo lo stesso il ' + livello + 'º · Annulla = no')) return
+  }
+
   // 61h — l'avviso sulle spese: pattuite o no lo sa solo chi ha scritto la
   // fattura. Il programma non puo' saperlo e non finge di saperlo.
   var spese = speseSollecito()
@@ -21815,10 +22049,8 @@ async function preparaSollecito(idFattura) {
     }).select()
     if (error) throw error
     await loadSolleciti(true)
-    renderFattureTable()
-    showFattureBanner('fatture-list-banner', 'ok',
-      d.livello + 'º sollecito registrato' +
-      (dataInviato ? ' — inviato il ' + fmtDate(dataInviato) : ' — preparato, NON inviato') +
+    await ridisegnaDopoSollecito(f.id, d.livello + 'º sollecito registrato' +
+      (dataInviato ? ' — inviato il ' + fmtDate(dataInviato) : ' — preparato, NON inviato: quando lo spedisci, segna la data') +
       '. Nuovo termine: ' + fmtDate(d.nuovoTermine) + '. La scadenza della fattura non è cambiata.')
   } catch (e) {
     showFattureBanner('fatture-list-banner', 'err',
@@ -21844,12 +22076,26 @@ async function segnaSollecitoInviato(idSollecito) {
       .update({ data_inviato: d }).eq('id', idSollecito).eq('azienda_id', currentAziendaId).select()
     if (error) throw error
     await loadSolleciti(true)
-    renderFattureTable()
-    showFattureBanner('fatture-list-banner', 'ok',
-      s.livello + 'º sollecito segnato come inviato il ' + fmtDate(d) + '.')
+    await ridisegnaDopoSollecito(s.fattura_id, s.livello + 'º sollecito segnato come inviato il ' + fmtDate(d) +
+      (s.nuovo_termine ? '. Il cliente ha tempo fino al ' + fmtDate(s.nuovo_termine) + '.' : '.'))
   } catch (e) {
     showFattureBanner('fatture-list-banner', 'err', 'Non registrato: ' + (e.message || e))
+    showFattureBanner('fatture-detail-banner', 'err', 'Non registrato: ' + (e.message || e))
   }
+}
+
+// 95 — dopo un sollecito preparato o segnato: l'elenco, la scheda se e' aperta
+// su quella fattura, e il pallino delle Scadenze (il termine cambia che cosa
+// e' un avviso). Il messaggio va dove si sta guardando.
+async function ridisegnaDopoSollecito(fatturaId, messaggio) {
+  renderFattureTable()
+  var v = el('fatture-detail-view')
+  if (v && v.style.display !== 'none' && currentDetailFattura && currentDetailFattura.id === fatturaId) {
+    try { await viewFattura(fatturaId) } catch (_) { /* la scheda dice da sola cosa non ha letto */ }
+  }
+  showFattureBanner('fatture-list-banner', 'ok', messaggio)
+  showFattureBanner('fatture-detail-banner', 'ok', messaggio)
+  try { await refreshScadenzeCount() } catch (_) { /* non bloccante */ }
 }
 
 // «12.09.2026» → «2026-09-12». null se non e' una data. Non si usa mai
@@ -21880,42 +22126,59 @@ function tabellaFattureScaduteHtml() {
   if (!list.length) {
     return '<div class="dim" style="padding:10px 0">✅ Nessuna fattura scaduta: non c\'è niente da sollecitare.</div>'
   }
-  var rows = list.map(function (f) {
+  // 95 — in due parti: sopra quelle da sollecitare, sotto quelle che aspettano
+  // il termine di un sollecito, senza il bottone: il cliente ha ancora tempo.
+  // Il ritardo resta contato dalla scadenza della fattura.
+  var div = divisioneScadute(oggi, list)
+  function riga(f, attesa) {
     var gg = giorniRitardo(f, oggi)
     var res = residuoDocumento('tm_conta_fatture', f.id, f.totale)
     var sol = sollecitiDi(f.id)
+    var st = statoSollecitoFattura(f.id, oggi)
     var prossimo = prossimoLivelloSollecito(f.id)
-    var statoSol = sol.length
+    var dopo = testoTermineScaduto(st)
+    var statoSol = (sol.length
       ? sol.map(function (s) {
           return '<div class="sol-riga-stato">' +
             esc(s.livello + 'º ') +
             (s.data_inviato
-              ? '<span class="sol-inviato">✅ inviato il ' + esc(fmtDate(s.data_inviato)) + '</span>'
-              : '<button type="button" class="azione-rapida" onclick="event.stopPropagation(); segnaSollecitoInviato(\'' + esc(s.id) + '\')">⏳ preparato, non inviato — segna la data</button>') +
-            (s.nuovo_termine ? ' <span class="dim">nuovo termine ' + esc(fmtDate(s.nuovo_termine)) + '</span>' : '') +
+              ? '<span class="sol-inviato">✅ inviato il ' + esc(fmtDate(s.data_inviato)) + '</span>' +
+                (s.nuovo_termine ? ' <span class="dim">nuovo termine ' + esc(fmtDate(s.nuovo_termine)) + '</span>' : '')
+              // 95 — e' la cosa che si dimentica: si vede da lontano.
+              : '<button type="button" class="azione-rapida sol-non-inviato" onclick="event.stopPropagation(); segnaSollecitoInviato(\'' + esc(s.id) + '\')">⚠️ preparato, NON inviato — segna la data di invio</button>') +
             '</div>'
         }).join('')
-      : '<span class="dim">nessun sollecito</span>'
-    return '<tr class="row-clickable" onclick="viewFattura(\'' + f.id + '\')">' +
+      : '<span class="dim">nessun sollecito</span>') +
+      (dopo ? '<div class="sol-dopo-termine">⏰ ' + esc(dopo) + '</div>' : '')
+    var azione = attesa
+      ? '<span class="dim">il cliente ha tempo fino al ' + esc(fmtDate(st.termine)) + '</span>'
+      : (prossimo
+          ? '<button class="icon-btn" onclick="event.stopPropagation(); preparaSollecito(\'' + f.id + '\')">📨 Prepara ' + prossimo + 'º sollecito</button>'
+          : '<span class="dim">tre solleciti fatti</span>')
+    return '<tr class="row-clickable' + (attesa ? ' sol-in-attesa' : '') + '" onclick="viewFattura(\'' + f.id + '\')">' +
       '<td><span class="cod">' + esc(f.numero || '—') + '</span></td>' +
       '<td>' + esc(f.cliente_nome || '') + '</td>' +
       '<td class="dim">' + esc(fmtDate(f.data_scadenza)) + '</td>' +
       '<td class="num sol-ritardo">' + esc(String(gg)) + '</td>' +
       '<td class="num">' + esc(fmtNumIt(res)) + ' ' + esc(f.valuta || 'CHF') + '</td>' +
       '<td>' + statoSol + '</td>' +
-      '<td class="row-actions">' +
-        (prossimo
-          ? '<button class="icon-btn" onclick="event.stopPropagation(); preparaSollecito(\'' + f.id + '\')">📨 Prepara ' + prossimo + 'º sollecito</button>'
-          : '<span class="dim">tre solleciti fatti</span>') +
-      '</td>' +
+      '<td class="row-actions">' + azione + '</td>' +
     '</tr>'
-  }).join('')
-  return '<div class="table-wrap"><table><thead><tr>' +
-    '<th style="width:110px">Numero</th><th>Cliente</th><th style="width:100px">Scadenza</th>' +
-    '<th style="width:90px;text-align:right" title="Giorni di ritardo">Ritardo</th>' +
-    '<th style="width:130px;text-align:right">Residuo</th>' +
-    '<th style="width:280px">Solleciti</th><th style="width:190px">Azioni</th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+  }
+  function tabella(righe, attesa) {
+    return '<div class="table-wrap"><table><thead><tr>' +
+      '<th style="width:110px">Numero</th><th>Cliente</th><th style="width:100px">Scadenza</th>' +
+      '<th style="width:90px;text-align:right" title="Giorni di ritardo, dalla scadenza della fattura">Ritardo</th>' +
+      '<th style="width:130px;text-align:right">Residuo</th>' +
+      '<th style="width:280px">Solleciti</th><th style="width:190px">Azioni</th>' +
+      '</tr></thead><tbody>' + righe.map(function (f) { return riga(f, attesa) }).join('') + '</tbody></table></div>'
+  }
+  var n = div.daSollecitare.length, k = div.inAttesa.length
+  return '<div class="sol-parte-tit">📨 Da sollecitare (' + n + ')</div>' +
+    (n ? tabella(div.daSollecitare, false)
+       : '<div class="dim" style="padding:4px 0 14px">✅ Nessuna da sollecitare oggi.</div>') +
+    (k ? '<div class="sol-parte-tit attesa">⏳ In attesa del termine di un sollecito (' + k + ')</div>' +
+         tabella(div.inAttesa, true) : '')
 }
 
 // ── Le impostazioni dei solleciti ───────────────────────────────────────────
@@ -24354,7 +24617,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '94'
+var VERSIONE = '95'
 
 function controllaVersionePagina() {
   try {
