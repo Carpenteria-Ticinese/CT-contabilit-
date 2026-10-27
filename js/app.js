@@ -3513,6 +3513,7 @@ function fillFormFromValues(vals) {
   if (el('f-contatto-id')) el('f-contatto-id').value = vals.contatto_id || ''
   if (el('f-stato-pagamento')) el('f-stato-pagamento').value = vals.stato_pagamento || 'pagato'
   if (el('f-data-pagamento'))  el('f-data-pagamento').value = vals.data_pagamento || ''
+  if (el('f-pag-metodo'))      el('f-pag-metodo').value = ''   // 94 — si ripropone l'ultimo usato
   riempiSelectGruppi('f-gruppo', vals.gruppo_codice || '')
   onMovStatoChange()
   aggiornaLegatoDaId('f', vals.contatto_id)
@@ -9255,6 +9256,8 @@ function onAcquistoGiaPagata() {
   // La data si propone dalla fattura, ma resta modificabile: pagare il giorno
   // stesso e' il caso comune, non una regola.
   if (acceso && !getVal('a-pag-data')) setVal('a-pag-data', getVal('a-data') || oggiISO())
+  // 94 — il metodo: l'ultimo usato sugli acquisti, modificabile.
+  if (acceso && !getVal('a-pag-metodo')) setVal('a-pag-metodo', ultimoMetodoUsato('tm_conta_fatture_acquisto'))
 }
 
 // Decide se mostrare la spunta o dire che i pagamenti ci sono gia'.
@@ -9841,6 +9844,14 @@ async function saveAcquisto() {
 
   // 75·6 — senza cantiere si chiede, una volta: il vuoto dev'essere una scelta.
   if (!(await confermaCantiereAcquisto())) return
+
+  // 94 — «già pagata»: se mancano data o metodo del pagamento si chiede, PRIMA di salvare.
+  var spunta94 = el('a-gia-pagata'), box94 = el('a-gia-pagata-box')
+  if (spunta94 && spunta94.checked && !(box94 && box94.style.display === 'none')) {
+    var dm94 = chiediDatiMancantiPagamento(getVal('a-pag-data'), getVal('a-pag-metodo'), getVal('a-data') || oggiISO())
+    if (!dm94) return
+    setVal('a-pag-data', dm94.data)
+  }
 
   var btn = el('acq-save-btn'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
   try {
@@ -10497,6 +10508,18 @@ async function handleInserimentoSubmit(event) {
     // e' gia' uscita, e la spunta parte gia' attiva.
     var giaPagato = el('f-gia-pagata') ? el('f-gia-pagata').checked : false
     var dataPag   = el('f-data-pagamento') ? el('f-data-pagamento').value : ''
+    var metodoPag = el('f-pag-metodo') ? el('f-pag-metodo').value : ''   // 94
+    // 94 — il pagamento si crea solo su un movimento nuovo: lì, se mancano data
+    // o metodo, si chiede prima di salvare.
+    if (giaPagato && !editingMovimentoId) {
+      var dm94 = chiediDatiMancantiPagamento(dataPag, metodoPag, dataVal)
+      if (!dm94) {
+        var eAnn = new Error('Movimento NON salvato: compila data e metodo del pagamento, poi salva di nuovo.')
+        eAnn.annullato = true
+        throw eAnn
+      }
+      dataPag = dm94.data; metodoPag = dm94.metodo || ''
+    }
 
     var payload = {
       azienda_id:    currentAziendaId,
@@ -10559,7 +10582,8 @@ async function handleInserimentoSubmit(event) {
           // domanda a meta' salvataggio.
           await scriviPagamento(
             { tabella: 'tm_conta_movimenti_propri', id: creatoMov[0].id, importo: importoVal },
-            { data: dataPag || dataVal, importo: importoVal, note: 'Registrato alla creazione con «gia pagata».' },
+            { data: dataPag || dataVal, importo: importoVal, metodo: metodoPag || null,   // 94
+              note: 'Registrato alla creazione con «gia pagata».' },
             null, { confermaEccedenza: true })
           invalidaCachePagamenti()
         } catch (ePg) {
@@ -10585,7 +10609,8 @@ async function handleInserimentoSubmit(event) {
     } catch (_) { /* ignora: dati già salvati */ }
 
   } catch (e) {
-    showInserimentoBanner('err', 'Errore', e.message)
+    if (e && e.annullato) showInserimentoBanner('warn', 'Non salvato', e.message)   // 94 — una scelta, non un errore
+    else showInserimentoBanner('err', 'Errore', e.message)
   } finally {
     if (btn) { btn.textContent = editingMovimentoId ? '💾 Salva modifiche' : '💾 Salva movimento'; btn.disabled = moduloIntatto('movimento') }   // 75·5
   }
@@ -15452,6 +15477,8 @@ function onMovStatoChange() {
   if (pagato && el('f-data-pagamento') && !getVal('f-data-pagamento')) {
     el('f-data-pagamento').value = getVal('f-data') || ''
   }
+  // 94 — il metodo: l'ultimo usato sui movimenti, modificabile.
+  if (pagato && el('f-pag-metodo') && !getVal('f-pag-metodo')) setVal('f-pag-metodo', ultimoMetodoUsato('tm_conta_movimenti_propri'))
   var hint = el('f-stato-hint')
   if (hint) {
     hint.textContent = pagato
@@ -16924,7 +16951,8 @@ function rigaScadenza(r, blocco) {
           '\', \'' + esc(r.verso) + '\', ' + (r._importoRata != null ? r._importoRata
             : (safeNum(r.residuo) != null ? safeNum(r.residuo) : (safeNum(r.importo_totale) || 0))) +
           ', ' + (r._rata ? '\'' + esc(r._rata.id) + '\'' : 'null') +
-          ', ' + (safeNum(r.importo_totale) != null ? safeNum(r.importo_totale) : 'null') + ')">' +
+          ', ' + (safeNum(r.importo_totale) != null ? safeNum(r.importo_totale) : 'null') +
+          ', \'' + esc(String(r.controparte_nome || '').replace(/'/g, '')) + '\')">' +   // 94 — il nome, per la finestra
         // Il testo dice CHE COSA si sta saldando: la rata o tutto il resto.
         '✅ ' + (r._rata ? 'Salda la rata ' + r._rata.numero_rata
                           : 'Salda ' + esc(e.testo.toLowerCase())) + '</button>' +
@@ -16945,55 +16973,12 @@ function rigaScadenza(r, blocco) {
 // FASE 8 — non si scrive piu' lo stato: si registra il PAGAMENTO, e lo stato
 // lo ricalcola il trigger. L'importo e' il residuo, oppure la rata se il
 // documento ne ha una in scadenza: e' quello che si sta davvero pagando.
-async function segnaSaldatoDaScadenze(tabella, id, verso, importoDaSaldare, idRata, totaleDoc) {
-  if (!currentAziendaId) return
-  var e = etichettaPagamento(verso, 'pagato')
-  try {
-    var imp = safeNum(importoDaSaldare)
-    if (imp == null || imp <= 0) throw new Error('Importo da saldare non valido.')
-
-    // 52·A — stessa scrittura di tutti gli altri pagamenti, con il totale del
-    // documento per il controllo dello sforamento. Sotto soglia si chiede.
-    var doc = { tabella: tabella, id: id, importo: totaleDoc }
-    var valori = { data: oggiISO(), importo: imp }
-    var creato
-    try {
-      creato = await scriviPagamento(doc, valori, null, {})
-    } catch (e1) {
-      if (e1.codice !== 'eccedenza') throw e1
-      if (!window.confirm('Il pagamento supera il totale del documento.\n\n' + e1.message +
-          '\n\nRegistrarlo lo stesso? (arrotondamento, spese bancarie)')) {
-        throw new Error('annullato.')
-      }
-      creato = await scriviPagamento(doc, valori, null, { confermaEccedenza: true })
-    }
-
-    var avvisoRata = null
-    if (idRata && creato) {
-      const { error: eRata } = await sb.from('tm_conta_rate').update({ pagamento_id: creato.id })
-        .eq('id', idRata).eq('azienda_id', currentAziendaId).select()
-      if (eRata) avvisoRata = 'Pagamento registrato, ma la rata NON è stata collegata: ' + (eRata.message || eRata)
-    }
-    invalidaCachePagamenti()
-    await loadFlussi(true); await loadPagamenti(true); await loadRate(true)
-
-    // I flussi sono stati riletti: la riga sparisce dal blocco e i conteggi si
-    // rifanno senza ricaricare la pagina.
-    renderScadenze()
-    await refreshScadenzeCount()
-    if (avvisoRata) showScadenzeBanner('warn', avvisoRata)
-    else showScadenzeBanner('ok', 'Segnato come ' + e.testo.toLowerCase() + ' in data odierna.')
-  } catch (err) {
-    var m = String(err.message || err)
-    if (m.indexOf('sola lettura') !== -1 || m.indexOf('immutabil') !== -1) {
-      showScadenzeBanner('err',
-        'Il database ha rifiutato la modifica come se si stesse cambiando un dato congelato della fattura. ' +
-        'Non è un problema da aggirare: segnalalo, perché vuol dire che questa azione sta scrivendo un campo sbagliato. ' +
-        'Messaggio originale: ' + m)
-    } else {
-      showScadenzeBanner('err', 'Non salvato: ' + m)
-    }
-  }
+async function segnaSaldatoDaScadenze(tabella, id, verso, importoDaSaldare, idRata, totaleDoc, nome) {
+  // 94 — non scrive più da qui (scriveva data di oggi e nessun metodo): apre la
+  // finestra «Registra pagamento» già compilata — l'importo da saldare (la rata
+  // o il residuo), oggi, l'ultimo metodo usato — e si conferma o si cambia.
+  // Dopo il salvataggio le Scadenze si ridisegnano da sole (ricaricaDopoPagamento).
+  await apriRegistraPagamento(tabella, id, totaleDoc, verso, nome || '', { importo: importoDaSaldare, rata: idRata || null })
 }
 
 // Porta il documento nella sua schermata.
@@ -19874,7 +19859,7 @@ async function loadPagamenti(force) {
   // com'era e NON viene segnata buona: zero righe con la sessione valida
   // sono un risultato vero, zero righe senza sessione no.
   const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_pagamenti')
-    .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note')
+    .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note, created_at')   // 94 — created_at: l'ultimo metodo usato
     .eq('azienda_id', currentAziendaId)
     .order('data').order('id') })
   if (error) throw error
@@ -20411,7 +20396,9 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
   pagamentoInModifica = null
   vestiFinestraPagamento(false, rimborso)
   docPagamentoCorrente = { tabella: tabella, id: id, importo: safeNum(importoDoc) || 0,
-                           verso: verso || 'uscita', nome: nome || '', rimborso: rimborso }
+                           verso: verso || 'uscita', nome: nome || '', rimborso: rimborso,
+                           // 94 — quello da fare DOPO il pagamento (l'ordine di pagamento da togliere)
+                           dopo: (opzioni && typeof opzioni.dopo === 'function') ? opzioni.dopo : null }
   try {
     await loadPagamenti(true)
     await loadRate(true)
@@ -20486,10 +20473,13 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
     proposta = residuo
   }
 
-  setVal('pag-data', oggiISO())
-  setVal('pag-importo', proposta > 0 ? proposta.toFixed(2) : '')
-  setVal('pag-metodo', '')
-  setVal('pag-riferimento', '')
+  // 94 — già compilata: importo = il residuo (o quello passato: la rata, l'ordine),
+  // data = oggi (o quella passata), metodo = l'ultimo usato. Si conferma o si cambia.
+  var importoProp = (opzioni && safeNum(opzioni.importo) != null) ? safeNum(opzioni.importo) : proposta
+  setVal('pag-data', (opzioni && opzioni.data) || oggiISO())
+  setVal('pag-importo', importoProp > 0 ? importoProp.toFixed(2) : '')
+  setVal('pag-metodo', (opzioni && opzioni.metodo) || ultimoMetodoUsato(tabella))
+  setVal('pag-riferimento', (opzioni && opzioni.riferimento) || '')
   html('pag-banner', '')
   html('pag-avviso', '')
 
@@ -20504,6 +20494,7 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
         return '<option value="' + esc(r.id) + '">Rata ' + r.numero_rata + ' del ' +
                esc(fmtDate(r.data_prevista)) + ' — ' + esc(fmtNumIt(r.importo_previsto)) + ' CHF</option>'
       }).join('')
+    if (opzioni && opzioni.rata) sel.value = opzioni.rata   // 94 — dalle Scadenze: la rata che si salda
   }
 
   var ov = el('pagamento-overlay')
@@ -20513,6 +20504,39 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
   // qualcosa, non per i valori che ha trovato scritti.
   registraAperturaModale('pagamento-overlay')
   var inp = el('pag-importo'); if (inp) inp.focus()
+}
+
+// ══ 94 · DATA E METODO DI OGNI PAGAMENTO ═════════════════════════════════════
+// Un pagamento si registra solo dalla finestra «Registra pagamento» (o dalla
+// spunta «già pagata» del modulo, che ha i suoi due campi). Data e metodo non
+// sono obbligatori, ma se mancano il programma lo chiede PRIMA di salvare.
+
+// Il metodo proposto: l'ultimo usato sullo stesso tipo di documento (vendite,
+// acquisti, movimenti), se no l'ultimo in assoluto. Solo un metodo dell'elenco.
+function ultimoMetodoUsato(tabella) {
+  var conMetodo = (pagamentiCache || []).filter(function (p) {
+    return p.metodo && METODI_PAGAMENTO.indexOf(String(p.metodo)) !== -1
+  })
+  var stessi = conMetodo.filter(function (p) { return p.tabella_origine === tabella })
+  var lista = (stessi.length ? stessi : conMetodo).slice().sort(function (a, b) {
+    return String(a.created_at || a.data || '').localeCompare(String(b.created_at || b.data || ''))
+  })
+  return lista.length ? lista[lista.length - 1].metodo : ''
+}
+
+// Mancano la data, il metodo o tutti e due? Si chiede. Torna i dati da usare,
+// oppure null se si vuole tornare a compilarli. Senza data un pagamento non
+// esiste (il database la vuole): se manca si usa `dataRipiego`, e lo si dice.
+function chiediDatiMancantiPagamento(data, metodo, dataRipiego) {
+  var manca = []
+  if (!data) manca.push('la data')
+  if (!metodo) manca.push('il metodo')
+  if (!manca.length) return { data: data, metodo: metodo }
+  if (!window.confirm('Manca ' + manca.join(' e ') + ' del pagamento.\n\n' +
+      (!data ? 'Senza data un pagamento non si registra: metto il ' + fmtDate(dataRipiego) + '.\n' : '') +
+      (!metodo ? 'Il metodo resta «non indicato»: lo puoi aggiungere dopo, correggendo il pagamento.\n' : '') +
+      '\nOK = registro così · Annulla = torno a compilarli')) return null
+  return { data: data || dataRipiego, metodo: metodo || null }
 }
 
 function rigaPag(etichetta, importo, forte) {
@@ -20590,7 +20614,7 @@ function buildMetodoOptions(selected) {
 
 // Le tendine dei metodi, ovunque siano. Si chiama all'avvio; il valore
 // eventualmente gia' scelto si conserva.
-var TENDINE_METODI = ['pag-metodo', 'a-pag-metodo']
+var TENDINE_METODI = ['pag-metodo', 'a-pag-metodo', 'f-pag-metodo']   // 94 — anche il movimento
 function riempiTendineMetodi() {
   TENDINE_METODI.forEach(function (id) {
     var sel = el(id)
@@ -20814,6 +20838,14 @@ async function salvaPagamento() {
       metodo: getVal('pag-metodo') || null,
       riferimento: getVal('pag-riferimento') || null
     }
+    // 94 — data e metodo: non obbligatori, ma se mancano si chiede.
+    var dm94 = chiediDatiMancantiPagamento(valori.data, valori.metodo, oggiISO())
+    if (!dm94) {
+      html('pag-banner', '<div class="fase-banner warn"><span class="icon" aria-hidden="true">✏️</span>' +
+        '<div class="msg">Non registrato: compila data e metodo, poi premi di nuovo «Registra».</div></div>')
+      return
+    }
+    valori.data = dm94.data; valori.metodo = dm94.metodo
 
     // 91 — prima di scrivere: la condizione di sconto e il residuo di adesso.
     var prepSconto = (d.tabella === 'tm_conta_fatture' && !d.rimborso && !pagamentoInModifica)
@@ -20849,6 +20881,12 @@ async function salvaPagamento() {
     // 91 — pagato meno del residuo ma dentro lo sconto: si chiede se chiudere
     // (entro il termine) o si dice quanto manca (oltre). Il pagamento è già scritto.
     if (creato && prepSconto) await dopoIncassoScontoCassa(prepSconto, creato)
+    // 94 — quello che chi ha aperto la finestra fa a pagamento scritto.
+    if (creato && d.dopo) {
+      try { await d.dopo(creato) } catch (eDopo) {
+        window.alert('Pagamento registrato, ma il passo dopo non è riuscito: ' + (eDopo.message || eDopo))
+      }
+    }
     await ricaricaDopoPagamento(d)
     // 61e — la ricevuta si CHIEDE, dopo che tutto il resto e' andato a posto e
     // gli elenchi sono stati riletti (datiRicevuta legge da li'). Solo su un
@@ -24316,7 +24354,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '93'
+var VERSIONE = '94'
 
 function controllaVersionePagina() {
   try {
@@ -25325,15 +25363,19 @@ async function ordineAddebitato(id) {
       await dopoOrdine(id, 'ok', 'La fattura risultava già pagata: ordine tolto.')
       return
     }
-    if (!window.confirm('✅ L\'ordine è stato addebitato?\n\n' + (a.fornitore || '') + (a.numero_fornitore ? ' n. ' + a.numero_fornitore : '') + '\n' +
-        'Registro il pagamento di ' + fmtNumIt(residuo) + ' ' + (a.valuta || 'CHF') + ' con data ' + fmtDate(dataPag) +
-        ' (metodo Bonifico).\n\nSe la data vera è un\'altra, premi Annulla e registralo con «💳 Paga».')) return
-    await scriviPagamento({ tabella: 'tm_conta_fatture_acquisto', id: id, importo: a.importo },
-      { data: dataPag, importo: residuo, metodo: 'Bonifico', riferimento: 'Ordine di pagamento' }, null, { confermaEccedenza: true })
-    invalidaCachePagamenti()
-    await scriviOrdine(id, { ordine_pagamento_data: null, ordine_pagamento_creato_il: null })
-    scadeCache('flussi'); exportDataset = null
-    await dopoOrdine(id, 'ok', 'Pagamento registrato il ' + fmtDate(dataPag) + ' (' + fmtNumIt(residuo) + ' ' + (a.valuta || 'CHF') + '): la fattura è pagata.')
+    // 94 — non scrive più da qui: la finestra «Registra pagamento» già compilata
+    // (il residuo, la data dell'addebito previsto, Bonifico: è un ordine dato in
+    // banca), e si conferma o si cambia. Tolto l'ordine solo a pagamento scritto.
+    var nomeOrd = (a.fornitore || '') + (a.numero_fornitore ? ' n. ' + a.numero_fornitore : '')
+    await apriRegistraPagamento('tm_conta_fatture_acquisto', id, safeNum(a.importo) || 0, 'uscita', nomeOrd, {
+      importo: residuo, data: dataPag, metodo: 'Bonifico', riferimento: 'Ordine di pagamento',
+      dopo: async function (pag) {
+        await scriviOrdine(id, { ordine_pagamento_data: null, ordine_pagamento_creato_il: null })
+        scadeCache('flussi'); exportDataset = null
+        await dopoOrdine(id, 'ok', 'Pagamento registrato il ' + fmtDate(pag.data) + ' (' + fmtNumIt(safeNum(pag.importo) || 0) + ' ' +
+          (a.valuta || 'CHF') + (pag.metodo ? ', ' + pag.metodo : '') + '): ordine di pagamento tolto.')
+      }
+    })
   } catch (e) { window.alert('Pagamento NON registrato: ' + (eErroreSql89(e) ? MSG_SQL89 : (e.message || e))) }
 }
 async function ordineNonPartito(id) {
