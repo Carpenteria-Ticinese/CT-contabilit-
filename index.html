@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=93" />
+  <link rel="stylesheet" href="css/style.css?v=94" />
 </head>
-<body data-versione="93">
+<body data-versione="94">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 93</span>
+      <span id="sidebar-versione">Versione 94</span>
     </div>
 
   </aside>
@@ -626,6 +626,9 @@
                 Data del pagamento <span class="dim">(quando è uscito il denaro)</span>
               </label>
               <input type="date" id="f-data-pagamento" class="form-input" />
+              <!-- 94 — il metodo del pagamento: proposto l'ultimo usato, modificabile. -->
+              <label for="f-pag-metodo" class="form-label" style="margin-top:10px">Metodo</label>
+              <select id="f-pag-metodo" class="form-input"></select>
             </div>
 
             <div class="form-group">
@@ -3473,7 +3476,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=93"></script>
+<script src="js/app.js?v=94"></script>
 
 </body>
 </html>
