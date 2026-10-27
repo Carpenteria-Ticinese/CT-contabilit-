@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=94" />
+  <link rel="stylesheet" href="css/style.css?v=95" />
 </head>
-<body data-versione="94">
+<body data-versione="95">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 94</span>
+      <span id="sidebar-versione">Versione 95</span>
     </div>
 
   </aside>
@@ -623,11 +623,11 @@
 
             <div class="form-group" id="f-data-pagamento-group">
               <label for="f-data-pagamento" class="form-label">
-                Data del pagamento <span class="dim">(quando è uscito il denaro)</span>
+                Data del pagamento <span class="dim">(quando è uscito il denaro — obbligatoria)</span>
               </label>
               <input type="date" id="f-data-pagamento" class="form-input" />
               <!-- 94 — il metodo del pagamento: proposto l'ultimo usato, modificabile. -->
-              <label for="f-pag-metodo" class="form-label" style="margin-top:10px">Metodo</label>
+              <label for="f-pag-metodo" class="form-label" style="margin-top:10px">Metodo <span class="dim">(obbligatorio)</span></label>
               <select id="f-pag-metodo" class="form-input"></select>
             </div>
 
@@ -2467,15 +2467,15 @@
             </div>
             <div class="form-row" id="a-gia-pagata-campi" style="display:none; margin-top:10px">
               <div class="form-group" style="flex:1">
-                <label for="a-pag-data" class="form-label">Data del pagamento</label>
+                <label for="a-pag-data" class="form-label">Data del pagamento <span class="dim">(obbligatoria)</span></label>
                 <input type="date" id="a-pag-data" class="form-input" />
                 <div class="form-hint">Proposta: la data della fattura.</div>
               </div>
               <div class="form-group" style="flex:1">
-                <label for="a-pag-metodo" class="form-label">Metodo</label>
+                <label for="a-pag-metodo" class="form-label">Metodo <span class="dim">(obbligatorio)</span></label>
                 <select id="a-pag-metodo" class="form-input">
                   <!-- 54·G — le voci le mette riempiTendineMetodi() da METODI_PAGAMENTO: una lista sola -->
-                  <option value="">&mdash; non indicato &mdash;</option>
+                  <option value="">&mdash; scegli (obbligatorio) &mdash;</option>
                 </select>
               </div>
             </div>
@@ -3033,7 +3033,7 @@
 
         <div class="form-row" style="margin-top:12px">
           <div class="form-group" style="flex:1">
-            <label for="pag-data" class="form-label">Data del pagamento</label>
+            <label for="pag-data" class="form-label">Data del pagamento <span class="dim">(obbligatoria)</span></label>
             <input type="date" id="pag-data" class="form-input" />
           </div>
           <div class="form-group" style="flex:1">
@@ -3048,10 +3048,10 @@
 
         <div class="form-row">
           <div class="form-group" style="flex:1">
-            <label for="pag-metodo" class="form-label">Metodo</label>
+            <label for="pag-metodo" class="form-label">Metodo <span class="dim">(obbligatorio)</span></label>
             <select id="pag-metodo" class="form-input">
               <!-- 54·G — le voci le mette riempiTendineMetodi() da METODI_PAGAMENTO: una lista sola -->
-              <option value="">— non indicato —</option>
+              <option value="">— scegli (obbligatorio) —</option>
             </select>
           </div>
           <div class="form-group" style="flex:1">
@@ -3476,7 +3476,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=94"></script>
+<script src="js/app.js?v=95"></script>
 
 </body>
 </html>
