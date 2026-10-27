@@ -2465,6 +2465,7 @@ tr.riga-fuori-cantiere td {
 .scad-quando.vicino   { color: var(--warn); }
 .scad-quando.oggi     { color: var(--err); }
 .scad-quando.assente  { color: var(--text2); font-weight: 400; }
+.scad-quando.attesa   { color: var(--text2); }   /* 95 — sollecitata, il termine corre */
 
 .scad-riga-imp {
   font-weight: 700;
@@ -3241,6 +3242,18 @@ tr.off-vecchia td { color: var(--text2); }
 .sol-ritardo { font-family: monospace; font-weight: 700; color: var(--err); }
 .sol-riga-stato { font-size: 12px; line-height: 1.5; }
 .sol-inviato { color: var(--ok); font-weight: 600; }
+/* 95 — le due parti, il dopo-termine, il sollecito non inviato (si vede da lontano) */
+.sol-parte-tit { font-weight: 700; margin: 4px 0 6px; }
+.sol-parte-tit.attesa { margin-top: 18px; color: var(--text2); }
+tr.sol-in-attesa > td { color: var(--text2); }
+.sol-dopo-termine { font-size: 12px; font-weight: 700; color: var(--err); margin-top: 3px; }
+.azione-rapida.sol-non-inviato { border: 2px solid var(--err); color: var(--err); background: var(--err-bg); font-weight: 700; }
+.sol-stato-riga.sol-non-inviato-riga { background: var(--err-bg); border: 2px solid var(--err); }
+.sol-stato-riga.sol-non-inviato-riga .btn-secondary { margin-left: 6px; }
+.spia-non-inviato { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
+  border: 2px solid var(--err); color: var(--err); background: var(--err-bg); }
+.spia-attesa { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 6px;
+  border: 1px solid var(--border); color: var(--text2); }
 
 /* La riga di stato sopra la fattura aperta */
 .sol-stato-riga {
@@ -3608,6 +3621,12 @@ tr.off-vecchia td { color: var(--text2); }
 .importo-scelta { padding: 10px 12px; margin-bottom: 14px; border: 1px solid #d97706; border-radius: var(--radius); background: var(--warn-bg); }
 .importo-scelta-titolo { font-weight: 700; margin-bottom: 6px; }
 .importo-scelta-opz { display: block; padding: 4px 0; cursor: pointer; }
+/* 96 — la cifra scritta a mano, e sotto quella dell'App Cantieri (sempre) */
+.importo-scelta .importo-man { max-width: 200px; font-weight: 700; }
+.importo-app { margin-top: 6px; font-size: 13px; color: #92400e; }
+.importo-rapide { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.importo-rapide .btn-secondary { font-size: 12px; padding: 4px 10px; }
+.cls-sum-meta .importo-classificato { white-space: normal; }
 .cls-ai-box { padding: 10px 12px; margin-bottom: 14px; border: 1px solid #7c3aed; border-radius: var(--radius); background: #f5f3ff; font-size: 13px; }
 .cls-ai-titolo { font-weight: 700; margin-bottom: 6px; color: #5b21b6; }
 .cls-ai-riga { padding: 3px 0; }
