@@ -916,10 +916,9 @@ async function loadDaClassificare() {
   var totClass = {}   // 88 — "tipo:id" -> { tot, consegnata }: la cifra classificata del documento
   if (currentAziendaId) {
     try {
-      const { data, error } = await leggiTutto(function () { return sb
-        .from('tm_conta_classificazioni')
-        .select('id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at')   // 86: created_at
-        .eq('azienda_id', currentAziendaId).order('id') })
+      // 96 — con importo_origine (SQL_FASE96), se c'è.
+      const { data, error } = await leggiClassificazioniConOrigine(
+        'id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at')   // 86: created_at
       if (error) throw error
       for (var k = 0; k < (data || []).length; k++) {
         var kc = data[k].origine_tipo + ':' + data[k].origine_id
@@ -1186,6 +1185,7 @@ function renderListeDaClassificare() {
             '<div style="margin-top:4px">' + etichettaOrigineHtml(cm) + '</div>' +   // 86
             avvisoSenzaGiornataHtml(cm) +
             giustificativoRigaHtml(cm, true) +   // 88
+            avvisoCorrettaDopoHtml(cm, j) +   // 96
           '</td>' +
           '<td class="num">' + fmtImporto(importoRiga(cm), cm.valuta) + importoAppCantieriHtml(cm) + '</td>' +
           '<td><span class="cod">' + esc(contoLabel(cc.conto_id)) + '</span></td>' +
@@ -1212,6 +1212,9 @@ function renderListeDaClassificare() {
         '</table></div>' +
         '<div class="sql-tip">🕐 «Storia» mostra chi ha cambiato cosa e quando (audit automatico a livello database). «Riclassifica» riapre la proposta, modificabile. ' +
           '«↩️ Togli la classificazione» rimette la riga fra quelle da classificare: la classificazione non si cancella, resta con lo stato «tolta» (storico in fondo alla pagina).</div>' +
+        (colonnaImportoOrigine === false
+          ? '<div class="sql-tip">⚠️ Manca <code>SQL_FASE96_importo_origine.sql</code>: finché non lo lanci, il programma non si accorge ' +
+            'di una spesa corretta nell\'App Cantieri dopo la classificazione.</div>' : '') +   // 96
       '</div>'
   }
 
@@ -1837,6 +1840,65 @@ function candidatiImporto(m) {
 // (riaprire non deve riportarla indietro in silenzio, 88), con un bottone per
 // tornare a quella dell'operaio.
 var PREFISSO_NOTA_IMPORTO = 'Classificata per '
+
+// 96·4 — LA SPESA CORRETTA NELL'APP CANTIERI DOPO LA CLASSIFICAZIONE.
+// La classificazione ricorda la cifra dell'operaio di quel momento
+// (importo_origine, SQL_FASE96). Se oggi l'App Cantieri dice un'altra cifra,
+// l'operaio l'ha corretta DOPO: lo si dice, con «usa la cifra nuova». Non si
+// dice quando la cifra classificata è già quella nuova (non c'è niente da fare).
+// Senza l'SQL la colonna non c'è: si legge come prima e l'avviso non compare.
+var colonnaImportoOrigine = null   // null = non si sa ancora; true/false dopo la prima lettura
+function erroreColonnaImportoOrigine(e) {
+  return /importo_origine/.test(String((e && (e.message || e.details || e.hint)) || e || ''))
+}
+// Legge le classificazioni con importo_origine; se la colonna non c'è, senza.
+async function leggiClassificazioniConOrigine(campi) {
+  var leggi = function (c) {
+    return leggiTutto(function () { return sb.from('tm_conta_classificazioni').select(c).eq('azienda_id', currentAziendaId).order('id') })
+  }
+  var res = await leggi(campi + ', importo_origine')
+  if (res.error && erroreColonnaImportoOrigine(res.error)) {
+    colonnaImportoOrigine = false
+    res = await leggi(campi)
+  } else if (!res.error) {
+    colonnaImportoOrigine = true
+  }
+  return res
+}
+function spesaCorrettaDopo(s) {
+  if (!s || (s.origine_tipo && s.origine_tipo !== 'spesa')) return null
+  var id = s.origine_id != null ? s.origine_id : s.id
+  var q = classCantiereMap ? (classCantiereMap[chiaveClassificazione('spesa', id)] || []) : []
+  if (!q.length) return null
+  var prima = safeNum(q[0].importo_origine), ora = safeNum(s.importo)
+  if (prima == null || ora == null || Math.abs(prima - ora) < 0.005) return null
+  var classificata = importoSpesa(s)
+  if (Math.abs(classificata - ora) < 0.005) return null
+  return { prima: prima, ora: ora, classificata: classificata }
+}
+function testoCorrettaDopo(c) {
+  return 'Questa spesa è stata corretta nell\'App Cantieri (' + fmtNumIt(c.prima) + ' → ' + fmtNumIt(c.ora) +
+    ') dopo la classificazione: la tua cifra classificata è ' + fmtNumIt(c.classificata) + '.'
+}
+// In «Già classificati»: l'avviso col bottone. j = indice in classificatiList.
+function avvisoCorrettaDopoHtml(m, j) {
+  var c = spesaCorrettaDopo(m)
+  if (!c) return ''
+  return '<div class="corretta-dopo">⚠️ ' + esc(testoCorrettaDopo(c)) +
+    ' <button type="button" class="icon-btn" onclick="event.stopPropagation(); usaCifraNuova(' + j + ')">↻ Usa la cifra nuova (' +
+    esc(fmtNumIt(c.ora)) + ')</button></div>'
+}
+// «Usa la cifra nuova»: si apre la Riclassifica con la cifra dell'operaio di
+// oggi nel campo. Si conferma lì (conto, IVA, cantiere restano quelli di prima).
+async function usaCifraNuova(j) {
+  var m = classificatiList[j]
+  if (!m) return
+  if (m._class && m._class.stato === 'bloccato') {
+    alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «Export & consegna» per riclassificare.')
+    return
+  }
+  return openSingleClassify(m, m._class, { cifraNuova: true })
+}
 function notaSenzaImporto(nota) {
   return String(nota || '').split(' · ').filter(function (x) { return x.trim() && x.indexOf(PREFISSO_NOTA_IMPORTO) !== 0 }).join(' · ')
 }
@@ -1873,7 +1935,11 @@ function disegnaSceltaImporto() {
   var campoM = el('cls-importo-motivo')
   var stessa = !!(campoM && campoM.getAttribute && campoM.getAttribute('data-spesa') === String(m.origine_id))
   var motivo = stessa ? campoM.value : motivoImportoDaNota(m._class && m._class.note)
+  var dopo96 = spesaCorrettaDopo(m)
   box.innerHTML = '<div class="importo-scelta">' +
+    (dopo96 ? '<div class="corretta-dopo">⚠️ ' + esc(testoCorrettaDopo(dopo96)) +
+      ' <button type="button" class="btn-secondary" onclick="usaImportoClassifica(\'' + round2(dopo96.ora).toFixed(2) + '\')">↻ Usa la cifra nuova (' +
+      esc(fmtNumIt(dopo96.ora)) + ')</button></div>' : '') +
     '<label for="cls-importo-man" class="form-label">Importo da classificare <span class="dim">(' + esc(m.valuta || 'CHF') + ')</span></label>' +
     '<input type="number" step="0.01" id="cls-importo-man" class="form-input importo-man" value="' +
       (attuale != null ? round2(attuale).toFixed(2) : '') + '" oninput="scriviImportoClassifica(this.value)" />' +
@@ -2713,7 +2779,7 @@ function updateBulkButton() {
 
 // ── Apertura pannello (singolo) ──────────────────────────────────────────────
 // prefill = riga di classificazione esistente (riclassifica) oppure null (nuova)
-async function openSingleClassify(m, prefill) {
+async function openSingleClassify(m, prefill, opzioni) {
   if (!m) return
   classifyMode = 'single'
   classifyTargets = [m]
@@ -2723,6 +2789,8 @@ async function openSingleClassify(m, prefill) {
   letturaScontrino = null
   importoSceltoClassifica = (prefill && m.origine_tipo === 'spesa' && spesaClassificata(m) &&
     Math.abs(importoSpesa(m) - (safeNum(m.importo) || 0)) >= 0.005) ? importoSpesa(m) : null
+  // 96 — «↻ Usa la cifra nuova»: nel campo la cifra dell'operaio di oggi.
+  if (opzioni && opzioni.cifraNuova) importoSceltoClassifica = null
   html('cls-ai', '')
   disegnaSceltaImporto()
 
@@ -3333,7 +3401,7 @@ function righeDivisioneValidate() {
 }
 
 function buildClassRow(m, contoId, ivaId, calc, inclusa, cantiere, note) {
-  return {
+  return Object.assign({
     azienda_id:    currentAziendaId,
     origine_tipo:  m.origine_tipo,
     origine_id:    m.origine_id,
@@ -3347,7 +3415,9 @@ function buildClassRow(m, contoId, ivaId, calc, inclusa, cantiere, note) {
     stato:         'confermato',
     created_by:    currentUser ? currentUser.id : null,
     updated_by:    currentUser ? currentUser.id : null
-  }
+  }, (m.origine_tipo === 'spesa' && colonnaImportoOrigine === true)
+    // 96 — la cifra dell'operaio in questo momento: se poi cambia là, si vede.
+    ? { importo_origine: safeNum(m.importo) } : {})
 }
 
 async function saveClassificazione() {
@@ -5392,7 +5462,8 @@ var TIPI_ARCHIVIO = {
   nota:      { et: 'Nota di credito',    ic: '↩️' },
   acquisto:  { et: 'Fattura d\'acquisto', ic: '📥' },
   movimento: { et: 'Movimento manuale',  ic: '🏢' },
-  conferma:  { et: 'Conferma d\'ordine', ic: '📦' }
+  conferma:  { et: 'Conferma d\'ordine', ic: '📦' },
+  spesa:     { et: 'Spesa App Cantieri', ic: '🏗️' }   // 96bis
 }
 
 // I cantieri di un documento: quelli delle righe di classificazione se ci
@@ -5448,6 +5519,16 @@ async function initArchivioPage() {
     await loadStralci(true)   // 84 — una stralciata è chiusa
     try { await loadCantieri() } catch (_) { /* i nomi dei cantieri sono un aiuto */ }
     await loadMappaCantieri(true)
+    // 96bis — le spese dell'App Cantieri: si LEGGONO (là non si scrive), con la
+    // cifra della classificazione se c'è (importoSpesa, la regola della 88). Se
+    // l'App Cantieri non risponde, l'Archivio si mostra lo stesso e lo dice.
+    var speseArch = [], erroreSpeseArch = null
+    try {
+      try { await loadScarti(true) } catch (_) { /* senza, una scartata sembra da classificare */ }
+      const rS = await leggiTutto(function () { return sb.from('spese').select('id, data, descrizione, importo, valuta, cantiere_id').order('id') })
+      if (rS.error) throw rS.error
+      speseArch = rS.data || []
+    } catch (eS) { erroreSpeseArch = eS.message || String(eS) }
 
     archivioVendite = rV.data || []
     var docs = []
@@ -5494,14 +5575,47 @@ async function initArchivioPage() {
         cantieri: [o.cantiere_id || '']
       })
     })
+    speseArch.forEach(function (sp) {
+      var s96 = { origine_tipo: 'spesa', origine_id: sp.id, importo: safeNum(sp.importo), cantiere_id: sp.cantiere_id || null }
+      docs.push(docSpesaArchivio(s96, sp))
+    })
     archivioDocs = docs
     riempiCantieriArchivio()
     renderArchivio()
+    if (erroreSpeseArch) {
+      html('archivio-banner', '<div class="fase-banner warn" role="alert"><span class="icon" aria-hidden="true">⚠️</span>' +
+        '<div class="msg">Le spese dell\'App Cantieri non si sono lette (' + esc(erroreSpeseArch) + '): nell\'elenco qui sotto mancano. ' +
+        'Il resto dell\'archivio è completo.</div></div>')
+    }
   } catch (e) {
     archivioDocs = null
     html('arch-risultati', '')
     html('archivio-banner', '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
       '<div class="msg">Archivio non caricato: ' + esc(e.message || e) + '. Non mostro un elenco a metà: riprova.</div></div>')
+  }
+}
+
+// 96bis — una spesa dell'App Cantieri nell'Archivio: la cifra della regola
+// (classificata se c'è), l'altra cifra per la ricerca, lo stato a parole.
+function docSpesaArchivio(s96, sp) {
+  var scartata = spesaScartata(s96), classificata = spesaClassificata(s96)
+  var imp = importoSpesa(s96), app = safeNum(sp.importo)
+  var due = classificata ? testoDueCifreSpesa(imp, app) : ''
+  var dopo = classificata ? spesaCorrettaDopo(s96) : null
+  var visti = {}
+  quoteSpesaCantieri(s96).forEach(function (q) { visti[q.cantiere_id || ''] = true })
+  return {
+    tipo: 'spesa', tabella: 'spese', id: sp.id,
+    numero: '', data: sp.data || '', controparte: sp.descrizione || '(senza descrizione)',
+    importo: imp, altriImporti: (app != null && Math.abs(app - imp) >= 0.005) ? [app] : [],
+    valuta: sp.valuta || 'CHF',
+    testo: 'dall\'App Cantieri' + (due ? ' · ' + due : ''),
+    // Chiusa = non c'è più niente da fare: classificata, oppure scartata.
+    chiuso: scartata || classificata,
+    stato: scartata ? badge('warn', '🗑️ Scartata — fuori dai conti')
+      : classificata ? badge('ok', '✅ Classificata') + (dopo ? ' ' + badge('warn', '⚠️ corretta nell\'App Cantieri dopo') : '')
+      : badge('warn', '📋 Da classificare'),
+    cantieri: Object.keys(visti)
   }
 }
 
@@ -5547,17 +5661,17 @@ function filtraArchivio(docs, f) {
     if (f.stato === 'chiusi' && !d.chiuso) return false
     if (f.anno && String(d.data).slice(0, 4) !== String(f.anno)) return false
     // 85 — importo e data come in tutti gli elenchi: totale o un pagamento.
-    var pagD = d.tabella === 'tm_conta_offerte' ? [] : pagamentiDi(d.tabella, d.id)
+    var pagD = (d.tabella === 'tm_conta_offerte' || d.tabella === 'spese') ? [] : pagamentiDi(d.tabella, d.id)
     if (!corrispondeImportoData({ attivo: f.impDa != null || f.impA != null || !!f.da || !!f.a,
           impDa: f.impDa, impA: f.impA, da: f.da, a: f.a, modo: f.modo || 'documento' },
-          { importo: d.importo, date: { documento: d.data }, pagamenti: pagD })) return false
+          { importo: d.importo, altriImporti: d.altriImporti || [], date: { documento: d.data }, pagamenti: pagD })) return false   // 96bis: tutte e due le cifre
     if (f.cantiere) {
       var cerca = f.cantiere === '__nessuno__' ? '' : f.cantiere
       if (d.cantieri.indexOf(cerca) === -1) return false
     }
     if (termini.length) {
       var hay = (d.numero + ' ' + d.controparte + ' ' + d.testo + ' ' +
-        testoImporti([d.importo].concat(pagD.map(function (p) { return p.importo })))).toLowerCase()   // 85
+        testoImporti([d.importo].concat(d.altriImporti || [], pagD.map(function (p) { return p.importo })))).toLowerCase()   // 85 · 96bis
       if (!termini.every(function (t) { return hay.indexOf(t) !== -1 })) return false
     }
     return true
@@ -5603,7 +5717,7 @@ function renderArchivio() {
       '<td><span class="cod">' + esc(d.numero || '—') + '</span></td>' +
       '<td class="dim">' + esc(d.data ? fmtDate(d.data) : '—') + '</td>' +
       '<td>' + esc(d.controparte || '—') +
-        (d.tipo === 'movimento' && d.testo ? '<div class="dim" style="font-size:11px">' + esc(d.testo) + '</div>' : '') + '</td>' +
+        ((d.tipo === 'movimento' || d.tipo === 'spesa') && d.testo ? '<div class="dim" style="font-size:11px">' + esc(d.testo) + '</div>' : '') + '</td>' +
       '<td class="num">' + (d.importo != null ? fmtImporto(d.importo, d.valuta) : '—') + '</td>' +
       '<td>' + d.stato + (d.chiuso ? segnoChiuso() : '') + '</td>' +
       '<td class="dim">' + esc(nomiCantieri(d.cantieri)) + '</td>' +
@@ -5623,6 +5737,7 @@ function renderArchivio() {
 
 async function apriDaArchivio(tabella, id) {
   try {
+    if (tabella === 'spese') { await apriSpesaDaArchivio(id); return }   // 96bis
     if (tabella === 'tm_conta_offerte') {
       showPage('offerte')
       await initOffertePage()
@@ -5634,6 +5749,29 @@ async function apriDaArchivio(tabella, id) {
     html('archivio-banner', '<div class="fase-banner err" role="alert"><span class="icon" aria-hidden="true">❌</span>' +
       '<div class="msg">Impossibile aprire il documento: ' + esc(e.message || e) + '</div></div>')
   }
+}
+
+// 96bis — il clic su una spesa dell'App Cantieri: la sua finestra in «Da
+// classificare». Classificata → Riclassifica; da classificare → Classifica;
+// scartata → la pagina, con la riga fra le scartate (si ripristina da lì).
+async function apriSpesaDaArchivio(id) {
+  showPage('movimenti')
+  azzeraFiltroID('daclass')
+  await loadDaClassificare()
+  var trova = function (l) { return (l || []).filter(function (m) { return m.origine_tipo === 'spesa' && String(m.origine_id) === String(id) })[0] }
+  var m = trova(classificatiTutti)
+  if (m) {
+    if (m._class && m._class.stato === 'bloccato') {
+      alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «Export & consegna» per riclassificare.')
+      return
+    }
+    return openSingleClassify(m, m._class)
+  }
+  m = trova(daClassTutti)
+  if (m) return openSingleClassify(m, null)
+  html('movimenti-banner', '<div class="fase-banner warn" role="status"><span class="icon" aria-hidden="true">🗑️</span>' +
+    '<div class="msg">Questa spesa è stata scartata: non è fra quelle da classificare. La trovi nell\'elenco delle scartate, ' +
+    'più in basso, e da lì si ripristina.</div></div>')
 }
 
 // ══ 85 · CERCARE PER IMPORTO E PER DATA — UN MODULO SOLO, IN OGNI ELENCO ════════
@@ -18147,7 +18285,8 @@ function mappaQuoteDa(righe) {
       // La quota e' imponibile + IVA, cioe' la fetta di TOTALE assegnata a
       // questa riga. Non l'imponibile da solo: Umberto non e' soggetto IVA,
       // e per lui l'IVA sugli acquisti e' costo a tutti gli effetti.
-      quota: (safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0)
+      quota: (safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0),
+      importo_origine: c.importo_origine != null ? safeNum(c.importo_origine) : null   // 96
     })
   })
   return mappa
@@ -18159,9 +18298,7 @@ async function loadMappaCantieri(force) {
   await richiediAccesso('loadMappaCantieri')   // 52·B1: mai un elenco vuoto per silenzio
   await loadCantiereDocumenti(force)
   try {
-    const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_classificazioni')
-      .select('origine_tipo, origine_id, cantiere_id, imponibile, iva_importo')
-      .eq('azienda_id', currentAziendaId).order('id') })
+    const { data, error } = await leggiClassificazioniConOrigine('origine_tipo, origine_id, cantiere_id, imponibile, iva_importo')   // 96
     if (error) throw error
     classCantiereMap = mappaQuoteDa(data)   // 88 — la stessa mappa di «Da classificare»
   } catch (e) {
@@ -19055,6 +19192,7 @@ function apriElencoCantiere(chiave) {
         // apre, e lo dice.
         // 96 — le due cifre, se sono diverse: «classificata per X, nell'App Cantieri Y».
         var due96 = r._classificata ? testoDueCifreSpesa(r._importoClass, r._importoApp) : ''
+        if (r._classificata && spesaCorrettaDopo({ id: r.id, importo: r._importoApp })) due96 += ' · ⚠️ corretta nell\'App Cantieri dopo la classificazione'
         return rigaElencoCant(fmtDate(r.data), (r.descrizione || '—') +
                               (r._classificata ? ' (dall\'App Cantieri, ' + (due96 || 'classificata') + ')' : ' (dall\'App Cantieri)'),
                               fmtNumIt(safeNum(r.importo) || 0) + ' CHF')   // 88 — la quota della regola
