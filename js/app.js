@@ -24755,7 +24755,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '95'
+var VERSIONE = '96'
 
 function controllaVersionePagina() {
   try {
@@ -24895,6 +24895,73 @@ function fileInBase64(file) {
   })
 }
 
+// ── 96 · Il login verso il Worker ────────────────────────────────────────────
+// Dal Worker 80 ogni chiamata deve portare il token della sessione Supabase
+// (Authorization: Bearer …). Prima bastava l'origine, che un programma fuori
+// dal browser puo' falsificare: chi conosceva l'indirizzo poteva consumare il
+// credito Anthropic.
+//
+// MA il Worker 79, che resta su Cloudflare finche' non si incolla il nuovo,
+// nel preflight permette solo «Content-Type»: una richiesta con Authorization
+// il browser la BLOCCHEREBBE prima ancora di partire. Quindi il token si manda
+// solo a un Worker che lo chiede, e il programma funziona con tutti e due:
+//   1. la prima volta, una domanda vuota senza token («{}»): il 79 risponde
+//      «Manca il file» (400, nessuna lettura, nessun costo); l'80 risponde 401
+//      con richiede_login: true;
+//   2. la risposta si ricorda finche' la pagina resta aperta;
+//   3. se il Worker viene aggiornato a pagina aperta, la chiamata torna 401
+//      con richiede_login: si riprova subito, una volta sola, con il token.
+// Quando l'80 sara' su Cloudflare da tempo, la domanda vuota si puo' togliere
+// e il token mandare sempre.
+var workerVuoleLogin = {}   // indirizzo del Worker -> true / false
+
+// Un errore gia' scritto per chi usa il programma: i «catch» qui sotto lo
+// lasciano passare com'e', senza trasformarlo in «non riesco a contattare».
+function erroreDaMostrare(msg) {
+  var e = new Error(msg)
+  e.daMostrare = true
+  return e
+}
+
+// Il token della sessione corrente, dal client Supabase del programma.
+// Nessuna sessione → un errore che dice cosa fare.
+async function tokenPerWorker() {
+  var s = null
+  try { s = (await sb.auth.getSession()).data.session } catch (_) { s = null }
+  if (!s || !s.access_token) {
+    throw erroreDaMostrare('Manca il login: esci e rientra nella Contabilità, poi riprova.')
+  }
+  return s.access_token
+}
+
+// L'UNICO punto che manda una richiesta al Worker. Restituisce la Response;
+// gli errori di rete e l'interruzione per il tempo scaduto passano a chi chiama.
+async function postAlWorker(url, corpo, segnale) {
+  var testo = JSON.stringify(corpo)
+  async function manda(conLogin) {
+    var h = { 'Content-Type': 'application/json' }
+    if (conLogin) h['Authorization'] = 'Bearer ' + (await tokenPerWorker())
+    return fetch(url, { method: 'POST', headers: h, body: testo, signal: segnale })
+  }
+  if (workerVuoleLogin[url] === undefined) {
+    var domanda = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: segnale })
+    var dd = null
+    try { dd = await domanda.json() } catch (_) { /* un 79 o un indirizzo sbagliato: senza token */ }
+    workerVuoleLogin[url] = !!(domanda.status === 401 && dd && dd.richiede_login)
+  }
+  var conLogin = workerVuoleLogin[url]
+  var risposta = await manda(conLogin)
+  if (!conLogin && risposta.status === 401) {
+    var d = null
+    try { d = await risposta.clone().json() } catch (_) { /* sotto lo legge chi chiama */ }
+    if (d && d.richiede_login) {
+      workerVuoleLogin[url] = true
+      risposta = await manda(true)
+    }
+  }
+  return risposta
+}
+
 // ── La chiamata al Worker ────────────────────────────────────────────────────
 // Restituisce { testo, input_tokens, output_tokens } oppure lancia con un
 // messaggio gia' leggibile: chi la chiama non deve tradurre niente.
@@ -24912,17 +24979,13 @@ async function chiediLetturaAlWorker(file, prompt) {
 
   var risposta
   try {
-    risposta = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        file_base64: base64,
-        media_type: file.type || 'application/pdf',
-        prompt: prompt
-      }),
-      signal: controllo.signal
-    })
+    risposta = await postAlWorker(url, {   // 96: con il login, se il Worker lo chiede
+      file_base64: base64,
+      media_type: file.type || 'application/pdf',
+      prompt: prompt
+    }, controllo.signal)
   } catch (e) {
+    if (e && e.daMostrare) throw e   // 96: «manca il login», detto com'e'
     if (scaduto) {
       throw new Error('La lettura ha superato il minuto di attesa e si è fermata. Riprova, oppure usa «Copia prompt».')
     }
@@ -25030,13 +25093,9 @@ async function chiediConfrontoAlWorker(file, prompt) {
   var orologio = setTimeout(function () { scaduto = true; controllo.abort() }, TIMEOUT_CONFRONTO_MS)
   var risposta
   try {
-    risposta = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: file, prompt: prompt, max_tokens: 4000 }),
-      signal: controllo.signal
-    })
+    risposta = await postAlWorker(url, { files: file, prompt: prompt, max_tokens: 4000 }, controllo.signal)   // 96
   } catch (e) {
+    if (e && e.daMostrare) throw e   // 96: «manca il login», detto com'e'
     if (scaduto) throw new Error('Il confronto ha superato i due minuti di attesa e si è fermato. Riprova, magari con meno documenti.')
     throw new Error('Non sono riuscito a contattare il Worker. Controlla l\'indirizzo in «Impostazioni ditta».')
   } finally {
@@ -25273,6 +25332,7 @@ function statoLetturaHtml(stato, dettaglio) {
     ok:     { ic: '✅', txt: 'funziona',            cls: 'ok' },
     guasto: { ic: '⚠️', txt: 'risponde, ma non funziona', cls: 'warn' },
     ko:     { ic: '⚠️', txt: 'non risponde',        cls: 'warn' },
+    login:  { ic: '🔑', txt: 'manca il login',      cls: 'warn' },   // 96
     vuoto:  { ic: '—',  txt: 'non configurato',     cls: 'dim' }
   }[stato] || { ic: '—', txt: 'non configurato', cls: 'dim' }
   return '<span class="lettura-stato ' + m.cls + '">' + m.ic + ' ' + esc(m.txt) + '</span>' +
@@ -25302,16 +25362,12 @@ async function provaConnessioneWorker() {
     var orologio = setTimeout(function () { controllo.abort() }, 30000)
     var risposta
     try {
-      risposta = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // Modalita di prova: nessuna immagine. Mandarne una finta aggiungeva
-        // un motivo di fallimento che non c'entrava niente con quello che la
-        // prova deve verificare — ed e' quello che succedeva col pixel 1x1,
-        // che l'API rifiutava perche' troppo piccolo.
-        body: JSON.stringify({ prova: true }),
-        signal: controllo.signal
-      })
+      // Modalita di prova: nessuna immagine. Mandarne una finta aggiungeva
+      // un motivo di fallimento che non c'entrava niente con quello che la
+      // prova deve verificare — ed e' quello che succedeva col pixel 1x1,
+      // che l'API rifiutava perche' troppo piccolo.
+      // 96: con il login, se il Worker lo chiede (dall'80 sempre).
+      risposta = await postAlWorker(url, { prova: true }, controllo.signal)
     } finally { clearTimeout(orologio) }
 
     var dati = null
@@ -25327,11 +25383,13 @@ async function provaConnessioneWorker() {
       // aggiunge solo quando non c'e' proprio nient'altro da dire.
       // Se il Worker ha dato un motivo, ha risposto: il guasto e' a valle.
       html('imp-lettura-stato', (dati && dati.errore)
-        ? statoLetturaHtml('guasto', dati.errore)
+        ? statoLetturaHtml(dati.richiede_login ? 'login' : 'guasto', dati.errore)   // 96
         : statoLetturaHtml('ko', 'Il Worker ha risposto in modo inatteso (codice ' + risposta.status +
             '). Se hai appena incollato il codice su Cloudflare, controlla di aver premuto Deploy.'))
     }
   } catch (e) {
+    // 96: senza sessione il Worker non si chiama nemmeno; lo si dice com'e'.
+    if (e && e.daMostrare) { html('imp-lettura-stato', statoLetturaHtml('login', e.message)); return }
     html('imp-lettura-stato', statoLetturaHtml('ko',
       'Non ho ricevuto risposta. Controlla che l\'indirizzo sia giusto e che il Worker risulti pubblicato su Cloudflare.'))
   } finally {
