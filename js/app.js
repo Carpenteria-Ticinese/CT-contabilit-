@@ -18583,246 +18583,30 @@ function contiCantiere(cantiereId) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// FASE 25 / P2 — ELIMINARE UN CANTIERE, MA SOLO SE E' VUOTO
+// LE COMMESSE NON SI ELIMINANO DA QUI (v97, 3.11.2026)
 //
-// La regola e' la stessa gia' usata per i contatti, e non e' una formalita':
-// un cantiere vuoto non fa male a nessuno, uno con dentro dei dati si'. Una
-// fattura deve continuare a dire a quale lavoro si riferisce, e le giornate
-// dicono cosa e' stato fatto e quando.
-//
-// LE TABELLE NON SONO SCRITTE A MANO. La tabella `cantieri` e' dell'App
-// Cantieri, che domani puo' aggiungerne un'altra con un `cantiere_id` dentro:
-// un elenco cablato qui invecchierebbe in silenzio, e il primo cantiere
-// cancellato dopo quel giorno si porterebbe via dei dati. Si legge percio' il
-// catalogo vero, dalla descrizione OpenAPI che PostgREST pubblica su /rest/v1/.
-//
-// I LEGAMI INDIRETTI vanno aggiunti a mano, perche' una colonna non li dice:
-// `voci_lavoro` non ha `cantiere_id`, e' appesa alle giornate e alle
-// lavorazioni del cantiere. Si contano tutte e due le vie.
-//
-// I FILE NELLO STORAGE non se ne vanno con la riga del database, e il loro
-// percorso e' costruito sul NOME del cantiere: dopo la cancellazione non
-// sarebbero piu' rintracciabili. Percio' si contano PRIMA e si dicono, cosi'
-// Umberto puo' scaricarli.
-//
-// NESSUNA CANCELLAZIONE FORZATA. Se un giorno servisse portarsi via anche i
-// dati collegati, quella si fa una volta con SQL_CANTIERI_pulizia.sql, sotto
-// gli occhi di chi la lancia — non con un bottone.
+// Persone, clienti e commesse si scrivono e si tolgono solo in Anagrafiche, e
+// niente si cancella: si archivia (stato Conclusa o Persa). Il database non
+// permette piu' DELETE su `cantieri` (errore 42501). Qui resta solo il tasto che
+// porta alla commessa in Anagrafiche. Prima di questa versione c'erano il
+// controllo «cosa c'e' attaccato» e la cancellazione: tolti, con la cache del
+// catalogo delle tabelle e l'elenco dei bucket che servivano solo a loro.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// I bucket dell'App Cantieri che contengono file di un cantiere.
-var BUCKET_CANTIERE = ['cantiere-foto', 'cantiere-spese', 'cantiere-docs']
+var URL_ANAGRAFICHE = 'https://carpenteria-ticinese.github.io/CT-rubrica/'
+var NOME_FINESTRA_ANAGRAFICHE = 'ct_app_rubrica'   // fisso: si riusa la stessa finestra
+var UUID_VALIDO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// Le tabelle con una colonna cantiere_id, lette dal catalogo. Si chiedono una
-// volta per sessione: e' una descrizione dello schema, non cambia mentre si usa
-// il programma.
-var tabelleCantiereCache = null
-
-async function tabelleConCantiereId() {
-  if (tabelleCantiereCache) return tabelleCantiereCache
-  if (!currentAziendaId) return null           // senza sessione non si chiede niente
-  try {
-    // PostgREST pubblica su /rest/v1/ la descrizione OpenAPI di tutto lo schema:
-    // e' il catalogo, visto da fuori. Nessuna query su information_schema, che
-    // da qui non e' raggiungibile.
-    var risposta = await fetch(SUPABASE_URL + '/rest/v1/', {
-      headers: { apikey: SUPABASE_KEY, Accept: 'application/openapi+json' }
-    })
-    if (!risposta.ok) throw new Error('HTTP ' + risposta.status)
-    var api = await risposta.json()
-    var def = api.definitions || (api.components && api.components.schemas) || {}
-    var trovate = []
-    Object.keys(def).forEach(function (nome) {
-      var props = def[nome] && def[nome].properties
-      if (props && Object.prototype.hasOwnProperty.call(props, 'cantiere_id')) trovate.push(nome)
-    })
-    tabelleCantiereCache = trovate.sort()
-    return tabelleCantiereCache
-  } catch (e) {
-    console.warn('Catalogo delle tabelle non letto:', e.message || e)
-    return null                                 // null = «non lo so», non «nessuna»
-  }
+// L'indirizzo: la commessa se l'id e' un uuid vero, altrimenti l'elenco delle commesse.
+function urlAnagraficheCommessa(id) {
+  return URL_ANAGRAFICHE + (id && UUID_VALIDO.test(String(id)) ? '#commessa/' + id : '#commesse')
 }
 
-// Il nome leggibile di una tabella, per il messaggio.
-var NOMI_TABELLE_CANTIERE = {
-  giornate: 'giornate', spese: 'spese', regia: 'righe di regia',
-  voci_regia: 'voci di regia', materiali: 'materiali',
-  materiali_cantiere: 'materiali di cantiere', foto: 'foto',
-  bolle_consegna: 'bolle di consegna', piano_giorno: 'righe di piano',
-  preventivi_cantiere: 'preventivi', cantiere_figure: 'figure assegnate',
-  pagamenti_ricevuti: 'pagamenti ricevuti', sal_pagamenti: 'pagamenti SAL',
-  tiri_gru: 'tiri di gru', assenze: 'assenze', lavorazioni: 'lavorazioni',
-  tm_conta_classificazioni: 'documenti contabili',
-  // FASE 27 e 58 — le colonne cantiere_id del modulo, trovate dal catalogo.
-  tm_conta_fatture: 'fatture di vendita', tm_conta_fatture_acquisto: 'fatture d\'acquisto',
-  tm_conta_movimenti_propri: 'movimenti propri', tm_conta_offerte: 'conferme d\'ordine',
-  tm_conta_cantiere_contratto: 'contratto e acconti'
-}
-function nomeTabellaLeggibile(t) { return NOMI_TABELLE_CANTIERE[t] || t }
-
-// Conta tutto quello che nomina questo cantiere. Torna anche `incerto`: quando
-// non si e' riusciti a controllare qualcosa, la cancellazione NON si offre.
-async function contaAttaccatoAlCantiere(cantiereId, nomeCantiereTesto) {
-  var esito = { totale: 0, pezzi: [], file: 0, fileBucket: [], incerto: [], tabelleViste: 0 }
-  if (!currentAziendaId) throw new Error('sessione non attiva, il controllo non è possibile')
-
-  var tabelle = await tabelleConCantiereId()
-  if (!tabelle) {
-    esito.incerto.push('non sono riuscito a leggere l’elenco delle tabelle dal database')
-  } else {
-    esito.tabelleViste = tabelle.length
-    for (var i = 0; i < tabelle.length; i++) {
-      var t = tabelle[i]
-      try {
-        const { count, error } = await sb.from(t)
-          .select('cantiere_id', { count: 'exact', head: true })
-          .eq('cantiere_id', cantiereId)
-        if (error) throw error
-        var n = count || 0
-        if (n > 0) { esito.totale += n; esito.pezzi.push(n + ' ' + nomeTabellaLeggibile(t)) }
-      } catch (e) {
-        // Una tabella che non si riesce a leggere e' un «non lo so»: si annota
-        // e la cancellazione si blocca. Meglio non cancellare che cancellare
-        // sopra un dato che non si e' potuto vedere.
-        esito.incerto.push(t)
-      }
-    }
-  }
-
-  // I due legami che una colonna non dice. `voci_lavoro` e' appesa alle
-  // giornate e alle lavorazioni, non al cantiere.
-  var vie = [
-    { padre: 'giornate',    campo: 'giornata_id' },
-    { padre: 'lavorazioni', campo: 'lavorazione_id' }
-  ]
-  for (var v = 0; v < vie.length; v++) {
-    try {
-      const { data: padri, error: ePadri } = await sb.from(vie[v].padre)
-        .select('id').eq('cantiere_id', cantiereId).limit(1000)
-      if (ePadri) throw ePadri
-      var ids = (padri || []).map(function (x) { return x.id })
-      if (!ids.length) continue
-      const { count, error } = await sb.from('voci_lavoro')
-        .select(vie[v].campo, { count: 'exact', head: true })
-        .in(vie[v].campo, ids)
-      if (error) throw error
-      if (count) { esito.totale += count; esito.pezzi.push(count + ' voci di lavoro') }
-    } catch (e) {
-      // voci_lavoro potrebbe non avere quella colonna: non e' un guasto, e' che
-      // quella via non esiste. Si prova l'altra.
-      if (!/column|does not exist|42703|PGRST/i.test(String(e.message || ''))) {
-        esito.incerto.push('voci_lavoro via ' + vie[v].padre)
-      }
-    }
-  }
-
-  // I file: il percorso e' costruito sul NOME del cantiere.
-  if (nomeCantiereTesto) {
-    for (var b = 0; b < BUCKET_CANTIERE.length; b++) {
-      try {
-        const { data, error } = await sb.storage.from(BUCKET_CANTIERE[b])
-          .list(nomeCantiereTesto, { limit: 100 })
-        if (error) throw error
-        if (data && data.length) {
-          esito.file += data.length
-          esito.fileBucket.push(data.length + ' in ' + BUCKET_CANTIERE[b])
-        }
-      } catch (e) {
-        // Un bucket che non esiste o non si legge non blocca: i file non stanno
-        // nel database e la loro presenza si segnala, non si impone.
-        console.warn('Bucket ' + BUCKET_CANTIERE[b] + ' non controllato:', e.message || e)
-      }
-    }
-  }
-
-  return esito
-}
-
-function esitoEliminaCantiere(tipo, msg) {
-  showFattureBanner('cant-elimina-esito', tipo, msg)
-}
-
-async function chiediEliminaCantiere() {
-  var id = cantiereApertoId
-  if (!id) return
-  var cant = (cantieriCache || []).filter(function (x) { return x.id === id })[0]
-  var nome = cant ? (cant.nome || '') : ''
-
-  var btn = el('cant-elimina-btn')
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Controllo in corso…' }
-  html('cant-elimina-esito', loadingRow('Guardo cosa c’è attaccato a questo cantiere…'))
-  try {
-    var uso = await contaAttaccatoAlCantiere(id, nome)
-
-    if (uso.incerto.length) {
-      esitoEliminaCantiere('err',
-        'Non elimino: non sono riuscito a controllare tutto (' + uso.incerto.join(', ') + '). ' +
-        'Senza quel controllo cancellare vorrebbe dire farlo alla cieca. Riprova fra un momento.')
-      return
-    }
-
-    if (uso.totale > 0) {
-      html('cant-elimina-esito',
-        '<div class="fase-banner warn" role="status">' +
-          '<span class="icon" aria-hidden="true">🔒</span>' +
-          '<div class="msg"><strong>Non si può eliminare: dentro c’è del lavoro registrato.</strong>' +
-            '<small>' + esc(uso.pezzi.join(' · ')) + '.<br>' +
-            'Questi dati dicono cosa è stato fatto, e se il cantiere è su una fattura quella ' +
-            'deve continuare a dire a quale lavoro si riferisce. ' +
-            'Un lavoro finito si <strong>chiude</strong>: mettilo su «Completato» nell’App ' +
-            'Cantieri e sparisce dai lavori in corso, senza perdere niente.' +
-            (uso.file ? '<br>Ci sono anche ' + uso.file + ' file (' + esc(uso.fileBucket.join(', ')) + ').' : '') +
-            '</small></div></div>')
-      return
-    }
-
-    // Vuoto: si può. Ma se ha dei file, si dice PRIMA della conferma.
-    var avvisoFile = uso.file
-      ? '\n\nATTENZIONE: nello Storage ci sono ' + uso.file + ' file di questo cantiere (' +
-        uso.fileBucket.join(', ') + ').\nNON vengono cancellati, ma il loro percorso è ' +
-        'costruito sul nome del cantiere: dopo non sarebbero più rintracciabili.\n' +
-        'Se ti servono, scaricali PRIMA da Supabase.'
-      : ''
-    if (!window.confirm('Vuoi eliminare definitivamente il cantiere «' + nome + '»?\n\n' +
-        'Non c’è niente attaccato: nessuna giornata, nessuna spesa, nessun documento.\n' +
-        'L’operazione non si annulla.' + avvisoFile)) {
-      html('cant-elimina-esito', '')
-      return
-    }
-    await eliminaCantiereConfermato(id, nome)
-  } catch (e) {
-    console.error('Controllo cantiere:', e)
-    esitoEliminaCantiere('err', 'Controllo non riuscito: ' + (e.message || e) +
-      ' — non elimino niente.')
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '🔎 Controlla se si può eliminare' }
-  }
-}
-
-async function eliminaCantiereConfermato(id, nome) {
-  try {
-    const { error } = await sb.from('cantieri').delete().eq('id', id).select()
-    if (error) throw error
-    // Via dalla cache e dalle tendine, senza ricaricare la pagina.
-    cantieriCache = (cantieriCache || []).filter(function (c) { return c.id !== id })
-    cantiereApertoId = null
-    classCantiereMap = null
-    tornaElencoCantieri()
-    renderElencoCantieri()
-    riempiTendinaCantieri()
-    showCantieriBanner('ok', 'Cantiere «' + nome + '» eliminato.')
-  } catch (e) {
-    console.error('Eliminazione cantiere:', e)
-    if (eRifiutoPolicy(e)) {
-      esitoEliminaCantiere('err',
-        'Il database non permette a questo programma di eliminare cantieri. ' +
-        'È un permesso da aggiungere una volta sola: lancia SQL_FASE25.sql dal SQL Editor ' +
-        'di Supabase. Intanto non è stato cancellato niente.')
-    } else {
-      esitoEliminaCantiere('err', 'Cantiere non eliminato: ' + (e.message || e))
-    }
-  }
+function apriCantiereInAnagrafiche() {
+  var url = urlAnagraficheCommessa(cantiereApertoId)
+  var w = null
+  try { w = window.open(url, NOME_FINESTRA_ANAGRAFICHE) } catch (e) { w = null }
+  if (!w) window.location.href = url      // finestra bloccata dal browser: stessa scheda
 }
 
 // ── La pagina ────────────────────────────────────────────────────────────────
@@ -24755,7 +24539,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '96'
+var VERSIONE = '97'
 
 function controllaVersionePagina() {
   try {

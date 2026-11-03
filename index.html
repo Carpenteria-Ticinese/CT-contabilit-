@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=96" />
+  <link rel="stylesheet" href="css/style.css?v=97" />
 </head>
-<body data-versione="96">
+<body data-versione="97">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 96</span>
+      <span id="sidebar-versione">Versione 97</span>
     </div>
 
   </aside>
@@ -398,20 +398,18 @@
 
         <div id="cant-dettaglio"></div>
 
-        <!-- FASE 25 — eliminare un cantiere, ma solo se è vuoto. Il conteggio di
-             cosa c'è attaccato lo fa il programma prima di offrirlo. -->
-        <div class="card no-print" id="cant-elimina-card">
-          <div class="card-title">🗑️ Elimina questo cantiere</div>
-          <div class="form-hint" style="margin-top:0; margin-bottom:12px">
-            Si può eliminare solo un cantiere <strong>vuoto</strong>. Se ha giornate, spese,
-            materiali, foto o documenti contabili, resta dov&rsquo;è: quei dati dicono cosa è
-            stato fatto, e una fattura deve continuare a dire a quale lavoro si riferisce.
-            Un lavoro finito si <strong>chiude</strong> (stato «Completato»), non si cancella.
+        <!-- v97 — le commesse non si eliminano da qui: si archiviano in Anagrafiche. -->
+        <div class="card no-print" id="cant-anagrafiche-card">
+          <div class="card-title">🗂️ Archiviare questa commessa</div>
+          <div class="form-hint" style="margin-top:0; margin-bottom:12px; font-size:1.05rem">
+            Le commesse non si eliminano: si archiviano (stato <strong>Conclusa</strong> o
+            <strong>Persa</strong>) in Anagrafiche. I dati dicono cosa è stato fatto, e una
+            fattura deve continuare a dire a quale lavoro si riferisce.
           </div>
-          <div id="cant-elimina-esito" role="status" aria-live="polite"></div>
           <div class="form-actions" style="margin-top:0">
-            <button type="button" class="btn-secondary" id="cant-elimina-btn"
-                    onclick="chiediEliminaCantiere()">🔎 Controlla se si può eliminare</button>
+            <button type="button" class="btn-primary" id="cant-anagrafiche-btn"
+                    style="font-size:1.1rem; padding:14px 22px"
+                    onclick="apriCantiereInAnagrafiche()">🗂️ Apri in Anagrafiche</button>
           </div>
         </div>
 
@@ -3478,7 +3476,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=96"></script>
+<script src="js/app.js?v=97"></script>
 
 </body>
 </html>
