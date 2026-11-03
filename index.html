@@ -3,11 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CT Pre-contabilità</title>
+  <title>Contabilità · Carpenteria Ticinese</title>
+  <!-- Identità v100: nome, icona e colore uguali dappertutto (00 DIRETTORE\identita) -->
+  <link rel="manifest" href="manifest.json?v=100" />
+  <meta name="theme-color" content="#1f6fd1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icone/icona-32.png?v=100" />
+  <link rel="apple-touch-icon" href="icone/icona-180.png?v=100" />
+  <meta name="apple-mobile-web-app-title" content="Contabilità" />
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=98" />
+  <link rel="stylesheet" href="css/style.css?v=100" />
 </head>
-<body data-versione="98">
+<body data-versione="100">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -15,7 +21,7 @@
   <!-- ── Barra superiore mobile (nascosta su desktop) ──────────────────────── -->
   <div id="mobile-topbar">
     <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Apri/chiudi menu" aria-controls="sidebar">☰</button>
-    <span class="mobile-title">🌲 CT <span class="mobile-title-sub">Pre-contabilità</span></span>
+    <span class="mobile-title">🧾 Contabilità</span>
   </div>
 
   <!-- ── Overlay per sidebar a scomparsa (mobile) ──────────────────────────── -->
@@ -25,7 +31,7 @@
   <aside id="sidebar" role="navigation" aria-label="Navigazione principale">
 
     <div class="sidebar-logo">
-      🌲 CT Pre-contabilità
+      🧾 Contabilità
       <span>Carpenteria Ticinese</span>
     </div>
 
@@ -121,7 +127,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 98</span>
+      <span id="sidebar-versione">Versione 100</span>
     </div>
 
   </aside>
@@ -133,8 +139,8 @@
     <div id="page-login" class="page">
       <div class="login-wrap">
         <div class="login-card card">
-          <div class="login-logo" aria-hidden="true">🌲</div>
-          <div class="login-title">CT Pre-contabilità</div>
+          <div class="login-logo" aria-hidden="true">🧾</div>
+          <div class="login-title">Contabilità</div>
           <div class="login-subtitle">Accedi con il tuo account</div>
 
           <div id="login-error" role="alert" aria-live="assertive" class="fase-banner err" style="display:none; margin-bottom:16px">
@@ -1188,26 +1194,9 @@
           <!-- Fatture di vendita intestate a questo contatto -->
           <div id="contatto-lettura-fatture" style="margin-top:18px"></div>
 
-          <!-- v98 — il gruppo predefinito è l'unico dato che Anagrafiche non ha:
-               si cambia qui (unica scrittura su tm_contatti). -->
-          <div class="card-sub" style="margin-top:18px">
-            <div class="card-title">🏷️ Gruppo predefinito</div>
-            <div class="form-hint" style="margin-top:0">Proposto in automatico quando scegli questo contatto in una fattura d&rsquo;acquisto o in un movimento.</div>
-            <div class="form-row" style="align-items:flex-end">
-              <div class="form-group" style="flex:2; margin-bottom:0">
-                <label for="c-gruppo" class="form-label">Gruppo predefinito</label>
-                <select id="c-gruppo" class="form-input" autocomplete="off"></select>
-              </div>
-              <div class="form-group" style="flex:0 0 auto; margin-bottom:0">
-                <button type="button" class="btn-secondary" id="contatto-gruppo-salva" onclick="salvaGruppoContatto()">💾 Salva il gruppo</button>
-              </div>
-            </div>
-            <div id="contatto-gruppo-esito" role="status" aria-live="polite" style="margin-top:8px"></div>
-          </div>
-
           <!-- v98 — i dati del contatto si cambiano, si archiviano e si tolgono solo in Anagrafiche. -->
           <div class="form-hint" style="margin-top:18px; font-size:1.05rem">
-            Per cambiare i dati, archiviare o togliere questo contatto: <strong>Anagrafiche</strong>.
+            Per cambiare i dati (anche il gruppo predefinito), archiviare o togliere questo contatto: <strong>Anagrafiche</strong>.
           </div>
           <div class="form-actions">
             <button type="button" class="btn-primary" id="contatto-lettura-modifica"
@@ -3314,7 +3303,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=98"></script>
+<script src="js/app.js?v=100"></script>
 
 </body>
 </html>

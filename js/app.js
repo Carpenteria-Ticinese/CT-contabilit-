@@ -1,4 +1,4 @@
-// CT Pre-contabilità
+// Contabilità
 // app.js — Logica principale (Fase 1 + Fase 2)
 // Stack: HTML/JS vanilla + Supabase JS v2
 
@@ -1340,7 +1340,7 @@ async function scartaDaRiga(i) {
       return
     }
     var motivo = window.prompt(
-      'Scartare da Pre-contabilità questa riga dell\'App Cantieri?\n\n' +
+      'Scartare da Contabilità questa riga dell\'App Cantieri?\n\n' +
       '«' + m.descrizione + '» · ' + fmtDate(m.data) + (m.importo != null ? ' · ' + fmtNumIt(m.importo) + ' CHF' : '') + '\n\n' +
       'Esce da «Da classificare» e resta nello storico «🗑️ Scartati», da dove si può ripristinare.\n' +
       'Nell\'App Cantieri NON cambia niente: se è sbagliata anche là, cancellala dall\'App Cantieri → ' +
@@ -1558,7 +1558,7 @@ async function assicuraCopiaAllegatoSpesa(m) {
   var tipoMedia = tipoMediaAllegato(nomeOrig, blob.type)
   if (tipoMedia) opzioni.contentType = tipoMedia
   const { error: eU } = await sb.storage.from(STORAGE_BUCKET).upload(path, blob, opzioni)
-  if (eU) throw new Error('la copia non si carica nella Pre-contabilità (' + (eU.message || eU) + ')')
+  if (eU) throw new Error('la copia non si carica nella Contabilità (' + (eU.message || eU) + ')')
   // 3. La riga dell'allegato. Se non si scrive, il file copiato si toglie.
   var riga = {
     azienda_id: currentAziendaId, tabella_origine: 'spese', id_origine: m.origine_id,
@@ -1678,7 +1678,7 @@ function giustificativoRigaHtml(m, classificata) {
   if (!g) return ''
   var id = esc(String(m.origine_id))
   var apri = '<button type="button" class="icon-btn" onclick="event.stopPropagation(); apriGiustificativoSpesa(\'' + id + '\')">📎 Scontrino</button>'
-  if (g.tipo === 'copia') return '<div class="giust-riga">' + apri + '<span class="dim">conservato nella Pre-contabilità</span></div>'
+  if (g.tipo === 'copia') return '<div class="giust-riga">' + apri + '<span class="dim">conservato nella Contabilità</span></div>'
   // 89 — la ricevuta cartacea: dove sta, e si può togliere.
   if (g.tipo === 'cartaceo') return '<div class="giust-riga">📄 <span>Ricevuta cartacea in ufficio: <strong>' + esc(g.cartaceo.posizione) + '</strong></span>' +
     '<button type="button" class="icon-btn" onclick="event.stopPropagation(); togliCartaceoSpesa(\'' + esc(g.cartaceo.id) + '\')">✕ Togli</button></div>'
@@ -1741,7 +1741,7 @@ async function apriGiustificativoSpesa(id) {
     var u = await urlGiustificativo(m)
     html('scontrino-corpo', u
       ? anteprimaGiustificativoHtml(u, true) + '<div class="form-hint" style="margin-top:8px">' +
-          (u.daCopia ? '📎 Copia conservata nella Pre-contabilità.' : '📎 Originale nell\'App Cantieri: non è ancora copiato qui.') +
+          (u.daCopia ? '📎 Copia conservata nella Contabilità.' : '📎 Originale nell\'App Cantieri: non è ancora copiato qui.') +
           ' <a href="' + esc(u.url) + '" target="_blank" rel="noopener">Apri in una scheda nuova</a></div>'
       : '<div class="cru-vuoto">' + esc(testoSenzaGiustificativo(m)) + '</div>')
   } catch (e) {
@@ -1776,7 +1776,7 @@ async function disegnaDocumentoClassifica(m) {
   var id = esc(String(m.origine_id))
   var aiOn = letturaAutomaticaAttiva()
   var stato = g.tipo === 'copia'
-    ? '📎 <strong>Giustificativo conservato nella Pre-contabilità.</strong>'
+    ? '📎 <strong>Giustificativo conservato nella Contabilità.</strong>'
     : '📎 <strong>Giustificativo nell\'App Cantieri.</strong> Alla lettura o alla conferma se ne fa una copia qui: ' +
       'senza la copia la classificazione non si salva. L\'originale non si tocca.'
   box.innerHTML = '<div class="cls-doc-box">' +
@@ -1803,7 +1803,7 @@ function notaGiustificativiBloccoHtml(lista) {
   var daCopiare = spese.filter(function (m) { var g = statoGiustificativo(m); return g.tipo === 'solo_app' || g.tipo === 'app_non_verificata' }).length
   var senza = spese.filter(function (m) { return statoGiustificativo(m).tipo === 'nessuno' }).length
   var pezzi = []
-  if (daCopiare) pezzi.push('📎 ' + daCopiare + (daCopiare === 1 ? ' foto si copia' : ' foto si copiano') + ' nella Pre-contabilità alla conferma: una spesa la cui copia non riesce resta da classificare, e lo dico')
+  if (daCopiare) pezzi.push('📎 ' + daCopiare + (daCopiare === 1 ? ' foto si copia' : ' foto si copiano') + ' nella Contabilità alla conferma: una spesa la cui copia non riesce resta da classificare, e lo dico')
   if (senza) pezzi.push('⚠️ ' + senza + (senza === 1 ? ' spesa senza' : ' spese senza') + ' giustificativo digitale: si classificano lo stesso')
   if (!pezzi.length) return ''
   return '<div class="cls-doc-box senza">' + pezzi.map(function (p) { return '<div>' + esc(p) + '</div>' }).join('') + '</div>'
@@ -2058,10 +2058,10 @@ async function leggiScontrinoSpesa() {
       throw new Error('Lettura automatica non attiva: imposta l\'indirizzo del Worker in «Impostazioni ditta» → «Lettura automatica delle fatture».')
     }
     // Prima la copia: si legge il NOSTRO file, e da qui in poi è conservato.
-    html('cls-ai', loadingRow('Copio il giustificativo nella Pre-contabilità…'))
+    html('cls-ai', loadingRow('Copio il giustificativo nella Contabilità…'))
     var copia
     try { copia = await assicuraCopiaAllegatoSpesa(m) }
-    catch (eC) { throw new Error('Il giustificativo non si è copiato nella Pre-contabilità — ' + (eC.message || eC) + '. Non ho letto niente.') }
+    catch (eC) { throw new Error('Il giustificativo non si è copiato nella Contabilità — ' + (eC.message || eC) + '. Non ho letto niente.') }
     if (!copia) throw new Error('Questa spesa non ha un giustificativo digitale: non c\'è niente da leggere.')
     if (classifyTargets[0] !== m) return
     disegnaDocumentoClassifica(m)
@@ -2190,7 +2190,7 @@ async function copiaOraGiustificativo(id) {
     await assicuraCopiaAllegatoSpesa(m)
     await loadDaClassificare()
     html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span>' +
-      '<div class="msg">Giustificativo copiato: «' + esc(m.descrizione) + '» è conservato nella Pre-contabilità. L\'originale non è stato toccato.</div></div>')
+      '<div class="msg">Giustificativo copiato: «' + esc(m.descrizione) + '» è conservato nella Contabilità. L\'originale non è stato toccato.</div></div>')
   } catch (e) {
     window.alert('Giustificativo NON copiato: ' + (e.message || e))
   }
@@ -2209,7 +2209,7 @@ async function copiaTuttiGiustificativi() {
   await loadDaClassificare()
   html('movimenti-banner', '<div class="fase-banner ' + (falliti.length ? 'warn' : 'ok') + '" role="status">' +
     '<span class="icon" aria-hidden="true">' + (falliti.length ? '⚠️' : '✅') + '</span><div class="msg">' +
-    fatti + (fatti === 1 ? ' giustificativo copiato' : ' giustificativi copiati') + ' nella Pre-contabilità.' +
+    fatti + (fatti === 1 ? ' giustificativo copiato' : ' giustificativi copiati') + ' nella Contabilità.' +
     (falliti.length ? '<small>NON copiati: ' + esc(falliti.join(' · ')) + '</small>' : '') + '</div></div>')
 }
 // Dopo «Conferma classificazione»: cosa è successo, detto.
@@ -2217,7 +2217,7 @@ function messaggioDopoClassifica(modo, salvati, esclusi, primo) {
   if (esclusi && esclusi.length) {
     html('movimenti-banner', '<div class="fase-banner warn" role="alert"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">' +
       'Classificate ' + salvati.length + '. NON classificate ' + esclusi.length + ', perché il giustificativo non si è copiato ' +
-      'nella Pre-contabilità: restano qui sotto, da classificare.<small>' +
+      'nella Contabilità: restano qui sotto, da classificare.<small>' +
       esc(esclusi.map(function (x) { return '«' + x.m.descrizione + '»: ' + x.motivo }).join(' · ')) + '</small></div></div>')
     return
   }
@@ -2225,7 +2225,7 @@ function messaggioDopoClassifica(modo, salvati, esclusi, primo) {
     var g = statoGiustificativo(primo)
     html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span><div class="msg">' +
       'Classificata «' + esc(primo.descrizione) + '». ' + (g && g.tipo === 'copia'
-        ? '📎 Il giustificativo è conservato nella Pre-contabilità.'
+        ? '📎 Il giustificativo è conservato nella Contabilità.'
         : esc(testoSenzaGiustificativo(primo)) + ': l\'avviso resta sulla riga.') + '</div></div>')
   }
 }
@@ -3375,7 +3375,7 @@ async function saveClassificazione() {
   var bersagli = classifyTargets.slice()
   try {
     // 88 — PRIMA IL GIUSTIFICATIVO. Una spesa dell'App Cantieri con la foto si
-    // classifica solo se la copia nella Pre-contabilità è riuscita: senza, la
+    // classifica solo se la copia nella Contabilità è riuscita: senza, la
     // classificazione non si salva e lo si dice. Senza foto si classifica (e
     // l'avviso «nessun giustificativo digitale» resta sulla riga).
     for (var cp = 0; cp < bersagli.length; cp++) {
@@ -3386,7 +3386,7 @@ async function saveClassificazione() {
       catch (eCp) { esclusiCopia.push({ m: tc, motivo: eCp.message || String(eCp) }) }
     }
     if (esclusiCopia.length && classifyMode === 'single') {
-      showClsBanner('err', 'Classificazione NON salvata: il giustificativo non si è copiato nella Pre-contabilità — ' +
+      showClsBanner('err', 'Classificazione NON salvata: il giustificativo non si è copiato nella Contabilità — ' +
         esclusiCopia[0].motivo + '. L\'originale nell\'App Cantieri non è stato toccato.')
       return
     }
@@ -14572,7 +14572,6 @@ async function apriContatto(id) {
   // v98 — «Diventa fornitore» solo se non lo è: si fa in Anagrafiche.
   html('contatto-lettura-extra', contattoInCategoria(c, 'fornitore') ? '' :
     '<button type="button" class="btn-secondary" onclick="apriContattoInAnagrafiche(contattoLetturaId, \'fornitore\')">🗂️ Diventa fornitore (in Anagrafiche)</button>')
-  preparaGruppoContatto(c)
   mostraRubricaVista('lettura')
   // Le fatture arrivano dopo: la scheda si vede subito, senza aspettare la rete.
   renderFattureDelContatto(id)
@@ -14761,67 +14760,18 @@ function fattureContattoHtml(list, residuo) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// CONTATTI: SI SCRIVONO, SI ARCHIVIANO E SI TOLGONO SOLO IN ANAGRAFICHE (v98)
+// CONTATTI: SI SCRIVONO, SI ARCHIVIANO E SI TOLGONO SOLO IN ANAGRAFICHE (v98, v99)
 //
-// Dalla 98 la Pre-contabilità non crea, non cambia, non archivia e non elimina
-// contatti: legge e basta. I tasti «Apri in Anagrafiche» portano alla scheda.
-// UNICA scrittura rimasta su `tm_contatti`: la colonna `gruppo_default`
-// (il «Gruppo predefinito»), che Anagrafiche non ha. Un campo solo, per un
-// contatto solo, scelto da elenco: salvaGruppoContatto().
+// Dalla 99 la Contabilità NON scrive più niente in `tm_contatti`: legge e
+// basta. Anche il «Gruppo predefinito» si cambia in Anagrafiche (dalla loro v4,
+// `#contatto/<id>/modifica`); qui si vede in lettura e si usa come proposta
+// nelle fatture d'acquisto e nei movimenti (scegliContatto). I tasti
+// «Modifica in Anagrafiche» e «Apri in Anagrafiche» portano alla scheda.
 // ══════════════════════════════════════════════════════════════════════════════
 
 function chiudiSchedaContatto() {
   mostraRubricaVista('lista')
   renderContattiList()
-}
-
-// Il gruppo predefinito si sceglie dalla scheda letta e si salva col suo tasto.
-async function preparaGruppoContatto(c) {
-  html('contatto-gruppo-esito', '')
-  await riempiSelectGruppi('c-gruppo', c.gruppo_default || '')
-  if (el('contatto-gruppo-salva')) el('contatto-gruppo-salva').disabled = false
-}
-
-async function salvaGruppoContatto() {
-  var id = contattoLetturaId
-  if (!id) return
-  var btn = el('contatto-gruppo-salva')
-  var g = getVal('c-gruppo') || null
-  if (btn) btn.disabled = true
-  html('contatto-gruppo-esito', loadingRow('Salvo il gruppo…'))
-  try {
-    await richiediSessione('il gruppo predefinito NON è stato salvato')
-    const { data, error } = await sb.from('tm_contatti')
-      .update({ gruppo_default: g })
-      .eq('id', id).eq('azienda_id', currentAziendaId).select('id')
-    if (error) throw error
-    if (!data || !data.length) throw new Error('il database non ha cambiato nessuna riga (permesso o contatto non trovato)')
-    scadeCache('contatti')
-    await loadContatti(true)
-    var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
-    if (c && contattoLetturaId === id) html('contatto-lettura-dati', contattoLetturaHtml(c))
-    showFattureBanner('contatto-gruppo-esito', 'ok', 'Gruppo predefinito salvato alle ' + oraAdesso() + '.')
-  } catch (e) {
-    showFattureBanner('contatto-gruppo-esito', 'err', 'Gruppo NON salvato: ' + friendlyContattoError(e))
-  } finally {
-    if (btn) btn.disabled = false
-  }
-}
-
-// Gli errori Postgres grezzi non dicono niente a chi li legge: qui diventano
-// frasi che indicano il campo e cosa fare.
-function friendlyContattoError(e) {
-  var m = (e && (e.message || e.msg)) ? String(e.message || e.msg) : String(e)
-  if (m.indexOf('gruppo_default') !== -1 && m.indexOf('foreign key') !== -1) {
-    return 'il gruppo scelto non esiste più. Riapri il menu «Gruppo predefinito» e scegline un altro.'
-  }
-  if (m.indexOf('categoria') !== -1 && m.indexOf('check constraint') !== -1) {
-    return 'la categoria non è valida: usa Cliente, Fornitore, Collaboratore o Generico.'
-  }
-  if (m.indexOf('row-level security') !== -1 || m.indexOf('violates row-level') !== -1) {
-    return 'accesso negato dal database. Rieffettua il login e riprova.'
-  }
-  return m
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -18022,14 +17972,13 @@ function contiCantiere(cantiereId) {
 
 // ═════════════════════════════════════════════════════════════════════════════
 // PERSONE, CLIENTI E COMMESSE SI SCRIVONO E SI TOLGONO SOLO IN ANAGRAFICHE
-// (v97 = non si eliminano commesse; v98 = non si creano commesse né contatti)
+// (v97 = non si eliminano commesse; v98 = non si creano commesse né contatti; v99 = nemmeno il gruppo predefinito)
 //
 // Niente si cancella: si archivia (commessa: stato Conclusa o Persa). Il database
 // non permette più DELETE su `cantieri` (errore 42501). Questo programma legge
 // `cantieri` e `tm_contatti` e basta; ogni scrittura passa da qui: si apre
 // Anagrafiche (finestra a nome fisso), si lavora là, si torna e si preme
-// «Aggiorna l'elenco». (Unica scrittura rimasta su tm_contatti: gruppo_default,
-// che Anagrafiche non ha: vedi salvaGruppoContatto.)
+// «Aggiorna l'elenco». Dalla 99 nessuna eccezione: nemmeno il gruppo predefinito.
 // ═════════════════════════════════════════════════════════════════════════════
 
 var URL_ANAGRAFICHE = 'https://carpenteria-ticinese.github.io/CT-rubrica/'
@@ -18730,7 +18679,7 @@ async function raccogliDocumentiPacchetto(da, a) {
   // vuota fa pensare che qualcosa sia andato perso.
   var speseCant = await speseCantierePeriodo(da, a)
   speseCant.forEach(function (sp) {
-    // 88 — la copia conservata nella Pre-contabilità, se c'è; altrimenti
+    // 88 — la copia conservata nella Contabilità, se c'è; altrimenti
     // l'originale nell'App Cantieri.
     var copie = allegatiDi('spese', sp.id)
     voci.push({
@@ -24033,7 +23982,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '98'
+var VERSIONE = '100'
 
 function controllaVersionePagina() {
   try {

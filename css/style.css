@@ -1,14 +1,14 @@
-/* TimberMaster — Pre-Contabilità | Stile base */
+/* Contabilità — Carpenteria Ticinese | Stile base (colore principale blu #1f6fd1, identità v100) */
 
 :root {
   --bg:           #f4f6f8;
   --surface:      #ffffff;
-  --sidebar-bg:   #1a2b1c;
-  --sidebar-text: #b8c9ba;
+  --sidebar-bg:   #14283f;
+  --sidebar-text: #b8c6d9;
   --sidebar-hi:   #ffffff;
-  --sidebar-act:  #2d6a4f;
-  --primary:      #2d6a4f;
-  --primary-lt:   #e8f5ee;
+  --sidebar-act:  #1f6fd1;
+  --primary:      #1f6fd1;
+  --primary-lt:   #e6effc;
   --gold:         #c8960c;
   --gold-lt:      #fef9ec;
   --text:         #111827;
@@ -452,7 +452,7 @@ tbody td {
   transition: border-color .15s, box-shadow .15s;
   font-family: inherit;
 }
-.form-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(45,106,79,.12); }
+.form-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(31,111,209,.12); }
 
 .form-input-file {
   width: 100%;
@@ -882,7 +882,7 @@ tr.riga-orig-ai > td:first-child { box-shadow: inset 4px 0 0 #7c3aed; }
 }
 .cls-calc .calc-label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text2); font-weight: 600; }
 .cls-calc .calc-value { font-size: 16px; font-weight: 700; font-family: monospace; color: var(--text); margin-top: 3px; }
-.cls-calc .calc-box.tot { background: var(--primary-lt); border-color: #a7d3bd; }
+.cls-calc .calc-box.tot { background: var(--primary-lt); border-color: #a9c8f0; }
 .cls-calc .calc-box.tot .calc-value { color: var(--primary); }
 
 /* Toggle IVA inclusa/esclusa */
@@ -992,7 +992,7 @@ tr.riga-orig-ai > td:first-child { box-shadow: inset 4px 0 0 #7c3aed; }
   line-height: 1;
 }
 .icon-btn:hover { background: var(--bg); color: var(--text); }
-.icon-btn.classify { color: var(--primary); border-color: #a7d3bd; font-weight: 600; }
+.icon-btn.classify { color: var(--primary); border-color: #a9c8f0; font-weight: 600; }
 .icon-btn.classify:hover { background: var(--primary-lt); }
 .icon-btn.danger:hover { background: var(--err-bg); color: var(--err); border-color: #fca5a5; }
 
@@ -2230,7 +2230,7 @@ tr.riga-fuori-cantiere td {
   font-family: inherit;
 }
 .cru-box:hover  { border-color: var(--primary); background: var(--primary-lt); }
-.cru-box:focus  { outline: 3px solid rgba(45,106,79,.35); outline-offset: 2px; }
+.cru-box:focus  { outline: 3px solid rgba(31,111,209,.35); outline-offset: 2px; }
 .cru-box.vuoto  { cursor: default; opacity: .85; }
 .cru-box.vuoto:hover { border-color: var(--border); background: var(--surface); }
 
@@ -2275,7 +2275,7 @@ tr.riga-fuori-cantiere td {
   font-family: inherit;
 }
 .gruppo-riga:hover { background: var(--bg); }
-.gruppo-riga:focus { outline: 2px solid rgba(45,106,79,.35); outline-offset: 1px; }
+.gruppo-riga:focus { outline: 2px solid rgba(31,111,209,.35); outline-offset: 1px; }
 .gruppo-riga.non-assegnato { cursor: pointer; }
 .gruppo-riga-testa {
   display: flex;
@@ -2552,7 +2552,7 @@ tr.riga-fuori-cantiere td {
 .cant-riga:last-of-type { border-bottom: none; }
 .cant-riga.cliccabile { cursor: pointer; border-radius: var(--radius); }
 .cant-riga.cliccabile:hover { background: var(--primary-lt); }
-.cant-riga.cliccabile:focus { outline: 2px solid rgba(45,106,79,.35); outline-offset: 1px; }
+.cant-riga.cliccabile:focus { outline: 2px solid rgba(31,111,209,.35); outline-offset: 1px; }
 
 .cant-et  { flex: 1; min-width: 150px; }
 .cant-imp { font-weight: 700; min-width: 130px; text-align: right; }
