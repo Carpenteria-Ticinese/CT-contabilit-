@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CT Pre-contabilità</title>
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=97" />
+  <link rel="stylesheet" href="css/style.css?v=98" />
 </head>
-<body data-versione="97">
+<body data-versione="98">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -121,7 +121,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 97</span>
+      <span id="sidebar-versione">Versione 98</span>
     </div>
 
   </aside>
@@ -374,6 +374,11 @@
           <div class="form-hint" style="margin-bottom:12px">
             Un cantiere per riga. Premi su una riga per vederne il dettaglio.
             Premi sulle intestazioni per cambiare l&rsquo;ordine.
+          </div>
+          <div class="form-actions no-print" style="margin-top:14px">
+            <button type="button" class="btn-primary" style="font-size:1.05rem; padding:12px 20px"
+                    onclick="apriNuovaCommessaInAnagrafiche()">🗂️ Nuova commessa in Anagrafiche</button>
+            <button type="button" class="btn-secondary" onclick="aggiornaDaAnagrafiche(true)">↻ Aggiorna l&rsquo;elenco</button>
           </div>
           <div id="cantieri-tabella"></div>
         </div>
@@ -1104,7 +1109,7 @@
           <div class="page-title">Rubrica</div>
           <div class="page-subtitle">
             Anagrafica unica condivisa da tutte le app: clienti, fornitori e collaboratori.
-            Un contatto si scrive una volta sola.
+            Qui si leggono e si scelgono. Un contatto si scrive, si archivia e si toglie solo in Anagrafiche.
           </div>
         </div>
       </div>
@@ -1147,7 +1152,8 @@
           </div>
 
           <div class="rubrica-toolbar">
-            <button class="btn-primary" onclick="nuovoContatto()">➕ Nuovo contatto</button>
+            <button class="btn-primary" style="font-size:1.05rem; padding:12px 20px" onclick="apriNuovoContattoInAnagrafiche()">🗂️ Nuovo contatto in Anagrafiche</button>
+            <button class="btn-secondary" onclick="aggiornaDaAnagrafiche(true)">↻ Aggiorna l&rsquo;elenco</button>
             <label class="form-label-check" style="margin-bottom:0">
               <input type="checkbox" id="rubrica-show-inattivi" onchange="renderContattiList()" />
               <span>Mostra anche i contatti archiviati</span>
@@ -1168,7 +1174,7 @@
 
       <!-- FASE 18 — Scheda contatto in SOLA LETTURA.
            Aprire un contatto non deve poter cambiare un dato per sbaglio:
-           si guarda, e solo premendo «Modifica» si entra nel modulo. -->
+           si guarda; per cambiare un dato si va in Anagrafiche (v98). -->
       <div id="rubrica-lettura-view" style="display:none">
         <div class="card">
           <div class="card-title" id="contatto-lettura-titolo">👤 Scheda contatto</div>
@@ -1182,185 +1188,40 @@
           <!-- Fatture di vendita intestate a questo contatto -->
           <div id="contatto-lettura-fatture" style="margin-top:18px"></div>
 
+          <!-- v98 — il gruppo predefinito è l'unico dato che Anagrafiche non ha:
+               si cambia qui (unica scrittura su tm_contatti). -->
+          <div class="card-sub" style="margin-top:18px">
+            <div class="card-title">🏷️ Gruppo predefinito</div>
+            <div class="form-hint" style="margin-top:0">Proposto in automatico quando scegli questo contatto in una fattura d&rsquo;acquisto o in un movimento.</div>
+            <div class="form-row" style="align-items:flex-end">
+              <div class="form-group" style="flex:2; margin-bottom:0">
+                <label for="c-gruppo" class="form-label">Gruppo predefinito</label>
+                <select id="c-gruppo" class="form-input" autocomplete="off"></select>
+              </div>
+              <div class="form-group" style="flex:0 0 auto; margin-bottom:0">
+                <button type="button" class="btn-secondary" id="contatto-gruppo-salva" onclick="salvaGruppoContatto()">💾 Salva il gruppo</button>
+              </div>
+            </div>
+            <div id="contatto-gruppo-esito" role="status" aria-live="polite" style="margin-top:8px"></div>
+          </div>
+
+          <!-- v98 — i dati del contatto si cambiano, si archiviano e si tolgono solo in Anagrafiche. -->
+          <div class="form-hint" style="margin-top:18px; font-size:1.05rem">
+            Per cambiare i dati, archiviare o togliere questo contatto: <strong>Anagrafiche</strong>.
+          </div>
           <div class="form-actions">
             <button type="button" class="btn-primary" id="contatto-lettura-modifica"
-                    onclick="modificaContattoCorrente()">✏️ Modifica</button>
+                    style="font-size:1.05rem; padding:12px 20px"
+                    onclick="apriContattoInAnagrafiche(contattoLetturaId, 'modifica')">🗂️ Modifica in Anagrafiche</button>
+            <button type="button" class="btn-secondary"
+                    onclick="apriContattoInAnagrafiche(contattoLetturaId)">🗂️ Apri in Anagrafiche</button>
+            <span id="contatto-lettura-extra"></span>
             <!-- FASE 21 — la busta con l'indirizzo di questo contatto. -->
             <button type="button" class="btn-secondary"
                     onclick="apriBustaDaContatto(contattoLetturaId)">✉️ Stampa busta</button>
             <button type="button" class="btn-secondary"
                     onclick="chiudiSchedaContatto()">&larr; Torna all&rsquo;elenco</button>
-            <button type="button" class="btn-danger" id="contatto-elimina-btn"
-                    onclick="chiediEliminaContatto()">🗑️ Elimina contatto</button>
           </div>
-        </div>
-      </div>
-
-      <!-- Scheda contatto -->
-      <div id="rubrica-scheda-view" style="display:none">
-        <div class="card">
-          <div class="card-title" id="contatto-card-title">👤 Scheda contatto</div>
-          <div id="contatto-banner" role="status" aria-live="polite" style="margin-bottom:12px"></div>
-
-          <div id="contatto-azioni-rapide" style="margin-bottom:14px"></div>
-
-          <form id="form-contatto" onsubmit="salvaContatto(event)" novalidate autocomplete="off">
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-categoria" class="form-label">
-                  Categoria <span class="req" aria-hidden="true">*</span>
-                </label>
-                <select id="c-categoria" class="form-input" onchange="onCategoriaContattoChange()" autocomplete="off">
-                  <option value="cliente">Cliente</option>
-                  <option value="fornitore">Fornitore</option>
-                  <option value="collaboratore">Collaboratore</option>
-                  <option value="generico">Generico</option>
-                </select>
-              </div>
-              <div class="form-group" style="flex:2">
-                <label for="c-ragione" class="form-label">
-                  Ragione sociale <span class="dim">(o nome dell&rsquo;attivit&agrave;)</span>
-                </label>
-                <input type="text" id="c-ragione" class="form-input" maxlength="200"
-                       placeholder="es. Ferramenta Bianchi SA" / autocomplete="off">
-              </div>
-            </div>
-
-            <!-- Doppio uso: la categoria qui sopra resta una sola, ma un contatto
-                 puo' comparire ANCHE in un'altra scheda. Serve al fornitore che
-                 ogni tanto compra una prestazione: una scheda sola, non due. -->
-            <div id="c-anche-cliente-riga">
-              <label class="form-label-check">
-                <input type="checkbox" id="c-anche-cliente" />
-                <span>Compare anche fra i Clienti
-                  <span class="dim">(oltre alla categoria scelta qui sopra)</span></span>
-              </label>
-            </div>
-            <div id="c-anche-fornitore-riga">
-              <label class="form-label-check">
-                <input type="checkbox" id="c-anche-fornitore" />
-                <span>Compare anche fra i Fornitori
-                  <span class="dim">(oltre alla categoria scelta qui sopra)</span></span>
-              </label>
-            </div>
-            <div class="form-hint" style="margin-top:6px;margin-bottom:14px">
-              Se non spunti niente, il contatto resta dov&rsquo;&egrave;: in una scheda sola.
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-nome" class="form-label">Nome <span class="dim">(persona)</span></label>
-                <input type="text" id="c-nome" class="form-input" maxlength="100" / autocomplete="off">
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-cognome" class="form-label">Cognome <span class="dim">(persona)</span></label>
-                <input type="text" id="c-cognome" class="form-input" maxlength="100" / autocomplete="off">
-              </div>
-            </div>
-            <div class="form-hint" style="margin-top:-6px;margin-bottom:14px">
-              Serve almeno uno fra ragione sociale e cognome: &egrave; il nome con cui il contatto
-              compare negli elenchi.
-            </div>
-
-            <div class="form-group">
-              <label for="c-indirizzo" class="form-label">Indirizzo</label>
-              <input type="text" id="c-indirizzo" class="form-input" maxlength="200"
-                     placeholder="es. Via Girardolo del Nado 2" / autocomplete="off">
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-cap" class="form-label">NPA <span class="dim">(scrivilo e la località si compila da sé)</span></label>
-                <input type="text" id="c-cap" class="form-input" maxlength="10" placeholder="6500" autocomplete="off" />
-              </div>
-              <div class="form-group" style="flex:2">
-                <label for="c-citta" class="form-label">Localit&agrave;</label>
-                <input type="text" id="c-citta" class="form-input" maxlength="100" placeholder="Bellinzona" autocomplete="off" />
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-paese" class="form-label">Paese</label>
-                <select id="c-paese" class="form-input" autocomplete="off"></select>
-              </div>
-            </div>
-            <!-- FASE 27 — quando un NPA ha piu' localita' (o viceversa) qui
-                 compaiono le possibili, da scegliere. Non si indovina. -->
-            <div id="c-npa-suggest" role="status" aria-live="polite"></div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-telefono" class="form-label">Tel. <span class="dim">(fisso)</span></label>
-                <input type="tel" id="c-telefono" class="form-input" maxlength="40"
-                       placeholder="+41 91 000 00 00" oninput="renderAzioniRapide()" autocomplete="off" />
-              </div>
-              <!-- FASE 29 — il cellulare accanto al fisso: due numeri diversi,
-                   tutti e due facoltativi, nessuno al posto dell'altro. -->
-              <div class="form-group" style="flex:1">
-                <label for="c-cellulare" class="form-label">Cell. <span class="dim">(cellulare)</span></label>
-                <input type="tel" id="c-cellulare" class="form-input" maxlength="40"
-                       placeholder="+41 79 000 00 00" oninput="renderAzioniRapide()" autocomplete="off" />
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-email" class="form-label">Email</label>
-                <input type="email" id="c-email" class="form-input" maxlength="150"
-                       placeholder="nome@esempio.ch" oninput="renderAzioniRapide()" autocomplete="off" />
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="c-sito" class="form-label">Sito web</label>
-              <input type="text" id="c-sito" class="form-input" maxlength="200"
-                     placeholder="www.esempio.ch" / autocomplete="off">
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="c-uid" class="form-label">UID / Partita IVA</label>
-                <input type="text" id="c-uid" class="form-input" maxlength="40"
-                       placeholder="CHE-123.456.789" / autocomplete="off">
-              </div>
-              <div class="form-group" style="flex:2">
-                <label for="c-iban" class="form-label">IBAN</label>
-                <input type="text" id="c-iban" class="form-input" maxlength="40"
-                       placeholder="CH00 0000 0000 0000 0000 0" / autocomplete="off">
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group" style="flex:2">
-                <label for="c-gruppo" class="form-label">Gruppo predefinito</label>
-                <select id="c-gruppo" class="form-input" autocomplete="off"></select>
-                <div class="form-hint">
-                  Proposto ogni volta che si sceglie questo contatto in un movimento. Resta modificabile.
-                </div>
-              </div>
-              <div class="form-group" style="flex:1">
-                <label for="c-giorni" class="form-label">Giorni di pagamento</label>
-                <input type="number" id="c-giorni" class="form-input" min="0" max="365" step="1"
-                       placeholder="30" autocomplete="off" />
-                <div class="form-hint">
-                  Serve a calcolare la scadenza.
-                  <strong>0 = pagamento alla consegna o anticipato.</strong>
-                  Lasciandolo vuoto vale il termine predefinito della ditta.
-                </div>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="c-note" class="form-label">Note</label>
-              <textarea id="c-note" class="form-input" rows="3" maxlength="1000" autocomplete="off"></textarea>
-            </div>
-
-            <label class="form-label-check">
-              <input type="checkbox" id="c-attivo" checked />
-              <span>Contatto attivo <span class="dim">(togli la spunta per archiviarlo senza cancellarlo)</span></span>
-            </label>
-
-            <div class="form-actions">
-              <button type="submit" class="btn-primary" id="contatto-submit-btn">💾 Salva contatto</button>
-              <button type="button" class="btn-secondary" onclick="chiudiSchedaContatto()">&larr; Torna all&rsquo;elenco</button>
-            </div>
-          </form>
         </div>
       </div>
 
@@ -3302,9 +3163,15 @@
         <div class="form-group" id="cls-cantiere-group">
           <label for="cls-cantiere" class="form-label">
             Cantiere <span class="dim">(facoltativo)</span>
-            <button type="button" class="link-btn" onclick="toggleNuovoCantiere()" id="cls-nuovo-cantiere-toggle">➕ Nuovo cantiere</button>
           </label>
           <select id="cls-cantiere" class="form-input"></select>
+          <!-- v98 — la commessa nuova si crea in Anagrafiche; poi si torna e si aggiorna l'elenco. -->
+          <div class="form-actions" style="margin-top:8px">
+            <button type="button" class="btn-secondary" id="cls-nuova-commessa-btn"
+                    style="font-size:1.05rem; padding:12px 20px"
+                    onclick="apriNuovaCommessaInAnagrafiche()">🗂️ Nuova commessa in Anagrafiche</button>
+            <button type="button" class="btn-secondary" onclick="aggiornaDaAnagrafiche(true)">↻ Aggiorna l&rsquo;elenco</button>
+          </div>
           <!-- FASE 20 — se l'elenco è vuoto qui compare il perché: un menu
                vuoto e muto sembra un guasto del programma. -->
           <div id="cls-cantiere-vuoto"></div>
@@ -3329,35 +3196,6 @@
             <button type="button" class="btn-secondary" onclick="aggiungiRigaDivisione()">➕ Aggiungi una riga</button>
           </div>
           <div id="cls-div-quadratura" role="status" aria-live="polite"></div>
-        </div>
-
-        <!-- FASE 22 / P4 — Mini-form nuovo cantiere. Solo i tre campi che
-             servono qui: le altre colonne della tabella appartengono all'App
-             Cantieri e si compilano da lì. -->
-        <div id="cls-nuovo-cantiere" class="nuovo-conto-box" style="display:none">
-          <div id="cls-nuovo-cantiere-banner"></div>
-          <div class="form-group">
-            <label for="ncant-nome" class="form-label">Nome del cantiere <span class="req" aria-hidden="true">*</span></label>
-            <input type="text" id="ncant-nome" class="form-input" maxlength="200" placeholder="es. Skinner" autocomplete="off" />
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label for="ncant-luogo" class="form-label">Luogo <span class="dim">(facoltativo)</span></label>
-              <input type="text" id="ncant-luogo" class="form-input" maxlength="200" placeholder="es. Cadenazzo" autocomplete="off" />
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="ncant-committente" class="form-label">Committente <span class="dim">(facoltativo)</span></label>
-              <input type="text" id="ncant-committente" class="form-input" maxlength="200" autocomplete="off" />
-            </div>
-          </div>
-          <div class="form-hint" style="margin-bottom:6px">
-            Nasce con stato <strong>Attivo</strong>. Il resto della scheda (indirizzo, contatti)
-            si compila nell&rsquo;App Cantieri: qui si crea solo per poterlo scegliere subito.
-          </div>
-          <div class="form-actions" style="margin-top:6px">
-            <button type="button" class="btn-primary" onclick="createCustomCantiere()" id="ncant-save-btn">Crea cantiere</button>
-            <button type="button" class="btn-secondary" onclick="toggleNuovoCantiere()">Annulla</button>
-          </div>
         </div>
 
         <!-- CANTIERE in blocco -->
@@ -3476,7 +3314,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=97"></script>
+<script src="js/app.js?v=98"></script>
 
 </body>
 </html>

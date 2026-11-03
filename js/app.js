@@ -2524,10 +2524,8 @@ async function loadCantieri(force) {
   try {
     // FASE 6A — servono anche luogo e stato: il luogo distingue due cantieri
     // con lo stesso nome, lo stato decide l'ordine della tendina.
-    // 'cantieri' e' una tabella di App Cantieri, in produzione. Qui si legge
-    // e basta. L'unica scrittura di tutto il programma su questa tabella e'
-    // createCustomCantiere() (FASE 22 / P4), che inserisce una riga con
-    // quattro colonne. Nessuna ALTER, nessun UPDATE, nessuna cancellazione.
+    // 'cantieri' e' una tabella di Anagrafiche (commesse): qui si legge e
+    // basta. Dalla 98 il programma non scrive piu' su questa tabella.
     const { data, error } = await sb.from('cantieri')
       .select('id, nome, luogo, stato, committente').limit(500)
     if (error) throw error
@@ -2798,7 +2796,6 @@ async function openSingleClassify(m, prefill, opzioni) {
   el('cls-banner').innerHTML = ''
   el('cls-suggest').style.display = 'none'
   el('cls-nuovo-conto').style.display = 'none'
-  if (el('cls-nuovo-cantiere')) el('cls-nuovo-cantiere').style.display = 'none'
   el('cls-note').value = (prefill && prefill.note) ? notaSenzaImporto(prefill.note) : ''   // 96 — la parte della cifra sta sopra
   el('cls-conto-search').value = ''
   el('cls-cantiere-group').style.display = 'block'
@@ -2884,7 +2881,6 @@ async function openBulkPanel() {
   el('cls-banner').innerHTML = ''
   el('cls-suggest').style.display = 'none'
   el('cls-nuovo-conto').style.display = 'none'
-  if (el('cls-nuovo-cantiere')) el('cls-nuovo-cantiere').style.display = 'none'
   el('cls-note').value = ''
   el('cls-conto-search').value = ''
   el('cls-cantiere-group').style.display = 'none'
@@ -2937,102 +2933,13 @@ function toggleCantiereComune(checked) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// FASE 22 / P4 — CREARE UN CANTIERE DA QUI
+// COMMESSE: NON SI CREANO DA QUI (v98, 3.11.2026)
 //
-// ATTENZIONE, e' un cambio di regola. Fino alla FASE 21 questo programma su
-// `cantieri` LEGGEVA soltanto: e' la tabella dell'App Cantieri, in produzione.
-// Da adesso ci scrive, ma per una sola operazione e su quattro colonne:
-// nome (l'unico obbligatorio), luogo, committente, stato.
-//
-// Le altre nove colonne della tabella (via, cap, citta, email_committente,
-// telefono_committente, paese, note) esistono e restano dell'App Cantieri:
-// metterle anche qui vorrebbe dire due porte sullo stesso dato, che e' il modo
-// piu' rapido di farlo divergere.
-//
-// `stato` non ha nessun CHECK sul database, ma si scrive 'Attivo' con la A
-// maiuscola perche' e' il valore reale usato in tabella (gli altri cantieri
-// hanno 'Attivo' e 'Completato') ed e' quello che l'App Cantieri si aspetta.
+// Fino alla 97 questo programma inseriva un cantiere (createCustomCantiere,
+// FASE 22). Dalla 98 non scrive più su `cantieri`: la commessa si crea in
+// Anagrafiche (tasto «Nuova commessa in Anagrafiche», apriNuovaCommessaInAnagrafiche)
+// e qui la si rilegge con «Aggiorna l'elenco» o tornando sulla pagina.
 // ══════════════════════════════════════════════════════════════════════════════
-
-function toggleNuovoCantiere() {
-  var box = el('cls-nuovo-cantiere')
-  if (!box) return
-  var apri = box.style.display === 'none'
-  box.style.display = apri ? 'block' : 'none'
-  html('cls-nuovo-cantiere-banner', '')
-  if (apri && el('ncant-nome')) el('ncant-nome').focus()
-}
-
-// Il rifiuto delle policy non e' un errore da mostrare grezzo: e' una cosa
-// che si risolve una volta sola, e va detto cosa fare.
-function eRifiutoPolicy(e) {
-  var c = String((e && e.code) || '')
-  var m = String((e && e.message) || '').toLowerCase()
-  return c === '42501' || m.indexOf('row-level security') !== -1 ||
-         m.indexOf('violates row') !== -1 || m.indexOf('policy') !== -1
-}
-
-async function createCustomCantiere() {
-  var nome = el('ncant-nome') ? el('ncant-nome').value.trim() : ''
-  var luogo = el('ncant-luogo') ? el('ncant-luogo').value.trim() : ''
-  var committente = el('ncant-committente') ? el('ncant-committente').value.trim() : ''
-
-  function stop(msg) { showFattureBanner('cls-nuovo-cantiere-banner', 'err', msg) }
-  if (!nome) { stop('Il nome del cantiere è obbligatorio.'); return }
-  if (!currentAziendaId) { stop('Sessione non attiva: rientra e riprova.'); return }
-
-  var btn = el('ncant-save-btn')
-  if (btn) { btn.disabled = true; btn.textContent = '⏳…' }
-  try {
-    const { data, error } = await sb
-      .from('cantieri')
-      .insert({
-        nome: nome,
-        luogo: luogo || null,
-        committente: committente || null,
-        stato: 'Attivo'
-      })
-      .select('id, nome, luogo, stato, committente')
-    if (error) throw error
-
-    var nuovo = data && data[0]
-    if (!nuovo) throw new Error('Il database non ha restituito il cantiere appena creato.')
-
-    // Nella cache subito, cosi' e' scegliibile senza ricaricare la pagina.
-    if (!cantieriCache) cantieriCache = []
-    cantieriCache.push({
-      id: nuovo.id, nome: nuovo.nome, luogo: nuovo.luogo || null,
-      stato: nuovo.stato || 'Attivo', committente: nuovo.committente || null
-    })
-
-    // Le due tendine: quella singola e quella del blocco massivo, se aperta.
-    if (el('cls-cantiere')) el('cls-cantiere').innerHTML = buildCantiereOptions(nuovo.id, true)
-    if (el('cls-cantiere-comune')) {
-      var precedente = el('cls-cantiere-comune').value
-      el('cls-cantiere-comune').innerHTML = buildCantiereOptions(precedente || nuovo.id, true)
-    }
-    // L'avviso «nessun cantiere» non ha piu' ragione di esserci.
-    html('cls-cantiere-vuoto', '')
-    html('cls-cantiere-bulk-vuoto', '')
-
-    if (el('ncant-nome')) el('ncant-nome').value = ''
-    if (el('ncant-luogo')) el('ncant-luogo').value = ''
-    if (el('ncant-committente')) el('ncant-committente').value = ''
-    toggleNuovoCantiere()
-    showClsBanner('ok', 'Cantiere «' + nomeCantiere(nuovo, false) + '» creato e già selezionato.')
-  } catch (e) {
-    if (eRifiutoPolicy(e)) {
-      console.error('Creazione cantiere rifiutata dalle policy:', e)
-      stop('Il database non permette a questo programma di creare cantieri. ' +
-           'È un permesso da aggiungere una volta sola: lancia SQL_FASE22_cantieri.sql ' +
-           'dal SQL Editor di Supabase. Intanto non è stato creato niente.')
-    } else {
-      stop('Creazione cantiere: ' + (e.message || e))
-    }
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Crea cantiere' }
-  }
-}
 
 // ── Conti personalizzati ─────────────────────────────────────────────────────
 function toggleNuovoConto() {
@@ -5039,7 +4946,6 @@ var MODULI_SALVA = {
   fattura:      { contenitore: 'fatture-edit-view',  bottone: 'btn-salva-bozza' },
   acquisto:     { contenitore: 'acquisti-edit-view', bottone: 'acq-save-btn' },
   movimento:    { contenitore: 'form-inserimento',   bottone: 'inserimento-submit-btn' },
-  contatto:     { contenitore: 'form-contatto',      bottone: 'contatto-submit-btn' },
   conferma:     { contenitore: 'offerte-edit-view',  bottone: 'btn-salva-offerta' },
   // Le schede con un Salva loro (solleciti e aliquote, IBAN) portano
   // data-salva-a-parte e qui non contano.
@@ -7227,10 +7133,11 @@ function testoTerminePagamento(giorni) {
   return g === 1 ? '1 giorno' : g + ' giorni'
 }
 
-// Chiede se il termine appena usato deve diventare quello abituale del
-// cliente. NON lo cambia da solo: una fattura con l'acconto anticipato non
-// vuol dire che d'ora in poi quel cliente paghi sempre anticipato.
-async function proponiTermineAbituale() {
+// Dice se il termine appena usato è diverso da quello del cliente in rubrica. NON
+// lo cambia: dalla 98 il termine abituale si cambia in Anagrafiche (tasto qui sotto).
+// Una fattura con l'acconto anticipato non vuol dire che d'ora in poi quel
+// cliente paghi sempre anticipato.
+function proponiTermineAbituale() {
   try {
     var idContatto = el('f-cli-contatto-id') ? el('f-cli-contatto-id').value : ''
     if (!idContatto) return
@@ -7244,27 +7151,17 @@ async function proponiTermineAbituale() {
     var comeSta = (gCli == null)
       ? 'in rubrica non ha un termine suo'
       : 'in rubrica ha ' + testoTerminePagamento(gCli).toLowerCase()
-
-    if (!window.confirm(
-        'Su questa fattura hai messo: ' + testoTerminePagamento(g) + '.\n' +
-        'Il cliente ' + contattoNome(c) + ' ' + comeSta + '.\n\n' +
-        'Vuoi che ' + testoTerminePagamento(g).toLowerCase() +
-        ' diventi il suo termine abituale?\n' +
-        '(La fattura resta com’è in ogni caso.)')) return
-
-    const { error } = await sb.from('tm_contatti')
-      .update({ giorni_pagamento: g })
-      .eq('id', idContatto).eq('azienda_id', currentAziendaId).select()
-    if (error) throw error
-    scadeCache('contatti')
-    await loadContatti(true)
-    showFattureBanner('fatture-edit-banner', 'ok',
-      'Bozza salvata alle ' + oraAdesso() + ', e in rubrica ' + contattoNome(c) + ' ora ha ' +
-      testoTerminePagamento(g).toLowerCase() + '.')
+    var box = el('fatture-edit-banner')
+    if (!box) return
+    box.insertAdjacentHTML('beforeend',
+      '<div class="fase-banner warn"><span class="icon" aria-hidden="true">ℹ️</span><div class="msg">' +
+        'Su questa fattura hai messo: ' + esc(testoTerminePagamento(g)) + '. Il cliente ' + esc(contattoNome(c)) + ' ' + esc(comeSta) + '. ' +
+        'Se vuoi che diventi il suo termine abituale, cambialo in Anagrafiche (la fattura resta com’è in ogni caso).' +
+        '<div style="margin-top:8px"><button type="button" class="btn-secondary" ' +
+          'onclick="apriContattoInAnagrafiche(\'' + esc(idContatto) + '\', \'modifica\', true)">🗂️ Modifica il cliente in Anagrafiche</button></div>' +
+      '</div></div>')
   } catch (e) {
-    console.warn('Termine abituale non aggiornato:', e.message || e)
-    showFattureBanner('fatture-edit-banner', 'warn',
-      'Bozza salvata alle ' + oraAdesso() + '. La rubrica però non si è aggiornata: ' + (e.message || e))
+    console.warn('Termine abituale non proposto:', e.message || e)
   }
 }
 
@@ -11346,19 +11243,9 @@ function renderSqlInstructions() {
 let contattiCache   = null   // [{...}] tutti i contatti dell'azienda
 let gruppiCache     = null   // [{codice, nome, esempi, ordine}]
 let rubricaTab      = 'cliente'
-let editingContattoId = null
 let contattoLetturaId = null   // FASE 18 — contatto aperto in sola lettura
 let rubricaSuggest  = { prefix: null, list: [], hi: -1 }   // stato del menu a tendina
 
-// FASE 17 — le colonne e_cliente / e_fornitore arrivano con SQL_FASE17.sql.
-// Se il programma viene aperto prima che la migrazione sia stata lanciata,
-// leggerle farebbe fallire l'intera lettura della rubrica. Qui si tiene traccia
-// se ci sono: quando mancano, il doppio uso semplicemente non esiste e tutto
-// funziona come prima, a categoria singola.
-let contattiDoppiaCategoria = true
-// FASE 29 — stessa idea per la colonna `cellulare`: se manca (SQL_FASE29 non
-// lanciato) non si legge e non si scrive, e tutto funziona come prima.
-let contattiHaCellulare = true
 // 68·2 — stessa idea per `iva_predefinita_id` sul piano dei conti: arriva con
 // SQL_FASE68. Se manca, il campo «IVA proposta» non compare e non si scrive,
 // e tutto il resto funziona come prima.
@@ -11474,13 +11361,11 @@ async function loadContatti(force) {
   // FASE 29 — SQL_FASE29 non ancora lanciato: si rilegge senza `cellulare`,
   // e la rubrica funziona come prima. Lo stesso ripiego della FASE 17.
   if (res.error && /cellulare/.test(String(res.error.message || ''))) {
-    contattiHaCellulare = false
     res = await leggi(campiBase + ', e_cliente, e_fornitore')
   }
   // Migrazione FASE 17 non ancora lanciata: si rilegge senza le due colonne
   // invece di lasciare la rubrica vuota con un errore incomprensibile.
   if (res.error && /e_cliente|e_fornitore/.test(String(res.error.message || ''))) {
-    contattiDoppiaCategoria = false
     res = await leggi(campiBase)
   }
   const { data, error } = res
@@ -14552,13 +14437,10 @@ function showRubricaBanner(tipo, msg) {
 
 function mostraRubricaVista(quale) {
   registraVista('rubrica', quale)
-  if (quale === 'scheda') moduloPulito('contatto')   // 75·5
   var lista   = el('rubrica-lista-view')
   var lettura = el('rubrica-lettura-view')   // FASE 18 — sola lettura
-  var scheda  = el('rubrica-scheda-view')
   if (lista)   lista.style.display   = (quale === 'lista')   ? 'block' : 'none'
   if (lettura) lettura.style.display = (quale === 'lettura') ? 'block' : 'none'
-  if (scheda)  scheda.style.display  = (quale === 'scheda')  ? 'block' : 'none'
 }
 
 // FASE 18 — «tutti» è una scheda in più, non una categoria: non esiste nel
@@ -14617,8 +14499,8 @@ function renderContattiList() {
     var vuotoMsg = q
       ? 'Nessun contatto trovato per «' + esc(q) + '». Prova a cercare un pezzo di parola.'
       : (rubricaTab === 'tutti'
-          ? 'La rubrica è vuota. Premi «➕ Nuovo contatto» per aggiungere il primo.'
-          : 'Nessun contatto in questa scheda. Premi «➕ Nuovo contatto» per aggiungerne uno.')
+          ? 'La rubrica è vuota. Premi «🗂️ Nuovo contatto in Anagrafiche» per aggiungere il primo.'
+          : 'Nessun contatto in questa scheda. Premi «🗂️ Nuovo contatto in Anagrafiche» per aggiungerne uno.')
     html('rubrica-table', '<div class="dim" style="padding:14px 2px">' + vuotoMsg + '</div>')
     return
   }
@@ -14672,28 +14554,6 @@ function renderContattiList() {
 
 // ── Scheda contatto ──────────────────────────────────────────────────────────
 
-async function nuovoContatto(categoriaIniziale) {
-  editingContattoId = null
-  await riempiSelectGruppi('c-gruppo', '')
-  var form = el('form-contatto')
-  if (form) form.reset()
-  // FASE 18 — «tutti» non è una categoria: dalla scheda «Tutti» si propone
-  // Cliente, che è la voce più frequente, e resta cambiabile dal menu.
-  var catIniziale = categoriaIniziale || (rubricaTab === 'tutti' ? 'cliente' : rubricaTab)
-  if (el('c-categoria')) el('c-categoria').value = catIniziale
-  impostaPaese('c-paese', PAESE_PREDEFINITO)
-  if (el('c-attivo'))    el('c-attivo').checked = true
-  if (el('c-anche-cliente'))   el('c-anche-cliente').checked = false
-  if (el('c-anche-fornitore')) el('c-anche-fornitore').checked = false
-  onCategoriaContattoChange()
-  if (el('contatto-card-title')) el('contatto-card-title').textContent = '➕ Nuovo contatto'
-  if (el('contatto-submit-btn')) el('contatto-submit-btn').textContent = '💾 Salva contatto'
-  html('contatto-banner', '')
-  renderAzioniRapide()
-  mostraRubricaVista('scheda')
-  if (el('c-ragione')) el('c-ragione').focus()
-}
-
 // FASE 18 — aprire un contatto lo MOSTRA soltanto. Prima si entrava dritti nel
 // modulo modificabile, e bastava sfiorare un campo per cambiare un dato senza
 // accorgersene. Per modificare si passa dal bottone «✏️ Modifica».
@@ -14701,7 +14561,6 @@ async function apriContatto(id) {
   var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
   if (!c) { showRubricaBanner('err', 'Contatto non trovato: ricarica la pagina.'); return }
   contattoLetturaId = id
-  editingContattoId = null            // in lettura non si sta modificando niente
 
   if (el('contatto-lettura-titolo')) {
     el('contatto-lettura-titolo').textContent = '👤 ' + contattoNome(c)
@@ -14710,6 +14569,10 @@ async function apriContatto(id) {
   html('contatto-lettura-azioni', azioniRapideHtml(c.telefono, c.email, contattoNome(c), c.cellulare))
   html('contatto-lettura-dati', contattoLetturaHtml(c))
   html('contatto-lettura-fatture', loadingRow('Caricamento fatture…'))
+  // v98 — «Diventa fornitore» solo se non lo è: si fa in Anagrafiche.
+  html('contatto-lettura-extra', contattoInCategoria(c, 'fornitore') ? '' :
+    '<button type="button" class="btn-secondary" onclick="apriContattoInAnagrafiche(contattoLetturaId, \'fornitore\')">🗂️ Diventa fornitore (in Anagrafiche)</button>')
+  preparaGruppoContatto(c)
   mostraRubricaVista('lettura')
   // Le fatture arrivano dopo: la scheda si vede subito, senza aspettare la rete.
   renderFattureDelContatto(id)
@@ -14898,474 +14761,51 @@ function fattureContattoHtml(list, residuo) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// FASE 21 / P4 — Eliminare un contatto
+// CONTATTI: SI SCRIVONO, SI ARCHIVIANO E SI TOLGONO SOLO IN ANAGRAFICHE (v98)
 //
-// Un contatto si elimina solo se non e' nominato da nessun documento. Una
-// fattura deve continuare a dire a chi e' stata fatta: staccarla dal suo
-// contatto per far posto a una cancellazione sarebbe rovinare il documento
-// per comodita' dell'anagrafica. Quando ci sono documenti l'unica strada e'
-// l'archiviazione, che toglie il contatto dagli elenchi e lascia intatto il
-// passato.
+// Dalla 98 la Pre-contabilità non crea, non cambia, non archivia e non elimina
+// contatti: legge e basta. I tasti «Apri in Anagrafiche» portano alla scheda.
+// UNICA scrittura rimasta su `tm_contatti`: la colonna `gruppo_default`
+// (il «Gruppo predefinito»), che Anagrafiche non ha. Un campo solo, per un
+// contatto solo, scelto da elenco: salvaGruppoContatto().
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Le TRE tabelle che nominano un contatto (verificate su SQL_PASSO1.sql:
-// nessun'altra ha la colonna contatto_id).
-var TABELLE_CON_CONTATTO = [
-  { tabella: 'tm_conta_fatture',           uno: 'fattura di vendita',  molti: 'fatture di vendita' },
-  { tabella: 'tm_conta_fatture_acquisto',  uno: 'fattura d\'acquisto', molti: 'fatture d\'acquisto' },
-  { tabella: 'tm_conta_movimenti_propri',  uno: 'movimento',           molti: 'movimenti' }
-]
-
-async function contaDocumentiContatto(contattoId) {
-  // FASE 23 / P2 — QUI ZERO NON E' UN ELENCO VUOTO, E' UN SEMAFORO VERDE.
-  //
-  // Le tre tabelle sono protette da RLS: senza sessione il conteggio torna
-  // zero SENZA errore. Il chiamante leggeva quello zero come «nessun documento
-  // lo nomina» e proponeva il bottone rosso «Sì, elimina definitivamente» su un
-  // contatto in realta' collegato a fatture emesse. Il ramo protettivo che dice
-  // «Senza quel conteggio non elimino niente» non scattava, perche' non c'era
-  // nessun errore da raccogliere.
-  //
-  // Percio' si LANCIA: meglio non poter cancellare che cancellare al buio.
-  if (!currentAziendaId) {
-    throw new Error('sessione non attiva, il conteggio dei documenti collegati non è possibile')
-  }
-  var esito = { totale: 0, pezzi: [] }
-  for (var i = 0; i < TABELLE_CON_CONTATTO.length; i++) {
-    var t = TABELLE_CON_CONTATTO[i]
-    const { count, error } = await sb
-      .from(t.tabella)
-      .select('id', { count: 'exact', head: true })
-      .eq('azienda_id', currentAziendaId)
-      .eq('contatto_id', contattoId)
-    if (error) throw error
-    var n = count || 0
-    if (n > 0) {
-      esito.totale += n
-      esito.pezzi.push(n + ' ' + (n === 1 ? t.uno : t.molti))
-    }
-  }
-  return esito
-}
-
-async function chiediEliminaContatto() {
-  if (!contattoLetturaId) return
-  var c = (contattiCache || []).filter(function (x) { return x.id === contattoLetturaId })[0]
-  if (!c) return
-  var btn = el('contatto-elimina-btn')
-  if (btn) { btn.disabled = true }
-  html('contatto-lettura-banner', loadingRow('Controllo i documenti collegati…'))
-  try {
-    var uso = await contaDocumentiContatto(contattoLetturaId)
-    if (uso.totale > 0) {
-      html('contatto-lettura-banner',
-        '<div class="fase-banner warn" role="alert">' +
-          '<span class="icon" aria-hidden="true">\ud83d\udd12</span>' +
-          '<div class="msg">' +
-            '<strong>Non si pu\u00f2 eliminare: \u00e8 collegato a ' + uso.totale +
-              (uso.totale === 1 ? ' documento' : ' documenti') + '</strong> (' +
-              esc(uso.pezzi.join(', ')) + ').' +
-            '<div style="margin-top:4px">Una fattura deve continuare a dire a chi \u00e8 stata ' +
-              'fatta: eliminando il contatto quei documenti resterebbero senza intestatario. ' +
-              'La strada \u00e8 <strong>archiviarlo</strong> — sparisce dagli elenchi e dalle ' +
-              'ricerche, il passato resta leggibile.</div>' +
-            '<div class="dop-azioni">' +
-              '<button type="button" class="btn-primary" onclick="archiviaContattoCorrente()">' +
-                '\ud83d\udce6 Archivia il contatto</button>' +
-              '<button type="button" class="btn-secondary" onclick="annullaEliminaContatto()">' +
-                '\u2716\ufe0f Annulla</button>' +
-            '</div>' +
-          '</div>' +
-        '</div>')
-      return
-    }
-    html('contatto-lettura-banner',
-      '<div class="fase-banner err" role="alert">' +
-        '<span class="icon" aria-hidden="true">\ud83d\uddd1\ufe0f</span>' +
-        '<div class="msg">' +
-          '<strong>Vuoi eliminare definitivamente ' + esc(contattoNome(c)) + '?</strong>' +
-          '<div style="margin-top:4px">Nessun documento lo nomina, quindi si pu\u00f2 togliere ' +
-            'del tutto. <strong>L\u2019operazione non si annulla.</strong></div>' +
-          '<div class="dop-azioni">' +
-            '<button type="button" class="btn-danger" onclick="eliminaContattoConfermato()">' +
-              '\ud83d\uddd1\ufe0f S\u00ec, elimina definitivamente</button>' +
-            '<button type="button" class="btn-secondary" onclick="annullaEliminaContatto()">' +
-              '\u2716\ufe0f Annulla</button>' +
-          '</div>' +
-        '</div>' +
-      '</div>')
-  } catch (e) {
-    html('contatto-lettura-banner',
-      '<div class="fase-banner err" role="alert">' +
-        '<span class="icon" aria-hidden="true">\u274c</span>' +
-        '<div class="msg">Non sono riuscito a contare i documenti collegati: ' +
-          esc(e.message || e) + '. Senza quel conteggio non elimino niente.</div>' +
-      '</div>')
-  } finally {
-    if (btn) btn.disabled = false
-  }
-}
-
-function annullaEliminaContatto() { html('contatto-lettura-banner', '') }
-
-async function eliminaContattoConfermato() {
-  var id = contattoLetturaId
-  if (!id) return
-  var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
-  var nome = c ? contattoNome(c) : 'il contatto'
-  html('contatto-lettura-banner', loadingRow('Eliminazione…'))
-  try {
-    const { error } = await sb.from('tm_contatti')
-      .delete().eq('id', id).eq('azienda_id', currentAziendaId).select()
-    if (error) throw error
-    await loadContatti(true)
-    contattoLetturaId = null
-    mostraRubricaVista('lista')
-    renderContattiList()
-    showRubricaBanner('ok', 'Contatto eliminato: ' + nome + '.')
-  } catch (e) {
-    // Il caso piu' probabile e' il permesso di cancellazione mancante: lo si
-    // dice con parole sue invece di lasciare l'errore Postgres grezzo.
-    var m = String(e.message || e)
-    var spiega = (/row-level security|violates row-level|permission denied/i.test(m))
-      ? 'il database ha rifiutato la cancellazione. La policy c\'è (contatti_own, FOR ALL ' +
-        'agli utenti autenticati): riprova dopo aver rifatto il login, e se resta così ' +
-        'segnalalo — vuol dire che le regole di sicurezza sono cambiate.'
-      : friendlyContattoError(e)
-    html('contatto-lettura-banner',
-      '<div class="fase-banner err" role="alert">' +
-        '<span class="icon" aria-hidden="true">\u274c</span>' +
-        '<div class="msg">Non eliminato: ' + esc(spiega) + '</div>' +
-      '</div>')
-  }
-}
-
-// L'archiviazione dalla scheda letta: la stessa cosa che fa la spunta
-// «Contatto attivo» nel modulo, senza dover entrare in modifica.
-async function archiviaContattoCorrente() {
-  var id = contattoLetturaId
-  if (!id) return
-  html('contatto-lettura-banner', loadingRow('Archiviazione…'))
-  try {
-    const { error } = await sb.from('tm_contatti')
-      .update({ attivo: false }).eq('id', id).eq('azienda_id', currentAziendaId).select()
-    if (error) throw error
-    await loadContatti(true)
-    mostraRubricaVista('lista')
-    renderContattiList()
-    showRubricaBanner('ok', 'Contatto archiviato: non compare più negli elenchi, i suoi documenti restano.')
-  } catch (e) {
-    html('contatto-lettura-banner',
-      '<div class="fase-banner err" role="alert">' +
-        '<span class="icon" aria-hidden="true">\u274c</span>' +
-        '<div class="msg">Non archiviato: ' + esc(friendlyContattoError(e)) + '</div>' +
-      '</div>')
-  }
-}
-
-function modificaContattoCorrente() {
-  // Restituisce la promessa: chi chiama puo' aspettare che il modulo sia pronto.
-  return contattoLetturaId ? modificaContatto(contattoLetturaId) : Promise.resolve()
-}
-
-async function modificaContatto(id) {
-  var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
-  if (!c) { showRubricaBanner('err', 'Contatto non trovato: ricarica la pagina.'); return }
-  editingContattoId = id
-  await riempiSelectGruppi('c-gruppo', c.gruppo_default || '')
-  if (el('c-categoria')) el('c-categoria').value = c.categoria || 'generico'
-  if (el('c-ragione'))   el('c-ragione').value   = c.ragione_sociale || ''
-  if (el('c-nome'))      el('c-nome').value      = c.nome || ''
-  if (el('c-cognome'))   el('c-cognome').value   = c.cognome || ''
-  if (el('c-indirizzo')) el('c-indirizzo').value = c.indirizzo || ''
-  if (el('c-cap'))       el('c-cap').value       = c.cap || ''
-  if (el('c-citta'))     el('c-citta').value     = c.citta || ''
-  impostaPaese('c-paese', c.paese || PAESE_PREDEFINITO)
-  if (el('c-telefono'))  el('c-telefono').value  = c.telefono || ''
-  if (el('c-cellulare')) el('c-cellulare').value = c.cellulare || ''   // FASE 29
-  if (el('c-email'))     el('c-email').value     = c.email || ''
-  if (el('c-sito'))      el('c-sito').value      = c.sito_web || ''
-  if (el('c-uid'))       el('c-uid').value       = c.uid_partita_iva || ''
-  if (el('c-iban'))      el('c-iban').value      = c.iban || ''
-  if (el('c-giorni'))    el('c-giorni').value    = c.giorni_pagamento == null ? '' : c.giorni_pagamento
-  if (el('c-note'))      el('c-note').value      = c.note || ''
-  if (el('c-attivo'))    el('c-attivo').checked  = c.attivo !== false
-  if (el('c-anche-cliente'))   el('c-anche-cliente').checked   = c.e_cliente   === true
-  if (el('c-anche-fornitore')) el('c-anche-fornitore').checked = c.e_fornitore === true
-  onCategoriaContattoChange()
-  if (el('contatto-card-title')) el('contatto-card-title').textContent = '👤 ' + contattoNome(c)
-  if (el('contatto-submit-btn')) el('contatto-submit-btn').textContent = '💾 Salva modifiche'
-  html('contatto-banner', '')
-  renderAzioniRapide()
-  mostraRubricaVista('scheda')
-}
-
 function chiudiSchedaContatto() {
-  // Se si torna indietro senza salvare, si torna al documento di partenza
-  if (rubricaRitorno && rubricaRitorno.prefix) {
-    var rit = rubricaRitorno
-    rubricaRitorno = null
-    editingContattoId = null
-    mostraRubricaVista('lista')
-    showPage(rit.page)
-    return
-  }
-  editingContattoId = null
   mostraRubricaVista('lista')
   renderContattiList()
 }
 
-// Chiama / Scrivi mail sulla scheda: si aggiornano mentre si scrive il recapito,
-// così si vede subito che il numero inserito è utilizzabile.
-function renderAzioniRapide() {
-  var tel   = getVal('c-telefono')
-  var cell  = getVal('c-cellulare')
-  var email = getVal('c-email')
-  var out = (tel || cell || email)
-    ? azioniRapideHtml(tel, email, getVal('c-ragione') || getVal('c-cognome'), cell)
-    : '<div class="dim" style="font-size:12px">Inserisci telefono o email: qui compaiono i pulsanti per chiamare e scrivere.</div>'
-  html('contatto-azioni-rapide', out)
+// Il gruppo predefinito si sceglie dalla scheda letta e si salva col suo tasto.
+async function preparaGruppoContatto(c) {
+  html('contatto-gruppo-esito', '')
+  await riempiSelectGruppi('c-gruppo', c.gruppo_default || '')
+  if (el('contatto-gruppo-salva')) el('contatto-gruppo-salva').disabled = false
 }
 
-// FASE 17 — la spunta che ripete la categoria gia' scelta non ha senso e
-// confonde: un contatto di categoria «cliente» non ha bisogno di dichiarare che
-// compare anche fra i clienti. Si nasconde e si toglie la spunta, cosi' non
-// resta una scelta invisibile che poi finisce salvata.
-function onCategoriaContattoChange() {
-  var cat = getVal('c-categoria') || 'generico'
-  ;[['cliente', 'c-anche-cliente'], ['fornitore', 'c-anche-fornitore']].forEach(function (p) {
-    var ridondante = (cat === p[0]) || !contattiDoppiaCategoria
-    var box = el(p[1])
-    var riga = el(p[1] + '-riga')
-    if (ridondante && box) box.checked = false
-    if (riga) riga.style.display = ridondante ? 'none' : ''
-  })
-}
-
-function raccogliContatto() {
-  var ragione = getVal('c-ragione')
-  var cognome = getVal('c-cognome')
-  if (!ragione && !cognome) {
-    throw new Error('Serve almeno la ragione sociale oppure il cognome: è il nome con cui il contatto compare negli elenchi.')
-  }
-  var giorni = getVal('c-giorni')
-  var giorniNum = giorni === '' ? null : parseInt(giorni, 10)
-  if (giorniNum != null && (isNaN(giorniNum) || giorniNum < 0 || giorniNum > 365)) {
-    throw new Error('I giorni di pagamento devono essere un numero fra 0 e 365.')
-  }
-  var categoria = getVal('c-categoria') || 'generico'
-  var payload = {
-    azienda_id:      currentAziendaId,
-    categoria:       categoria,
-    ragione_sociale: ragione || null,
-    nome:            getVal('c-nome') || null,
-    cognome:         cognome || null,
-    indirizzo:       getVal('c-indirizzo') || null,
-    cap:             getVal('c-cap') || null,
-    citta:           getVal('c-citta') || null,
-    paese:           getVal('c-paese') || null,
-    telefono:        getVal('c-telefono') || null,
-    email:           getVal('c-email') || null,
-    sito_web:        getVal('c-sito') || null,
-    uid_partita_iva: getVal('c-uid') || null,
-    iban:            getVal('c-iban') ? getVal('c-iban').replace(/\s/g, '').toUpperCase() : null,
-    gruppo_default:  getVal('c-gruppo') || null,
-    giorni_pagamento: giorniNum,
-    note:            getVal('c-note') || null,
-    attivo:          el('c-attivo') ? el('c-attivo').checked : true
-  }
-
-  // FASE 17 — doppio uso. La spunta vale solo se NON ripete la categoria gia'
-  // scelta: altrimenti si forza false, cosi' una spunta rimasta nascosta da un
-  // cambio di categoria non finisce salvata. Se la migrazione non e' stata
-  // lanciata le due colonne non esistono e non si scrivono affatto.
-  // FASE 29 — il cellulare entra nel payload solo se la colonna esiste.
-  if (contattiHaCellulare) payload.cellulare = getVal('c-cellulare') || null
-
-  if (contattiDoppiaCategoria) {
-    payload.e_cliente = (categoria !== 'cliente') &&
-      !!(el('c-anche-cliente') && el('c-anche-cliente').checked)
-    payload.e_fornitore = (categoria !== 'fornitore') &&
-      !!(el('c-anche-fornitore') && el('c-anche-fornitore').checked)
-  }
-  return payload
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FASE 18 / B3 — Avviso doppione, mai blocco
-// ══════════════════════════════════════════════════════════════════════════════
-
-var contattoForzaNuovo = false   // «Salva comunque»: vale per un solo salvataggio
-
-// Le forme societarie non distinguono due ditte: «Bianchi SA» e «Bianchi Sagl»
-// scritte per la stessa ditta devono somigliarsi. Si tolgono, insieme ad
-// accenti, punteggiatura e spazi doppi.
-var FORME_SOCIETARIE = /\b(sa|sagl|srl|sarl|ag|gmbh|spa|snc|sas)\b/g
-
-function normalizzaNomeContatto(s) {
-  return String(s || '')
-    .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // accenti
-    // I punti si TOLGONO, non diventano spazio: «S.R.L.» dev'essere «srl», non
-    // tre lettere sciolte che nessuna regola riconosce piu' come forma
-    // societaria. Il resto della punteggiatura separa, e diventa spazio.
-    .replace(/\./g, '')
-    .replace(/[,;:'’"`()\[\]\/\\-]/g, ' ')
-    .replace(FORME_SOCIETARIE, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-// L'UID si confronta a cifre nude: «CHE-123.456.789» e «CHE123456789» sono lo
-// stesso numero scritto in due modi.
-function normalizzaUid(s) {
-  return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
-}
-
-// Restituisce i contatti che assomigliano a quello che si sta salvando.
-// `forte` = stesso UID: due ditte diverse non hanno lo stesso UID, li' e'
-// quasi certo che sia lo stesso soggetto.
-function cercaContattiSimili(payload) {
-  var nome = normalizzaNomeContatto(payload.ragione_sociale ||
-                                    [payload.cognome, payload.nome].filter(Boolean).join(' '))
-  var uid = normalizzaUid(payload.uid_partita_iva)
-  var fuori = []
-  ;(contattiCache || []).forEach(function (x) {
-    var uidUguale = !!uid && normalizzaUid(x.uid_partita_iva) === uid
-    var nomeUguale = !!nome && normalizzaNomeContatto(contattoNome(x)) === nome
-    if (uidUguale || nomeUguale) fuori.push({ c: x, forte: uidUguale })
-  })
-  return fuori
-}
-
-function mostraAvvisoDoppione(simili) {
-  var forte = simili.some(function (s) { return s.forte })
-  var righe = simili.map(function (s) {
-    var x = s.c
-    var dettagli = [x.citta, x.telefono, x.cellulare].filter(Boolean).join(' · ')
-    return '<div class="dop-riga">' +
-             '<div class="dop-chi">' +
-               '<strong>' + esc(contattoNome(x)) + '</strong>' +
-               (s.forte ? ' ' + badge('err', '🆔 stesso UID') : ' ' + badge('warn', '👥 stesso nome')) +
-               (x.attivo === false ? ' ' + badge('warn', '📦 Archiviato') : '') +
-               '<div class="dim">' + esc(dettagli || 'nessun recapito registrato') + '</div>' +
-             '</div>' +
-             '<button type="button" class="btn-secondary"' +
-               ' onclick="apriContattoDaAvviso(\'' + x.id + '\')">📂 Apri quello esistente</button>' +
-           '</div>'
-  }).join('')
-
-  html('contatto-banner',
-    '<div class="fase-banner ' + (forte ? 'err' : 'warn') + '" role="alert">' +
-      '<span class="icon" aria-hidden="true">' + (forte ? '🆔' : '👥') + '</span>' +
-      '<div class="msg">' +
-        '<strong>' + (forte
-          ? 'C\'è già un contatto con lo stesso UID / partita IVA.'
-          : 'C\'è già un contatto con lo stesso nome.') + '</strong>' +
-        '<div style="margin-top:4px">' + (forte
-          ? 'Due ditte diverse non hanno lo stesso UID: quasi sicuramente è lo stesso soggetto.'
-          : 'Può essere un omonimo, oppure lo stesso soggetto già in rubrica.') +
-        ' Decidi tu: il programma non salva e non scarta niente da solo.</div>' +
-        '<div class="dop-lista">' + righe + '</div>' +
-        '<div class="dop-azioni">' +
-          '<button type="button" class="btn-primary"' +
-            ' onclick="salvaComunqueContatto()">💾 Salva comunque come nuovo</button>' +
-          '<button type="button" class="btn-secondary"' +
-            ' onclick="annullaAvvisoDoppione()">✖️ Annulla</button>' +
-        '</div>' +
-        '<div class="form-hint" style="margin-top:8px">' +
-          'Aprendo quello esistente, quello che hai scritto qui non viene salvato.' +
-        '</div>' +
-      '</div>' +
-    '</div>')
-}
-
-// «Salva comunque»: si risalva senza altre domande. La forzatura vale una volta
-// sola, cosi' il contatto dopo torna a essere controllato.
-function salvaComunqueContatto() {
-  contattoForzaNuovo = true
-  return salvaContatto()   // si restituisce la promessa: il salvataggio è atteso
-}
-
-function annullaAvvisoDoppione() {
-  contattoForzaNuovo = false
-  html('contatto-banner', '')
-}
-
-function apriContattoDaAvviso(id) {
-  contattoForzaNuovo = false
-  html('contatto-banner', '')
-  // Si arrivava da un documento («crea al volo»): quel ritorno non ha piu'
-  // senso se si abbandona il contatto nuovo, e lasciarlo appeso farebbe
-  // ripartire il rientro al primo salvataggio successivo.
-  rubricaRitorno = null
-  apriContatto(id)
-}
-
-async function salvaContatto(event) {
-  if (event) event.preventDefault()
-  var btn = el('contatto-submit-btn')
-  var testoBtn = btn ? btn.textContent : ''
-  html('contatto-banner', '')
+async function salvaGruppoContatto() {
+  var id = contattoLetturaId
+  if (!id) return
+  var btn = el('contatto-gruppo-salva')
+  var g = getVal('c-gruppo') || null
+  if (btn) btn.disabled = true
+  html('contatto-gruppo-esito', loadingRow('Salvo il gruppo…'))
   try {
-    var payload = raccogliContatto()
-
-    // FASE 18 — avviso doppione. Solo su un contatto NUOVO: in modifica un
-    // contatto somiglierebbe a se stesso. E' un AVVISO, non un blocco: gli
-    // omonimi esistono, e lo stesso soggetto con due IBAN oggi si registra due
-    // volte perche' la scheda ha un solo campo IBAN. Decide Umberto.
-    if (!editingContattoId && !contattoForzaNuovo) {
-      var simili = cercaContattiSimili(payload)
-      if (simili.length) { mostraAvvisoDoppione(simili); return }
-    }
-    contattoForzaNuovo = false
-
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
-
-    var nuovoIdSalvato = editingContattoId
-    if (editingContattoId) {
-      const { error } = await sb.from('tm_contatti')
-        .update(payload)
-        .eq('id', editingContattoId)
-        .eq('azienda_id', currentAziendaId)
-        .select()
-      if (error) throw error
-    } else {
-      const { data, error } = await sb.from('tm_contatti').insert(payload).select()
-      if (error) throw error
-      if (data && data[0]) { editingContattoId = data[0].id; nuovoIdSalvato = data[0].id }
-    }
-
+    await richiediSessione('il gruppo predefinito NON è stato salvato')
+    const { data, error } = await sb.from('tm_contatti')
+      .update({ gruppo_default: g })
+      .eq('id', id).eq('azienda_id', currentAziendaId).select('id')
+    if (error) throw error
+    if (!data || !data.length) throw new Error('il database non ha cambiato nessuna riga (permesso o contatto non trovato)')
+    scadeCache('contatti')
     await loadContatti(true)
-
-    // Se si era arrivati qui da un documento («crea al volo»), si torna al
-    // documento con il contatto gia' collegato: il lavoro a meta' non si perde.
-    if (rubricaRitorno && rubricaRitorno.prefix) {
-      var rit = rubricaRitorno
-      rubricaRitorno = null
-      editingContattoId = null
-      mostraRubricaVista('lista')
-      showPage(rit.page)
-      await scegliContatto(rit.prefix, nuovoIdSalvato)
-      return
-    }
-
-    chiudiSchedaContatto()
-    showRubricaBanner('ok', 'Contatto salvato alle ' + oraAdesso() + ': ' + (payload.ragione_sociale || payload.cognome) + '.')
+    var c = (contattiCache || []).filter(function (x) { return x.id === id })[0]
+    if (c && contattoLetturaId === id) html('contatto-lettura-dati', contattoLetturaHtml(c))
+    showFattureBanner('contatto-gruppo-esito', 'ok', 'Gruppo predefinito salvato alle ' + oraAdesso() + '.')
   } catch (e) {
-    showContattoBanner('err', 'Non salvato: ' + friendlyContattoError(e))
+    showFattureBanner('contatto-gruppo-esito', 'err', 'Gruppo NON salvato: ' + friendlyContattoError(e))
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = testoBtn || '💾 Salva contatto' }
+    if (btn) btn.disabled = false
   }
-}
-
-function showContattoBanner(tipo, msg) {
-  var icona = tipo === 'ok' ? '✅' : tipo === 'warn' ? '⚠️' : '❌'
-  html('contatto-banner',
-    '<div class="fase-banner ' + tipo + '" role="alert">' +
-      '<span class="icon" aria-hidden="true">' + icona + '</span>' +
-      '<div class="msg">' + esc(msg) + '</div>' +
-    '</div>')
 }
 
 // Gli errori Postgres grezzi non dicono niente a chi li legge: qui diventano
@@ -15507,17 +14947,19 @@ function mostraSuggerimenti(prefix, trovati, sfoglia) {
            '</button>'
   }).join('')
 
-  // La creazione al volo è sempre in fondo: si crea solo se davvero non c'è.
-  // Sfogliando a campo vuoto non c'è nessun nome da creare: si offre solo
-  // quando qualcosa è stato scritto.
+  // In fondo: il contatto che non c'è si crea in Anagrafiche (v98); poi si torna
+  // qui e si preme «Aggiorna l'elenco».
   var scritto = getVal(c.testo)
-  if (scritto) {
-    out += '<button type="button" class="suggest-item suggest-new"' +
-           ' onclick="creaContattoAlVolo(\'' + prefix + '\')">' +
-           '➕ Crea «' + esc(scritto) + '» come nuovo contatto' +
-           '<span class="s-sub">lo salva in rubrica e lo collega a questo documento</span>' +
-           '</button>'
-  }
+  out += '<button type="button" class="suggest-item suggest-new"' +
+         ' onclick="creaContattoInAnagrafiche(\'' + prefix + '\')">' +
+         '🗂️ ' + (scritto ? 'Crea «' + esc(scritto) + '» in Anagrafiche' : 'Nuovo contatto in Anagrafiche') +
+         '<span class="s-sub">si apre Anagrafiche: crealo lì, poi torna qui e premi «Aggiorna l’elenco»</span>' +
+         '</button>' +
+         '<button type="button" class="suggest-item suggest-new"' +
+         ' onclick="aggiornaContattiDaMenu(\'' + prefix + '\')">' +
+         '↻ Aggiorna l’elenco' +
+         '<span class="s-sub">rilegge i contatti, per vedere quello appena creato</span>' +
+         '</button>'
 
   html(c.suggest, out)
   rubricaSuggest = { prefix: prefix, list: trovati, hi: -1, sfoglia: !!sfoglia }
@@ -15684,23 +15126,22 @@ function scollegaContatto(prefix, silenzioso) {
   if (!silenzioso && el(c.testo)) el(c.testo).focus()
 }
 
-// Creazione al volo: si apre la scheda già compilata con quello che si stava
-// scrivendo. Al salvataggio si torna al form di partenza, con il contatto
-// collegato: non si perde il documento a metà.
-var rubricaRitorno = null   // {prefix, page} da cui si è partiti
-
-async function creaContattoAlVolo(prefix) {
+// Il contatto che non c'è si crea in Anagrafiche (v98): si apre la loro finestra,
+// si crea, si torna qui e si preme «↻ Aggiorna l'elenco». Il documento che si
+// stava scrivendo resta dov'è (se il browser blocca la finestra, prima si chiede).
+function creaContattoInAnagrafiche(prefix) {
   var c = rubricaCampi(prefix)
-  var testo = getVal(c.testo)
-  chiudiSuggerimenti(prefix)
-  rubricaRitorno = { prefix: prefix, page: currentPage }
-  showPage('rubrica')
-  await initRubricaPage()
-  await nuovoContatto(c.categoria)
-  if (el('c-ragione')) el('c-ragione').value = testo
-  if (testo) moduloModificato('contatto')   // 75·5 — il nome l'ha scritto il programma
-  showContattoBanner('warn',
-    'Stai creando un contatto al volo. Appena lo salvi torni al documento, con il contatto già collegato.')
+  apriAnagrafiche(c.categoria === 'fornitore' ? '#nuovo-contatto-rubrica/fornitore' : '#nuovo-contatto-rubrica', true)
+}
+
+// «↻ Aggiorna l'elenco» dal menu dei suggerimenti: rilegge i contatti e ridisegna il menu.
+async function aggiornaContattiDaMenu(prefix) {
+  await aggiornaDaAnagrafiche(true)
+  var c = rubricaCampi(prefix)
+  var eraSfoglia = rubricaSuggest.sfoglia
+  rubricaSuggest.sfoglia = false
+  if (getVal(c.testo) && !eraSfoglia) await rubricaSuggerisci(prefix)
+  else await rubricaSfoglia(prefix)
 }
 
 // ── Stato pagamento sul form movimento ───────────────────────────────────────
@@ -17789,10 +17230,7 @@ function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto, notaScade
 // produzione. Qui si leggono e basta. Nessuna ALTER, nessun UPDATE, nessun
 // trigger, nessuna cancellazione.
 //
-// L'unica eccezione, dalla FASE 22, e' createCustomCantiere(): inserisce un
-// cantiere nuovo con nome, luogo, committente e stato 'Attivo', per poterlo
-// scegliere subito nella classificazione. Resta una INSERT sola, su quattro
-// colonne. Tutto il resto della scheda si compila nell'App Cantieri.
+// Dalla 98 nessuna eccezione: la commessa nuova si crea in Anagrafiche.
 //
 // DUE ERRORI CHE QUESTA SCHERMATA NON DEVE FARE
 //
@@ -18583,31 +18021,87 @@ function contiCantiere(cantiereId) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// LE COMMESSE NON SI ELIMINANO DA QUI (v97, 3.11.2026)
+// PERSONE, CLIENTI E COMMESSE SI SCRIVONO E SI TOLGONO SOLO IN ANAGRAFICHE
+// (v97 = non si eliminano commesse; v98 = non si creano commesse né contatti)
 //
-// Persone, clienti e commesse si scrivono e si tolgono solo in Anagrafiche, e
-// niente si cancella: si archivia (stato Conclusa o Persa). Il database non
-// permette piu' DELETE su `cantieri` (errore 42501). Qui resta solo il tasto che
-// porta alla commessa in Anagrafiche. Prima di questa versione c'erano il
-// controllo «cosa c'e' attaccato» e la cancellazione: tolti, con la cache del
-// catalogo delle tabelle e l'elenco dei bucket che servivano solo a loro.
+// Niente si cancella: si archivia (commessa: stato Conclusa o Persa). Il database
+// non permette più DELETE su `cantieri` (errore 42501). Questo programma legge
+// `cantieri` e `tm_contatti` e basta; ogni scrittura passa da qui: si apre
+// Anagrafiche (finestra a nome fisso), si lavora là, si torna e si preme
+// «Aggiorna l'elenco». (Unica scrittura rimasta su tm_contatti: gruppo_default,
+// che Anagrafiche non ha: vedi salvaGruppoContatto.)
 // ═════════════════════════════════════════════════════════════════════════════
 
 var URL_ANAGRAFICHE = 'https://carpenteria-ticinese.github.io/CT-rubrica/'
 var NOME_FINESTRA_ANAGRAFICHE = 'ct_app_rubrica'   // fisso: si riusa la stessa finestra
 var UUID_VALIDO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+var anagraficheAperta = false   // vero dopo aver aperto Anagrafiche: al ritorno si rileggono gli elenchi
 
-// L'indirizzo: la commessa se l'id e' un uuid vero, altrimenti l'elenco delle commesse.
-function urlAnagraficheCommessa(id) {
-  return URL_ANAGRAFICHE + (id && UUID_VALIDO.test(String(id)) ? '#commessa/' + id : '#commesse')
+// Il frammento (#...) di una commessa: l'id deve essere un uuid vero, altrimenti l'elenco.
+function frammentoCommessa(id) {
+  return (id && UUID_VALIDO.test(String(id))) ? '#commessa/' + id : '#commesse'
+}
+function urlAnagraficheCommessa(id) { return URL_ANAGRAFICHE + frammentoCommessa(id) }
+
+// Il frammento di un contatto: 'modifica' | 'fornitore' | '' ; id non uuid → elenco contatti.
+function frammentoContatto(id, come) {
+  if (!id || !UUID_VALIDO.test(String(id))) return '#contatti'
+  return '#contatto/' + id + (come === 'modifica' || come === 'fornitore' ? '/' + come : '')
 }
 
-function apriCantiereInAnagrafiche() {
-  var url = urlAnagraficheCommessa(cantiereApertoId)
+// Apre Anagrafiche nella finestra `ct_app_rubrica`. Se il browser la blocca si va
+// nella stessa scheda; con `confermaSeStessaScheda` prima si chiede, perché il
+// documento che si sta scrivendo qui andrebbe perso. Ritorna true se si è aperta la finestra.
+function apriAnagrafiche(frammento, confermaSeStessaScheda) {
+  var url = URL_ANAGRAFICHE + frammento
   var w = null
   try { w = window.open(url, NOME_FINESTRA_ANAGRAFICHE) } catch (e) { w = null }
-  if (!w) window.location.href = url      // finestra bloccata dal browser: stessa scheda
+  if (w) { anagraficheAperta = true; return true }
+  if (confermaSeStessaScheda && !window.confirm(
+      'Il browser ha bloccato la finestra nuova.\n\nSe vai ad Anagrafiche in questa scheda, quello che stai scrivendo e non hai salvato va perso.\n\nVuoi andare lo stesso?')) return false
+  window.location.href = url      // finestra bloccata dal browser: stessa scheda
+  return false
 }
+
+function apriCantiereInAnagrafiche() { apriAnagrafiche(frammentoCommessa(cantiereApertoId)) }
+function apriNuovaCommessaInAnagrafiche() { apriAnagrafiche('#nuova-commessa', true) }
+function apriContattoInAnagrafiche(id, come, confermaSeStessaScheda) { apriAnagrafiche(frammentoContatto(id, come), !!confermaSeStessaScheda) }
+function apriNuovoContattoInAnagrafiche() { apriAnagrafiche('#nuovo-contatto-rubrica') }
+
+// Rilegge cantieri e contatti e ridisegna quello che si vede. Si chiama dal tasto
+// «↻ Aggiorna l'elenco» e, da solo, quando si torna su questa scheda dopo aver
+// aperto Anagrafiche.
+async function aggiornaDaAnagrafiche(manuale) {
+  anagraficheAperta = false
+  if (!currentAziendaId) return
+  scadeCache('cantieri'); scadeCache('contatti')
+  try {
+    await loadCantieri(true)
+    await loadContatti(true)
+  } catch (e) {
+    console.warn('Aggiornamento da Anagrafiche non riuscito:', e.message || e)
+    if (manuale) window.alert('Elenco non aggiornato: ' + (e.message || e))
+    return
+  }
+  try {
+    if (currentPage === 'rubrica' && el('rubrica-lista-view') && el('rubrica-lista-view').style.display !== 'none') renderContattiList()
+    if (currentPage === 'cantieri') {
+      riempiTendinaCantieri()
+      if (el('cantieri-elenco-view') && el('cantieri-elenco-view').style.display !== 'none') renderElencoCantieri()
+    }
+    ;['cls-cantiere', 'cls-cantiere-comune'].forEach(function (id) {
+      var s = el(id); if (s && s.options.length) { var prima = s.value; s.innerHTML = buildCantiereOptions(prima, true) }
+    })
+    if (el('arch-cantiere')) riempiCantieriArchivio()
+  } catch (e2) { console.warn('Elenchi non ridisegnati:', e2.message || e2) }
+}
+
+// Tornando su questa scheda dopo Anagrafiche, gli elenchi si rileggono da soli.
+function ritornoDaAnagrafiche() {
+  if (anagraficheAperta && !document.hidden) aggiornaDaAnagrafiche(false)
+}
+document.addEventListener('visibilitychange', ritornoDaAnagrafiche)
+window.addEventListener('focus', ritornoDaAnagrafiche)
 
 // ── La pagina ────────────────────────────────────────────────────────────────
 
@@ -22378,7 +21872,7 @@ var LIVELLI = {
   offerte:   { livelli: ['list', 'detail', 'edit'],   applica: 'showOfferteView' },   // FASE 29
   // FASE 18 — «lettura» sta fra elenco e modulo: Indietro dal modulo torna
   // alla scheda letta, e da li' all'elenco.
-  rubrica:   { livelli: ['lista', 'lettura', 'scheda'], applica: 'mostraRubricaVista' },
+  rubrica:   { livelli: ['lista', 'lettura'], applica: 'mostraRubricaVista' },
   cantieri:  { livelli: ['elenco', 'scheda'],         applica: '_vistaCantieri' }
 }
 
@@ -24539,7 +24033,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '97'
+var VERSIONE = '98'
 
 function controllaVersionePagina() {
   try {
