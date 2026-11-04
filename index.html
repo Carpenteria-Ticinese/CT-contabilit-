@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Contabilità · Carpenteria Ticinese</title>
   <!-- Identità v100: nome, icona e colore uguali dappertutto (00 DIRETTORE\identita) -->
-  <link rel="manifest" href="manifest.json?v=103" />
+  <link rel="manifest" href="manifest.json?v=104" />
   <meta name="theme-color" content="#1f6fd1" />
-  <link rel="icon" type="image/png" sizes="32x32" href="icone/icona-32.png?v=103" />
-  <link rel="apple-touch-icon" href="icone/icona-180.png?v=103" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icone/icona-32.png?v=104" />
+  <link rel="apple-touch-icon" href="icone/icona-180.png?v=104" />
   <meta name="apple-mobile-web-app-title" content="Contabilità" />
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=103" />
+  <link rel="stylesheet" href="css/style.css?v=104" />
 </head>
-<body data-versione="103">
+<body data-versione="104">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -127,7 +127,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 103</span>
+      <span id="sidebar-versione">Versione 104</span>
     </div>
 
   </aside>
@@ -638,6 +638,9 @@
               <!-- 94 — il metodo del pagamento: proposto l'ultimo usato, modificabile. -->
               <label for="f-pag-metodo" class="form-label" style="margin-top:10px">Metodo <span class="dim">(obbligatorio)</span></label>
               <select id="f-pag-metodo" class="form-input"></select>
+              <!-- 104 -->
+              <label for="f-pag-conto" class="form-label" style="margin-top:10px">Da quale conto esce <span class="dim">(facoltativo)</span></label>
+              <select id="f-pag-conto" class="form-input"></select>
             </div>
 
             <div class="form-group">
@@ -1661,17 +1664,18 @@
           <div class="card-title">🏦 IBAN per l'incasso</div>
           <div class="form-group">
             <label for="f-fat-iban-select" class="form-label">IBAN della fattura</label>
-            <select id="f-fat-iban-select" class="form-input" onchange="onIbanSelectChange()"></select>
+            <select id="f-fat-iban-select" class="form-input" onchange="onIbanSelectChange(true)"></select>
+            <div id="f-fat-iban-conto"></div>
           </div>
           <div class="form-group" id="f-fat-iban-new-group" style="display:none">
             <input type="text" id="f-fat-iban-manual" class="form-input" maxlength="40" placeholder="CH.. nuovo IBAN" oninput="updateEditorIbanState()" />
             <label class="form-label-check" style="margin-top:8px">
               <input type="checkbox" id="f-fat-iban-save" onchange="onIbanSaveToggle(this.checked)" />
-              <span>Salva questo IBAN in rubrica (per riusarlo)</span>
+              <span>Salva questo conto nella Rubrica dei conti</span>
             </label>
-            <input type="text" id="f-fat-iban-label" class="form-input" maxlength="100" placeholder="Etichetta (es. Cantiere Rossi)" style="margin-top:8px; display:none" />
+            <input type="text" id="f-fat-iban-label" class="form-input" maxlength="100" placeholder="Nome del conto (es. Cantiere Rossi)" style="margin-top:8px; display:none" />
           </div>
-          <div class="form-hint">«Predefinito aziendale» usa l'IBAN di ⚙️ Impostazioni ditta. Gli IBAN per cantiere si gestiscono lì nella rubrica.</div>
+          <div class="form-hint">Scegliendo la commessa si propone il suo conto. I conti si gestiscono in ⚙️ Impostazioni ditta, nella Rubrica dei conti.</div>
         </div>
 
         <div class="card">
@@ -2339,6 +2343,11 @@
                   <option value="">&mdash; scegli (obbligatorio) &mdash;</option>
                 </select>
               </div>
+              <!-- 104 -->
+              <div class="form-group" style="flex:1">
+                <label for="a-pag-conto" class="form-label">Da quale conto esce <span class="dim">(facoltativo)</span></label>
+                <select id="a-pag-conto" class="form-input"></select>
+              </div>
             </div>
           </div>
 
@@ -2481,9 +2490,9 @@
       <div class="card">
         <div class="card-title">💳 Pagamento e contatti</div>
         <div class="form-group">
-          <label for="imp-iban" class="form-label">IBAN aziendale predefinito <span class="req" aria-hidden="true">*</span></label>
-          <input type="text" id="imp-iban" class="form-input" maxlength="40" placeholder="CH00 0000 0000 0000 0000 0" />
-          <div class="form-hint">Usato sulle fatture quando non scegli un IBAN per cantiere.</div>
+          <label for="imp-iban" class="form-label">IBAN del conto principale <span class="req" aria-hidden="true">*</span></label>
+          <input type="text" id="imp-iban" class="form-input" maxlength="40" readonly placeholder="Si sceglie nella Rubrica dei conti" />
+          <div class="form-hint">Si cambia nella Rubrica dei conti, più sotto in questa pagina.</div>
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
@@ -2816,29 +2825,52 @@
         </div>
       </div>
 
-      <div class="card" data-salva-a-parte>
+      <div class="card" data-salva-a-parte id="rubrica-conti-card">
         <div class="card-title">
-          🏦 IBAN per cantiere
-          <button type="button" class="link-btn" onclick="openIbanForm()">+ Nuovo IBAN</button>
+          🏦 Rubrica dei conti
+          <button type="button" class="btn-secondary conto-tasto" onclick="openIbanForm()">➕ Nuovo conto</button>
         </div>
-        <p style="font-size:13px; color:var(--text2); margin-bottom:12px">
-          Salva qui gli IBAN dei singoli cantieri: li scegli al volo quando emetti una fattura, senza ribatterli.
-          Quando chiudi un conto, segnalo «chiuso»: sparisce dalle scelte ma resta nello storico.
+        <p style="font-size:14px; color:var(--text2); margin-bottom:12px">
+          I conti della ditta. Una commessa incassa sul conto assegnato, altrimenti sul principale.
+          Un conto disattivato non si propone più, ma resta nello storico. Solo tu vedi questa rubrica.
         </p>
 
         <div id="iban-form" class="nuovo-conto-box" style="display:none">
           <div class="form-row">
             <div class="form-group" style="flex:2">
-              <label for="iban-form-etichetta" class="form-label">Etichetta (cantiere/cliente)</label>
-              <input type="text" id="iban-form-etichetta" class="form-input" maxlength="100" placeholder="es. Cantiere Rossi — Bellinzona" />
+              <label for="iban-form-etichetta" class="form-label">Nome del conto</label>
+              <input type="text" id="iban-form-etichetta" class="form-input" maxlength="100" placeholder="es. Cantiere Rossi" />
             </div>
             <div class="form-group" style="flex:2">
-              <label for="iban-form-iban" class="form-label">IBAN</label>
-              <input type="text" id="iban-form-iban" class="form-input" maxlength="40" placeholder="CH00 0000 0000 0000 0000 0" />
+              <label for="iban-form-banca" class="form-label">Banca <span class="dim">(facoltativa)</span></label>
+              <input type="text" id="iban-form-banca" class="form-input" maxlength="100" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="iban-form-iban" class="form-label">IBAN</label>
+            <input type="text" id="iban-form-iban" class="form-input" maxlength="42" placeholder="CH00 0000 0000 0000 0000 0" oninput="controllaIbanForm()" />
+            <div id="iban-form-avviso"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label for="iban-form-valuta" class="form-label">Valuta</label>
+              <select id="iban-form-valuta" class="form-input">
+                <option value="CHF">CHF</option>
+                <option value="EUR">EUR</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="iban-form-tipo" class="form-label">Tipo</label>
+              <select id="iban-form-tipo" class="form-input">
+                <option value="principale">⭐ Principale</option>
+                <option value="uscite">📤 Uscite</option>
+                <option value="cantiere">🏗️ Cantiere</option>
+              </select>
             </div>
           </div>
           <div class="form-actions" style="margin-top:6px">
-            <button type="button" class="btn-primary" id="iban-form-save-btn" onclick="saveIbanEntry()">💾 Salva IBAN</button>
+            <button type="button" class="btn-primary" id="iban-form-save-btn" onclick="saveIbanEntry()">💾 Salva il conto</button>
             <button type="button" class="btn-secondary" onclick="closeIbanForm()">Annulla</button>
           </div>
         </div>
@@ -2847,7 +2879,7 @@
         <div id="iban-list"></div>
         <label class="form-label-check" style="margin-top:12px">
           <input type="checkbox" id="iban-show-closed" onchange="renderIbanRubrica()" />
-          <span>Mostra anche gli IBAN chiusi</span>
+          <span>Mostra anche i conti non attivi</span>
         </label>
       </div>
 
@@ -2920,6 +2952,13 @@
             <input type="text" id="pag-riferimento" class="form-input" maxlength="120"
                    placeholder="ricevuta, riga dell&rsquo;estratto conto…" />
           </div>
+        </div>
+
+        <!-- 104 — da quale conto esce, su quale entra -->
+        <div class="form-group">
+          <label for="pag-conto" class="form-label"><span id="pag-conto-label">Conto</span> <span class="dim">(facoltativo)</span></label>
+          <select id="pag-conto" class="form-input"></select>
+          <div id="pag-conto-avviso"></div>
         </div>
 
         <div class="form-group" id="pag-rata-group" style="display:none">
@@ -3064,6 +3103,39 @@
         <div class="modal-footer-actions">
           <button type="button" class="btn-secondary" id="solo-titolare-riprova" onclick="controllaSoloTitolare()">🔄 Riprova</button>
           <button type="button" class="btn-primary" onclick="doLogout()">🚪 Esci</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 104 — assegnare un conto a una commessa -->
+  <div id="conto-assegna-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="conto-assegna-titolo">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title" id="conto-assegna-titolo">🏗️ Assegna a commessa</div>
+        <button class="modal-close" onclick="chiudiAssegnaConto()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="conto-assegna-conto" class="pw-testo"></p>
+        <div id="conto-assegna-banner"></div>
+        <div class="form-group">
+          <label for="conto-assegna-commessa" class="form-label">Commessa</label>
+          <select id="conto-assegna-commessa" class="form-input" onchange="aggiornaAvvisoAssegna()"></select>
+        </div>
+        <div class="form-group">
+          <label for="conto-assegna-dal" class="form-label">Dal</label>
+          <input type="date" id="conto-assegna-dal" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label for="conto-assegna-note" class="form-label">Nota <span class="dim">(facoltativa)</span></label>
+          <input type="text" id="conto-assegna-note" class="form-input" maxlength="200" />
+        </div>
+        <div id="conto-assegna-avviso"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiAssegnaConto()">Annulla</button>
+          <button type="button" class="btn-primary" id="conto-assegna-salva" onclick="salvaAssegnaConto()">💾 Assegna</button>
         </div>
       </div>
     </div>
@@ -3389,7 +3461,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=103"></script>
+<script src="js/app.js?v=104"></script>
 
 </body>
 </html>

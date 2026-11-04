@@ -48,7 +48,7 @@ let editorRifTotale   = null   // totale della fattura originale stornata (limit
 let editorRifInfo     = null   // {numero, data_emissione, totale} della fattura originale
 
 // Fase 8 — rubrica IBAN per cantiere
-let ibanRubrica       = null   // [{id, etichetta, iban, attivo}]
+let ibanRubrica       = null   // 104 — [{id, nome, etichetta, banca, iban, valuta, tipo, attivo}] da tm_conta_rubrica_conti
 let editingIbanId     = null   // id voce rubrica in modifica (Impostazioni)
 
 // Fase 10 — fatture d'acquisto + conferma emissione vendite
@@ -596,6 +596,7 @@ async function doLogin() {
     await loadAziendaId()
     updateSidebarAuth()
     if (!(await controllaSoloTitolare())) return   // 103
+    loadIbanRubrica(true).catch(function () { /* lo dice la Rubrica, quando si apre */ })   // 104
     showPage('setup')
     runSetupCheck()
     await refreshDaClassificareCount()
@@ -3860,7 +3861,7 @@ function statoBadge(stato) {
 
 function auditFieldLabel(field) {
   var map = {
-    conto_id: 'Conto', codice_iva_id: 'Codice IVA', categoria: 'Categoria',
+    conto_id: 'Conto', conto_pagamento: 'Conto del pagamento', codice_iva_id: 'Codice IVA', categoria: 'Categoria',
     note: 'Note', imponibile: 'Imponibile', iva_importo: 'IVA',
     iva_inclusa: 'IVA inclusa', cantiere_id: 'Cantiere', stato: 'Stato',
     // Campi dei pagamenti (SQL_FASE13)
@@ -7711,6 +7712,7 @@ async function emettiFatturaCorrente() {
     // l'IBAN si legge per intero, a gruppi di 4.
     var ibanConf = resolveEditorIban() || (aziendaInfo && aziendaInfo.iban) || ''
     sumRows.push(['IBAN', ibanConf ? ibanLeggibile(ibanConf) : '— predefinito —'])
+    sumRows = sumRows.concat(righeAvvisoEmissione(ibanConf, valoreCantiere('v')))   // 104
   }
   sumRows.push(['Totale', fmtNum2(tot) + ' ' + valuta, true])
   openEmitConfirm(emitSummaryRows(sumRows), doEmitCorrente)
@@ -7768,6 +7770,7 @@ async function emettiFatturaById(id) {
     if (f.tipo !== 'nota_credito') {
       var ibanConfId = (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
       sumRows.push(['IBAN', ibanConfId ? ibanLeggibile(ibanConfId) : '— predefinito —'])
+      sumRows = sumRows.concat(righeAvvisoEmissione(ibanConfId, f.cantiere_id))   // 104
     }
     sumRows.push(['Totale', fmtNum2(safeNum(f.totale)) + ' ' + (f.valuta || 'CHF'), true])
   } else {
@@ -7900,7 +7903,7 @@ async function creaNotaCredito(id) {
   }
 }
 
-// ── Rubrica IBAN per cantiere (Fase 8) ───────────────────────────────────────
+// ── Conti e IBAN ─────────────────────────────────────────────────────────────
 // FASE 18 — questa funzione non ha piu' nessun chiamante: tutti i punti in cui
 // si sceglie o si conferma un IBAN adesso lo mostrano intero (ibanLeggibile).
 // Resta qui, e non e' una svista: se un domani un IBAN andasse mostrato a
@@ -7920,22 +7923,170 @@ function ibanLeggibile(iban) {
   return s.replace(/(.{4})/g, '$1 ').trim()
 }
 
+// ══ 104 · RUBRICA DEI CONTI ════════════════════════════════════════════════
+// I conti della ditta: tm_conta_rubrica_conti. La vecchia tm_conta_iban non si scrive più. Solo il titolare.
+// Lo storico delle assegnazioni si scrive solo con tm_conta_assegna_conto: un periodo si chiude, non si sovrascrive.
+var TIPI_CONTO = { principale: '⭐ Principale', uscite: '📤 Uscite', cantiere: '🏗️ Cantiere' }
+var contiAssegnazioni = []     // righe di tm_conta_rubrica_assegnazioni
+var ibanRubricaErrore = null   // lettura fallita: si dice a schermo, mai un elenco vuoto per silenzio
+var contoInAssegnazione = null
+var ibanFatturaToccato = false // l'IBAN della fattura scelto a mano: la commessa non lo cambia più
+
 async function loadIbanRubrica(force) {
   if (ibanRubrica !== null && !force) return
   await richiediAccesso('loadIbanRubrica')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await sb
-      .from('tm_conta_iban')
-      .select('id, etichetta, iban, attivo')
+      .from('tm_conta_rubrica_conti')
+      .select('id, nome, banca, iban, valuta, tipo, attivo')
       .eq('azienda_id', currentAziendaId)
       .order('attivo', { ascending: false })
-      .order('etichetta')
+      .order('nome')
     if (error) throw error
-    ibanRubrica = data || []
+    const { data: ass, error: eAss } = await sb
+      .from('tm_conta_rubrica_assegnazioni')
+      .select('id, conto_id, cantiere_id, dal, al, note')
+      .eq('azienda_id', currentAziendaId)
+      .order('dal', { ascending: false })
+    if (eAss) throw eAss
+    ibanRubrica = (data || []).map(function (c) { c.etichetta = c.nome; return c })
+    contiAssegnazioni = ass || []
+    ibanRubricaErrore = null
   } catch (e) {
     ibanRubrica = ibanRubrica || []
-    console.warn('IBAN rubrica:', e.message)
+    ibanRubricaErrore = e.message || String(e)
+    console.warn('Rubrica dei conti:', ibanRubricaErrore)
   }
+}
+
+// La cifra di controllo dell'IBAN (modulo 97). Serve a dare un avviso, non blocca mai.
+function ibanCifraGiusta(iban) {
+  var s = ibanNudo(iban)
+  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}$/.test(s)) return false
+  if (/^(CH|LI)/.test(s) && s.length !== 21) return false
+  var giro = s.slice(4) + s.slice(0, 4), resto = 0
+  for (var i = 0; i < giro.length; i++) {
+    var c = giro.charAt(i)
+    var v = (c >= 'A' && c <= 'Z') ? String(c.charCodeAt(0) - 55) : c
+    for (var k = 0; k < v.length; k++) resto = (resto * 10 + Number(v.charAt(k))) % 97
+  }
+  return resto === 1
+}
+function testoAvvisoIban(iban) {
+  return '⚠️ La cifra di controllo di questo IBAN non torna: rileggilo. Puoi salvarlo lo stesso.'
+}
+
+function contoPrincipale() {
+  return (ibanRubrica || []).filter(function (c) { return c.tipo === 'principale' && c.attivo })[0] || null
+}
+function contoDaId(id) {
+  return (ibanRubrica || []).filter(function (c) { return c.id === id })[0] || null
+}
+function contoPerIban(iban) {
+  var n = ibanNudo(iban)
+  if (!n) return null
+  var uguali = (ibanRubrica || []).filter(function (c) { return ibanNudo(c.iban) === n })
+  return uguali.filter(function (c) { return c.attivo })[0] || uguali[0] || null
+}
+function assegnazioneAperta(cantiereId) {
+  return (contiAssegnazioni || []).filter(function (a) { return a.cantiere_id === cantiereId && !a.al })[0] || null
+}
+// Il conto assegnato alla commessa, se è attivo. Senza: la commessa usa il principale.
+function contoAssegnatoA(cantiereId) {
+  var a = cantiereId ? assegnazioneAperta(cantiereId) : null
+  var c = a ? contoDaId(a.conto_id) : null
+  return (c && c.attivo) ? c : null
+}
+function commesseApertePerConto(contoId) {
+  return (contiAssegnazioni || []).filter(function (a) { return a.conto_id === contoId && !a.al })
+}
+// Gli avvisi in cima alla Rubrica. Dicono, non bloccano.
+function avvisiRubricaConti(lista) {
+  var att = (lista || []).filter(function (c) { return c.attivo })
+  var fuori = []
+  var pr = att.filter(function (c) { return c.tipo === 'principale' })[0]
+  if (!pr) fuori.push('Manca il conto principale: le commesse senza conto e le fatture nuove non sanno su quale farsi pagare.')
+  if (!att.some(function (c) { return c.tipo === 'uscite' })) fuori.push('Manca un conto Uscite: quando puoi, segna quello da cui paghi.')
+  att.forEach(function (c) {
+    if (c.tipo !== 'principale' && /princip/i.test(c.nome || '')) {
+      fuori.push('Il conto «' + c.nome + '» si chiama principale, ma il principale è un altro' + (pr ? ' («' + pr.nome + '»)' : '') + '. Controlla quale è giusto: è quello che si stampa sulle fatture senza un conto scelto.')
+    }
+    if (!ibanCifraGiusta(c.iban)) fuori.push('Il conto «' + c.nome + '»: la cifra di controllo dell\'IBAN non torna.')
+  })
+  return fuori
+}
+
+// Il principale scritto sulla fattura nuova: così una fattura già fatta non cambia se un domani cambia il principale.
+function ibanPredefinitoFattura() {
+  var p = contoPrincipale()
+  return (p && !editorFatturaId) ? p.iban : null
+}
+
+// La commessa scelta nell'editor propone il suo conto. Se l'IBAN è stato scelto a mano non si cambia: si avvisa.
+function proponiIbanDaCommessa(cantiereId) {
+  var sel = el('f-fat-iban-select')
+  if (!sel) return
+  var conto = cantiereId ? contoAssegnatoA(cantiereId) : null
+  if (ibanFatturaToccato) {
+    var scelto = ibanNudo(resolveEditorIban() || '')
+    var atteso = conto ? ibanNudo(conto.iban) : ''
+    html('f-fat-iban-conto', (atteso && scelto !== atteso)
+      ? '<div class="pag-nota">⚠️ Questa commessa incassa su «' + esc(conto.nome) + '». Sulla fattura è scelto un altro IBAN.</div>' : '')
+    return
+  }
+  sel.value = conto ? conto.iban : ''
+  html('f-fat-iban-conto', conto
+    ? '<div class="pag-nota">🏗️ Conto della commessa: <strong>' + esc(conto.nome) + '</strong></div>' : '')
+  onIbanSelectChange()
+}
+
+// Le righe d'avviso nella conferma di emissione. L'uscita è il punto in cui l'errore diventa definitivo.
+function righeAvvisoEmissione(iban, cantiereId) {
+  var fuori = []
+  if (!ibanNudo(iban)) fuori.push(['⚠️ IBAN', 'Manca: sulla fattura non si stampa nessun conto.'])
+  else if (!ibanCifraGiusta(iban)) fuori.push(['⚠️ IBAN', 'La cifra di controllo non torna: rileggilo prima di emettere.'])
+  var conto = cantiereId ? contoAssegnatoA(cantiereId) : null
+  if (conto && ibanNudo(iban) !== ibanNudo(conto.iban)) fuori.push(['⚠️ Conto', 'Questa commessa incassa su «' + conto.nome + '», la fattura va su un altro IBAN.'])
+  return fuori
+}
+
+// ── I conti nei pagamenti ────────────────────────────────────────────────────
+function etichettaConto(c) {
+  var s = String(c.iban || '')
+  return c.nome + ' · ' + String(TIPI_CONTO[c.tipo] || c.tipo).replace(/^\S+\s/, '') + ' · ' + c.valuta + ' · …' + s.slice(-4)
+}
+function riempiTendinaConti(idSelect, valore) {
+  var sel = el(idSelect)
+  if (!sel) return
+  var lista = (ibanRubrica || []).filter(function (c) { return c.attivo || c.id === valore })
+  sel.innerHTML = '<option value="">— non indicato —</option>' + lista.map(function (c) {
+    return '<option value="' + esc(c.id) + '">' + esc(etichettaConto(c)) + '</option>'
+  }).join('')
+  sel.value = valore || ''
+}
+// Da dove esce: l'ultimo usato per pagare, se no il primo conto Uscite.
+function contoPropostoUscita() {
+  var usati = (pagamentiCache || []).filter(function (p) {
+    if (!p.conto_id || p.tabella_origine === 'tm_conta_fatture') return false
+    var c = contoDaId(p.conto_id)
+    return !!(c && c.attivo)
+  }).sort(function (a, b) { return String(a.created_at || a.data || '').localeCompare(String(b.created_at || b.data || '')) })
+  if (usati.length) return usati[usati.length - 1].conto_id
+  var u = (ibanRubrica || []).filter(function (c) { return c.attivo && c.tipo === 'uscite' })[0]
+  return u ? u.id : ''
+}
+// Dove entra: il conto scritto sulla fattura, se no quello della commessa, se no il principale.
+function contoPropostoEntrata(f) {
+  var c = f ? contoPerIban(f.iban) : null
+  if (c && c.attivo) return c.id
+  c = f ? contoAssegnatoA(f.cantiere_id) : null
+  if (c) return c.id
+  c = contoPrincipale()
+  return c ? c.id : ''
+}
+function tagContoPagamento(p) {
+  var c = p.conto_id ? contoDaId(p.conto_id) : null
+  return c ? ' <span class="pag-rata-tag">🏦 ' + esc(c.nome) + '</span>' : ''
 }
 
 // ── Editor fattura: selezione IBAN ───────────────────────────────────────────
@@ -7944,11 +8095,11 @@ function buildEditorIbanOptions(currentIban) {
   // FASE 18 — IBAN per intero: qui si SCEGLIE su quale conto farsi pagare, e
   // due conti che finiscono uguale erano indistinguibili.
   var defMask = a.iban ? ' (' + ibanLeggibile(a.iban) + ')' : ' (non impostato)'
-  var out = '<option value="">Predefinito aziendale' + esc(defMask) + '</option>'
+  var out = '<option value="">Conto principale' + esc(defMask) + '</option>'
   var attive = (ibanRubrica || []).filter(function (x) { return x.attivo })
   for (var i = 0; i < attive.length; i++) {
     var e = attive[i]
-    var sel = (currentIban && e.iban === currentIban) ? ' selected' : ''
+    var sel = (currentIban && ibanNudo(e.iban) === ibanNudo(currentIban)) ? ' selected' : ''
     out += '<option value="' + esc(e.iban) + '"' + sel + '>' + esc(e.etichetta + ' — ' + ibanLeggibile(e.iban)) + '</option>'
   }
   out += '<option value="__new__">➕ Nuovo IBAN…</option>'
@@ -7964,15 +8115,18 @@ function populateEditorIban(currentIban) {
   if (el('f-fat-iban-manual')) el('f-fat-iban-manual').value = ''
 
   sel.innerHTML = buildEditorIbanOptions(currentIban)
+  ibanFatturaToccato = !!currentIban   // 104 — un IBAN già sulla fattura non lo cambia la commessa
+  html('f-fat-iban-conto', '')
   // IBAN presente ma non in rubrica (manuale non salvato) → "__new__" precompilato
-  if (currentIban && sel.value !== currentIban) {
+  if (currentIban && ibanNudo(sel.value) !== ibanNudo(currentIban)) {
     sel.value = '__new__'
     if (el('f-fat-iban-manual')) el('f-fat-iban-manual').value = currentIban
   }
   onIbanSelectChange()
 }
 
-function onIbanSelectChange() {
+function onIbanSelectChange(aMano) {
+  if (aMano) { ibanFatturaToccato = true; html('f-fat-iban-conto', '') }
   var sel = el('f-fat-iban-select')
   var grp = el('f-fat-iban-new-group')
   if (grp) grp.style.display = (sel && sel.value === '__new__') ? 'block' : 'none'
@@ -7983,12 +8137,13 @@ function onIbanSaveToggle(checked) {
 }
 function updateEditorIbanState() { /* riservato: nessuna azione live necessaria */ }
 
-// IBAN effettivo da salvare in tm_conta_fatture.iban ('' / predefinito → null)
+// IBAN effettivo da salvare in tm_conta_fatture.iban.
+// 104 — '' su una fattura nuova: il principale di oggi, scritto sulla fattura. Su una già salvata senza IBAN resta vuoto.
 function resolveEditorIban() {
   var sel = el('f-fat-iban-select')
   if (!sel) return null
   var v = sel.value
-  if (v === '') return null
+  if (v === '') return ibanPredefinitoFattura()
   if (v === '__new__') {
     var manual = el('f-fat-iban-manual') ? el('f-fat-iban-manual').value.trim() : ''
     return manual || null
@@ -7996,7 +8151,7 @@ function resolveEditorIban() {
   return v
 }
 
-// Se "nuovo IBAN" + "salva in rubrica" spuntato: crea la voce (non bloccante)
+// Se "nuovo IBAN" + "salva in rubrica" spuntato: crea il conto (non bloccante)
 async function maybeSaveNewIbanToRubrica() {
   var sel = el('f-fat-iban-select')
   if (!sel || sel.value !== '__new__') return
@@ -8006,82 +8161,149 @@ async function maybeSaveNewIbanToRubrica() {
   if (!iban || !etichetta) return   // servono entrambi; altrimenti si salta
   try {
     const { error } = await sb
-      .from('tm_conta_iban')
-      .insert({ azienda_id: currentAziendaId, etichetta: etichetta, iban: iban, attivo: true })
+      .from('tm_conta_rubrica_conti')
+      .insert({ azienda_id: currentAziendaId, nome: etichetta, iban: ibanNudo(iban), tipo: 'cantiere', attivo: true })
       .select()
     if (error) throw error
     await loadIbanRubrica(true)
-  } catch (e) { console.warn('Salvataggio IBAN in rubrica:', e.message) }
+  } catch (e) { console.warn('Salvataggio conto in rubrica:', e.message) }
 }
 
-// ── Rubrica IBAN in ⚙️ Impostazioni ditta ────────────────────────────────────
+// ── Rubrica dei conti in ⚙️ Impostazioni ditta ───────────────────────────────
+function rigaContoHtml(e) {
+  var aperte = commesseApertePerConto(e.id)
+  var commesse = aperte.map(function (a) {
+    return '<div class="conto-commessa">🏗️ Incassa per <strong>' + esc(cantiereLabel(a.cantiere_id)) + '</strong> dal ' + esc(fmtDate(a.dal)) +
+      ' <button type="button" class="btn-secondary conto-tasto" onclick="togliAssegnazioneConto(\'' + esc(a.cantiere_id) + '\')">↩️ Torna al principale</button></div>'
+  }).join('')
+  return '<div class="conto-riga' + (e.attivo ? '' : ' chiuso') + '">' +
+    '<div class="conto-testa">' +
+      '<span class="iban-etichetta">' + esc(e.nome) + '</span>' +
+      '<span class="conto-tipo">' + esc(TIPI_CONTO[e.tipo] || e.tipo) + '</span>' +
+      '<span class="conto-tipo">' + esc(e.valuta) + '</span>' +
+      (e.attivo ? '' : ' ' + badge('warn', '🔒 non attivo')) +
+    '</div>' +
+    // FASE 18 — per intero: è l'elenco da cui si sceglie quale conto cambiare, e sbagliare riga si paga caro.
+    '<div class="iban-mask">' + esc(ibanLeggibile(e.iban)) + '</div>' +
+    (e.banca ? '<div class="dim">Banca: ' + esc(e.banca) + '</div>' : '') +
+    commesse +
+    '<div class="conto-tasti">' +
+      '<button type="button" class="btn-secondary conto-tasto" onclick="editIbanEntry(\'' + e.id + '\')">✏️ Modifica</button>' +
+      (e.attivo ? '<button type="button" class="btn-secondary conto-tasto" onclick="apriAssegnaConto(\'' + e.id + '\')">🏗️ Assegna a commessa</button>' : '') +
+      '<button type="button" class="btn-secondary conto-tasto" onclick="mostraStoricoConto(\'' + e.id + '\')">📜 Storico</button>' +
+      (e.attivo
+        ? '<button type="button" class="btn-secondary conto-tasto" onclick="toggleIbanChiuso(\'' + e.id + '\', false)">🔒 Disattiva</button>'
+        : '<button type="button" class="btn-secondary conto-tasto" onclick="toggleIbanChiuso(\'' + e.id + '\', true)">↩️ Riattiva</button>') +
+    '</div>' +
+    '<div id="conto-storico-' + e.id + '"></div>' +
+  '</div>'
+}
+
 async function renderIbanRubrica() {
   var box = el('iban-list')
   if (!box) return
   await loadIbanRubrica()
+  if (ibanRubricaErrore) {
+    box.innerHTML = '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span><div class="msg">Non riesco a leggere la Rubrica dei conti: ' + esc(ibanRubricaErrore) + '</div></div>'
+    return
+  }
+  try { await loadCantieri() } catch (_) { /* i nomi delle commesse restano l'id: la rubrica si vede lo stesso */ }
   var showClosed = el('iban-show-closed') && el('iban-show-closed').checked
   var list = (ibanRubrica || []).filter(function (x) { return showClosed || x.attivo })
-  if (!list.length) { box.innerHTML = '<div class="dim" style="padding:6px 0">Nessun IBAN in rubrica.</div>'; return }
-  box.innerHTML = list.map(function (e) {
-    return '<div class="iban-row' + (e.attivo ? '' : ' chiuso') + '">' +
-      '<span class="iban-etichetta">' + esc(e.etichetta) + '</span>' +
-      // FASE 18 — anche qui per intero: e' l'elenco da cui si sceglie quale
-      // conto modificare o chiudere, e sbagliare riga si paga caro.
-      '<span class="iban-mask">' + esc(ibanLeggibile(e.iban)) + '</span>' +
-      (e.attivo ? '' : ' ' + badge('warn', 'chiuso')) +
-      '<span class="iban-actions">' +
-        '<button class="icon-btn" title="Modifica" onclick="editIbanEntry(\'' + e.id + '\')">✏️</button>' +
-        (e.attivo
-          ? '<button class="icon-btn" title="Segna chiuso" onclick="toggleIbanChiuso(\'' + e.id + '\', false)">🔒 Chiudi</button>'
-          : '<button class="icon-btn" title="Riapri" onclick="toggleIbanChiuso(\'' + e.id + '\', true)">↩︎ Riapri</button>') +
-      '</span>' +
-    '</div>'
-  }).join('')
+  var avvisi = avvisiRubricaConti(ibanRubrica)
+  box.innerHTML =
+    avvisi.map(function (t) { return '<div class="pag-nota conto-avviso">⚠️ ' + esc(t) + '</div>' }).join('') +
+    (list.length ? list.map(rigaContoHtml).join('') : '<div class="dim" style="padding:6px 0">Nessun conto in rubrica.</div>')
 }
 
+function controllaIbanForm() {
+  var iban = getVal('iban-form-iban')
+  html('iban-form-avviso', (iban && !ibanCifraGiusta(iban)) ? '<div class="pag-nota conto-avviso">' + esc(testoAvvisoIban(iban)) + '</div>' : '')
+}
+function riempiFormConto(e) {
+  setVal('iban-form-etichetta', e ? (e.nome || '') : '')
+  setVal('iban-form-banca', e ? (e.banca || '') : '')
+  setVal('iban-form-iban', e ? ibanLeggibile(e.iban) : '')
+  setVal('iban-form-valuta', e ? e.valuta : 'CHF')
+  setVal('iban-form-tipo', e ? e.tipo : 'cantiere')
+  html('iban-form-avviso', '')
+  html('iban-banner', '')
+  var f = el('iban-form'); if (f) f.style.display = 'block'
+}
 function openIbanForm() {
   editingIbanId = null
-  if (el('iban-form-etichetta')) el('iban-form-etichetta').value = ''
-  if (el('iban-form-iban')) el('iban-form-iban').value = ''
-  if (el('iban-form-save-btn')) el('iban-form-save-btn').textContent = '💾 Salva IBAN'
-  var f = el('iban-form'); if (f) f.style.display = 'block'
-  html('iban-banner', '')
+  if (el('iban-form-save-btn')) el('iban-form-save-btn').textContent = '💾 Salva il conto'
+  riempiFormConto(null)
 }
 function closeIbanForm() {
   editingIbanId = null
   var f = el('iban-form'); if (f) f.style.display = 'none'
 }
 function editIbanEntry(id) {
-  var e = (ibanRubrica || []).filter(function (x) { return x.id === id })[0]
+  var e = contoDaId(id)
   if (!e) return
   editingIbanId = id
-  if (el('iban-form-etichetta')) el('iban-form-etichetta').value = e.etichetta || ''
-  if (el('iban-form-iban')) el('iban-form-iban').value = e.iban || ''
-  if (el('iban-form-save-btn')) el('iban-form-save-btn').textContent = '💾 Aggiorna IBAN'
-  var f = el('iban-form'); if (f) f.style.display = 'block'
-  html('iban-banner', '')
+  if (el('iban-form-save-btn')) el('iban-form-save-btn').textContent = '💾 Aggiorna il conto'
+  riempiFormConto(e)
+  controllaIbanForm()
+}
+
+// tm_aziende.iban segue il principale (trigger): si rilegge, così fatture e Impostazioni dicono il valore vero.
+async function rileggiIbanAziendale() {
+  try {
+    const { data, error } = await sb.from('tm_aziende').select('iban').eq('id', currentAziendaId).single()
+    if (error) throw error
+    if (aziendaInfo) aziendaInfo.iban = data.iban
+    setVal('imp-iban', data.iban)
+  } catch (e) { console.warn('IBAN aziendale:', e.message) }
+}
+function erroreConto(e) {
+  if (e && e.code === '23505') return 'C\'è già un conto principale attivo: fai principale questo con «Tipo: Principale», oppure disattiva l\'altro.'
+  return (e && e.message) || String(e)
 }
 
 async function saveIbanEntry() {
-  var etichetta = getVal('iban-form-etichetta')
-  var iban = getVal('iban-form-iban')
-  if (!etichetta || !iban) { showFattureBanner('iban-banner', 'err', 'Servono sia l\'etichetta sia l\'IBAN.'); return }
+  var nome = getVal('iban-form-etichetta')
+  var iban = ibanNudo(getVal('iban-form-iban'))
+  var tipo = getVal('iban-form-tipo') || 'cantiere'
+  if (!nome || !iban) { showFattureBanner('iban-banner', 'err', 'Servono il nome del conto e l\'IBAN.'); return }
   if (!currentAziendaId) { showFattureBanner('iban-banner', 'err', 'Azienda non trovata.'); return }
+  var prima = editingIbanId ? contoDaId(editingIbanId) : null
+  var altro = contoPrincipale()
+  var diventaPrincipale = tipo === 'principale' && !(prima && prima.tipo === 'principale' && prima.attivo)
+  if (diventaPrincipale && altro && !window.confirm('Il conto principale oggi è «' + altro.nome + '»: diventa di tipo Cantiere e «' + nome + '» prende il suo posto.\n\nLe fatture nuove e le commesse senza conto useranno questo. Continuare?')) return
+  var campi = { nome: nome, banca: getVal('iban-form-banca') || null, iban: iban, valuta: getVal('iban-form-valuta') || 'CHF',
+                // Il passaggio a principale lo fa la funzione, tutto insieme: l'indice ne vuole uno solo.
+                tipo: diventaPrincipale ? ((prima && prima.tipo) || 'cantiere') : tipo }
   var btn = el('iban-form-save-btn'); if (btn) btn.disabled = true
   try {
-    if (editingIbanId) {
-      const { error } = await sb.from('tm_conta_iban').update({ etichetta: etichetta, iban: iban }).eq('id', editingIbanId).eq('azienda_id', currentAziendaId).select()
+    var id = editingIbanId
+    if (id) {
+      const { data, error } = await sb.from('tm_conta_rubrica_conti').update(campi).eq('id', id).eq('azienda_id', currentAziendaId).select('id')
       if (error) throw error
+      if (!data || !data.length) throw new Error('il conto non è stato salvato: nessuna riga cambiata. Ricarica la pagina.')
     } else {
-      const { error } = await sb.from('tm_conta_iban').insert({ azienda_id: currentAziendaId, etichetta: etichetta, iban: iban, attivo: true }).select()
+      campi.azienda_id = currentAziendaId
+      campi.attivo = true
+      const { data, error } = await sb.from('tm_conta_rubrica_conti').insert(campi).select('id')
       if (error) throw error
+      id = data && data[0] && data[0].id
     }
+    if (diventaPrincipale) {
+      const { error: eP } = await sb.rpc('tm_conta_fai_principale', { p_conto: id })
+      if (eP) throw eP
+    }
+    var ibanCambiato = !!(prima && ibanNudo(prima.iban) !== iban)
     closeIbanForm()
     await loadIbanRubrica(true)
-    renderIbanRubrica()
-    showFattureBanner('iban-banner', 'ok', 'IBAN salvato in rubrica alle ' + oraAdesso() + '.')
+    await rileggiIbanAziendale()
+    await renderIbanRubrica()
+    var msg = 'Conto salvato alle ' + oraAdesso() + '.'
+    if (ibanCambiato) msg += ' Le fatture già fatte tengono l\'IBAN di prima.'
+    if (!ibanCifraGiusta(iban)) showFattureBanner('iban-banner', 'warn', msg + ' ' + testoAvvisoIban(iban))
+    else showFattureBanner('iban-banner', 'ok', msg)
   } catch (e) {
-    showFattureBanner('iban-banner', 'err', 'Salvataggio IBAN: ' + (e.message || e))
+    showFattureBanner('iban-banner', 'err', 'Salvataggio del conto: ' + erroreConto(e))
   } finally {
     if (btn) btn.disabled = false
   }
@@ -8089,14 +8311,131 @@ async function saveIbanEntry() {
 
 async function toggleIbanChiuso(id, toAttivo) {
   if (!currentAziendaId) return
+  var c = contoDaId(id)
+  if (!toAttivo && c) {
+    var aperte = commesseApertePerConto(id).map(function (a) { return cantiereLabel(a.cantiere_id) })
+    var testo = c.tipo === 'principale' ? 'Questo è il conto principale: resterai senza principale.\n' : ''
+    if (aperte.length) testo += 'Incassa per: ' + aperte.join(', ') + '. Finché è disattivato, queste commesse stampano il principale.\n'
+    if (testo && !window.confirm(testo + '\nDisattivarlo?')) return
+  }
   try {
-    const { error } = await sb.from('tm_conta_iban').update({ attivo: toAttivo }).eq('id', id).eq('azienda_id', currentAziendaId).select()
+    const { data, error } = await sb.from('tm_conta_rubrica_conti').update({ attivo: toAttivo }).eq('id', id).eq('azienda_id', currentAziendaId).select('id')
+    if (error) throw error
+    if (!data || !data.length) throw new Error('nessuna riga cambiata. Ricarica la pagina.')
+    await loadIbanRubrica(true)
+    await rileggiIbanAziendale()
+    await renderIbanRubrica()
+    showFattureBanner('iban-banner', 'ok', toAttivo ? 'Conto riattivato.' : 'Conto disattivato: non si propone più, lo storico resta.')
+  } catch (e) {
+    showFattureBanner('iban-banner', 'err', 'Aggiornamento del conto: ' + erroreConto(e))
+  }
+}
+
+// ── Assegnare un conto a una commessa ────────────────────────────────────────
+async function apriAssegnaConto(id) {
+  var c = contoDaId(id)
+  if (!c) return
+  try { await loadCantieri() } catch (e) {
+    showFattureBanner('iban-banner', 'err', 'Non riesco a leggere le commesse: ' + (e.message || e))
+    return
+  }
+  contoInAssegnazione = id
+  html('conto-assegna-conto', '🏦 <strong>' + esc(c.nome) + '</strong> · ' + esc(ibanLeggibile(c.iban)))
+  var commesse = (cantieriCache || []).slice().sort(function (a, b) {
+    return (cantiereAttivo(a) ? 0 : 1) - (cantiereAttivo(b) ? 0 : 1) || String(a.nome || '').localeCompare(String(b.nome || ''))
+  })
+  el('conto-assegna-commessa').innerHTML = '<option value="">— scegli la commessa —</option>' + commesse.map(function (k) {
+    return '<option value="' + esc(k.id) + '">' + esc(nomeCantiere(k, true)) + '</option>'
+  }).join('')
+  setVal('conto-assegna-dal', oggiISO())
+  setVal('conto-assegna-note', '')
+  html('conto-assegna-banner', '')
+  aggiornaAvvisoAssegna()
+  el('conto-assegna-overlay').style.display = 'flex'
+  registraAperturaModale('conto-assegna-overlay')
+}
+function chiudiAssegnaConto() {
+  contoInAssegnazione = null
+  var o = el('conto-assegna-overlay'); if (o) o.style.display = 'none'
+}
+// Cosa succede se si conferma: si dice prima.
+function testiSpostamentoConto(conto, cantiereId) {
+  var fuori = []
+  if (!conto) return fuori
+  if (conto.tipo === 'uscite') fuori.push('È un conto Uscite: di solito non serve per incassare.')
+  if (conto.tipo === 'cantiere') {
+    commesseApertePerConto(conto.id).forEach(function (a) {
+      if (a.cantiere_id !== cantiereId) fuori.push('Questo conto oggi incassa per «' + cantiereLabel(a.cantiere_id) + '» dal ' + fmtDate(a.dal) + ': quel periodo si chiude e quella commessa torna al principale.')
+    })
+  }
+  var aperta = cantiereId ? assegnazioneAperta(cantiereId) : null
+  if (aperta && aperta.conto_id === conto.id) fuori.push('Questa commessa incassa già su questo conto.')
+  else if (aperta) {
+    var altro = contoDaId(aperta.conto_id)
+    fuori.push('Questa commessa oggi incassa su «' + (altro ? altro.nome : '?') + '» dal ' + fmtDate(aperta.dal) + ': quel periodo si chiude.')
+  }
+  return fuori
+}
+function aggiornaAvvisoAssegna() {
+  var testi = testiSpostamentoConto(contoDaId(contoInAssegnazione), getVal('conto-assegna-commessa'))
+  html('conto-assegna-avviso', testi.map(function (t) { return '<div class="pag-nota conto-avviso">⚠️ ' + esc(t) + '</div>' }).join(''))
+}
+async function salvaAssegnaConto() {
+  var commessa = getVal('conto-assegna-commessa'), dal = getVal('conto-assegna-dal')
+  if (!commessa || !dal) { showFattureBanner('conto-assegna-banner', 'err', 'Servono la commessa e la data.'); return }
+  var btn = el('conto-assegna-salva'); if (btn) btn.disabled = true
+  try {
+    const { error } = await sb.rpc('tm_conta_assegna_conto', { p_cantiere: commessa, p_conto: contoInAssegnazione, p_dal: dal, p_note: getVal('conto-assegna-note') || null })
+    if (error) throw error
+    chiudiAssegnaConto()
+    await loadIbanRubrica(true)
+    await renderIbanRubrica()
+    showFattureBanner('iban-banner', 'ok', 'Conto assegnato alle ' + oraAdesso() + '.')
+  } catch (e) {
+    showFattureBanner('conto-assegna-banner', 'err', 'Assegnazione: ' + (e.message || e))
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+async function togliAssegnazioneConto(cantiereId) {
+  if (!window.confirm('«' + cantiereLabel(cantiereId) + '» torna a incassare sul conto principale. Il periodo si chiude oggi e resta nello storico. Continuare?')) return
+  try {
+    const { error } = await sb.rpc('tm_conta_assegna_conto', { p_cantiere: cantiereId, p_conto: null, p_dal: oggiISO() })
     if (error) throw error
     await loadIbanRubrica(true)
-    renderIbanRubrica()
-    showFattureBanner('iban-banner', 'ok', toAttivo ? 'IBAN riaperto.' : 'IBAN segnato come chiuso.')
+    await renderIbanRubrica()
+    showFattureBanner('iban-banner', 'ok', 'Commessa tornata al principale alle ' + oraAdesso() + '.')
   } catch (e) {
-    showFattureBanner('iban-banner', 'err', 'Aggiornamento IBAN: ' + (e.message || e))
+    showFattureBanner('iban-banner', 'err', 'Assegnazione: ' + (e.message || e))
+  }
+}
+
+// ── Lo storico di un conto: le commesse con le date, e i cambi ───────────────
+var CAMPI_CONTO = { creato: 'Creato', cancellato: 'Cancellato', nome: 'Nome', banca: 'Banca', iban: 'IBAN', valuta: 'Valuta', tipo: 'Tipo', attivo: 'Attivo' }
+function storicoContoHtml(assegnazioni, modifiche) {
+  var a = assegnazioni.map(function (x) {
+    return '<div class="conto-storico-riga">🏗️ <strong>' + esc(cantiereLabel(x.cantiere_id)) + '</strong> · dal ' + esc(fmtDate(x.dal)) +
+      (x.al ? ' al ' + esc(fmtDate(x.al)) : ' · <strong>in corso</strong>') + (x.note ? ' · ' + esc(x.note) : '') + '</div>'
+  }).join('')
+  var m = modifiche.map(function (x) {
+    var due = (x.prima != null ? esc(x.prima) : '—') + ' → ' + (x.dopo != null ? esc(x.dopo) : '—')
+    return '<div class="conto-storico-riga">✏️ ' + esc(fmtDateTime(x.quando)) + ' · ' + esc(CAMPI_CONTO[x.campo] || x.campo) + ': ' + due + '</div>'
+  }).join('')
+  return '<div class="conto-storico">' +
+    '<div class="form-label">Commesse</div>' + (a || '<div class="dim">Mai assegnato a una commessa.</div>') +
+    '<div class="form-label" style="margin-top:8px">Cambi</div>' + (m || '<div class="dim">Nessun cambio.</div>') +
+  '</div>'
+}
+async function mostraStoricoConto(id) {
+  var box = el('conto-storico-' + id)
+  if (!box) return
+  if (box.innerHTML) { box.innerHTML = ''; return }
+  try {
+    const { data, error } = await sb.from('tm_conta_rubrica_modifiche').select('campo, prima, dopo, quando').eq('conto_id', id).order('quando', { ascending: false })
+    if (error) throw error
+    box.innerHTML = storicoContoHtml((contiAssegnazioni || []).filter(function (a) { return a.conto_id === id }), data || [])
+  } catch (e) {
+    box.innerHTML = '<div class="pag-nota conto-avviso">❌ Non riesco a leggere lo storico: ' + esc(e.message || e) + '</div>'
   }
 }
 
@@ -8514,7 +8853,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
     var ibanShown = (f.iban && String(f.iban).trim()) ? f.iban : a.iban
     payHtml =
       '<div class="inv-pay">' +
-        (ibanShown ? '<div class="inv-pay-row"><span class="inv-pay-lbl">IBAN</span><span>' + esc(ibanShown) + '</span></div>' : '') +
+        (ibanShown ? '<div class="inv-pay-row"><span class="inv-pay-lbl">IBAN</span><span>' + esc(ibanLeggibile(ibanShown)) + '</span></div>' : '') +
         // FASE 27 — «0 giorni» sembrava un errore del programma e «1 giorni»
         // era sbagliato: il testo lo decide testoTerminePagamento, in un posto
         // solo. Con zero giorni sparisce anche l'etichetta «Termine»: quello
@@ -9811,6 +10150,7 @@ function onAcquistoGiaPagata() {
   if (acceso && !getVal('a-pag-data')) setVal('a-pag-data', getVal('a-data') || oggiISO())
   // 94 — il metodo: l'ultimo usato sugli acquisti, modificabile.
   if (acceso && !getVal('a-pag-metodo')) setVal('a-pag-metodo', ultimoMetodoUsato('tm_conta_fatture_acquisto'))
+  if (acceso && !getVal('a-pag-conto')) riempiTendinaConti('a-pag-conto', contoPropostoUscita())   // 104
 }
 
 // Decide se mostrare la spunta o dire che i pagamenti ci sono gia'.
@@ -10507,7 +10847,7 @@ async function saveAcquisto() {
         // senso. Il controllo gira lo stesso, con la risposta gia' data.
         await scriviPagamento(
           { tabella: 'tm_conta_fatture_acquisto', id: editingAcquistoId, importo: payload.importo },
-          { data: dataPag, importo: payload.importo, metodo: getVal('a-pag-metodo') || null },
+          { data: dataPag, importo: payload.importo, metodo: getVal('a-pag-metodo') || null, conto_id: getVal('a-pag-conto') || null },   // 104
           null, { confermaEccedenza: true })
         invalidaCachePagamenti()
       } catch (errPag) {
@@ -10918,7 +11258,7 @@ async function saveImpostazioni() {
     // codici ISO, e tagliare «Svizzera» a «SV» (che e' El Salvador) e' proprio
     // il difetto che si sta togliendo.
     paese:           getVal('imp-paese') || null,
-    iban:            getVal('imp-iban') || null,
+    // 104 — l'IBAN non si scrive più da qui: è il conto principale della Rubrica dei conti.
     termini_pagamento_giorni: termini === '' ? null : (safeNum(termini) != null ? Math.round(safeNum(termini)) : null),
     email:           getVal('imp-email') || null,
     telefono:        getVal('imp-telefono') || null,
@@ -11141,7 +11481,7 @@ async function handleInserimentoSubmit(event) {
           // domanda a meta' salvataggio.
           await scriviPagamento(
             { tabella: 'tm_conta_movimenti_propri', id: creatoMov[0].id, importo: importoVal },
-            { data: dataPag || dataVal, importo: importoVal, metodo: metodoPag || null,   // 94
+            { data: dataPag || dataVal, importo: importoVal, metodo: metodoPag || null, conto_id: getVal('f-pag-conto') || null,   // 94, 104
               note: 'Registrato alla creazione con «gia pagata».' },
             null, { confermaEccedenza: true })
           invalidaCachePagamenti()
@@ -15535,6 +15875,7 @@ function onMovStatoChange() {
   }
   // 94 — il metodo: l'ultimo usato sui movimenti, modificabile.
   if (pagato && el('f-pag-metodo') && !getVal('f-pag-metodo')) setVal('f-pag-metodo', ultimoMetodoUsato('tm_conta_movimenti_propri'))
+  if (pagato && el('f-pag-conto') && !getVal('f-pag-conto')) riempiTendinaConti('f-pag-conto', contoPropostoUscita())   // 104
   var hint = el('f-stato-hint')
   if (hint) {
     hint.textContent = pagato
@@ -17937,6 +18278,7 @@ var cantiereMagazzinoScelto = {}
 function scegliCantiere(pfx, id) {
   var c = cantiereCampi(pfx)
   chiudiSuggerimentiCantiere(pfx)
+  if (pfx === 'v') proponiIbanDaCommessa(id)   // 104
   cantiereMagazzinoScelto[pfx] = !id   // 75·6
   if (!id) {
     if (el(c.testo))  el(c.testo).value = ''
@@ -19866,7 +20208,7 @@ async function loadPagamenti(force) {
   // com'era e NON viene segnata buona: zero righe con la sessione valida
   // sono un risultato vero, zero righe senza sessione no.
   const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_pagamenti')
-    .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note, created_at')   // 94 — created_at: l'ultimo metodo usato
+    .select('id, tabella_origine, id_origine, data, importo, metodo, riferimento, note, created_at, conto_id')   // 94 — created_at: l'ultimo metodo usato; 104 — il conto
     .eq('azienda_id', currentAziendaId)
     .order('data').order('id') })
   if (error) throw error
@@ -20372,6 +20714,7 @@ async function apriModificaPagamento(idPagamento) {
     setVal('pag-importo', pg.importo == null ? '' : pg.importo)
     setVal('pag-metodo', pg.metodo || '')
     setVal('pag-riferimento', pg.riferimento || '')
+    riempiTendinaConti('pag-conto', pg.conto_id || '')   // 104
     vestiFinestraPagamento(true, rimborso)
 
     // La rata: se questo pagamento ne salda una, il collegamento resta com'e'.
@@ -20410,6 +20753,7 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
     await loadPagamenti(true)
     await loadRate(true)
     await loadStralci(true)   // 84
+    await loadIbanRubrica()   // 104
   } catch (eL) {
     // 52·B — parte da un clic: senza questo l'errore finirebbe solo in console
     // e la finestra non si aprirebbe, senza dire perche'.
@@ -20486,6 +20830,12 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
   setVal('pag-data', (opzioni && opzioni.data) || oggiISO())
   setVal('pag-importo', importoProp > 0 ? importoProp.toFixed(2) : '')
   setVal('pag-metodo', (opzioni && opzioni.metodo) || ultimoMetodoUsato(tabella))
+  // 104 — da quale conto esce, su quale entra. Una proposta: si cambia, e si può lasciare vuoto.
+  var fattConto = null
+  if (tabella === 'tm_conta_fatture') { try { fattConto = await trovaDocumento(tabella, id) } catch (_) { /* resta il principale */ } }
+  riempiTendinaConti('pag-conto', verso === 'entrata' ? contoPropostoEntrata(fattConto) : contoPropostoUscita())
+  if (el('pag-conto-label')) el('pag-conto-label').textContent = verso === 'entrata' ? 'Su quale conto entra' : 'Da quale conto esce'
+  html('pag-conto-avviso', ibanRubricaErrore ? '<div class="pag-nota conto-avviso">⚠️ Rubrica dei conti non leggibile: il conto resta vuoto.</div>' : '')
   setVal('pag-riferimento', (opzioni && opzioni.riferimento) || '')
   html('pag-banner', '')
   html('pag-avviso', '')
@@ -20807,6 +21157,7 @@ async function scriviPagamento(d, valori, idModifica, opzioni) {
     riferimento: valori.riferimento || null
   }
   if (valori.note) campi.note = valori.note
+  if ('conto_id' in valori) campi.conto_id = valori.conto_id || null   // 104
 
   if (idModifica) {
     // Correzione di un pagamento esistente. Non si toccano ne' il documento
@@ -20841,7 +21192,8 @@ async function salvaPagamento() {
       data: getVal('pag-data'),
       importo: getVal('pag-importo'),
       metodo: getVal('pag-metodo') || null,
-      riferimento: getVal('pag-riferimento') || null
+      riferimento: getVal('pag-riferimento') || null,
+      conto_id: getVal('pag-conto') || null   // 104
     }
     // 95 — data e metodo obbligatori: senza, non si scrive niente e la finestra resta aperta.
     var manca95 = mancaDatoPagamento(valori.data, valori.metodo)
@@ -20975,6 +21327,7 @@ function elencoPagamentiHtml(tabella, id, verso, fermo) {
         esc([p.metodo, p.riferimento].filter(Boolean).join(' · ') || '—') +
         (r ? ' <span class="pag-rata-tag">salda la rata ' + r.numero_rata + '</span>' : '') +
         (p.data && p.data > oggiISO() ? ' <span class="pag-rata-tag">🗓️ programmato</span>' : '') +   // 75·4
+        tagContoPagamento(p) +   // 104
       '</span>' +
       // 61e — la ricevuta si ristampa quando serve: chi ha risposto «no» alla
       // domanda dopo l'incasso non deve restare senza. Solo sulle vendite.
@@ -24476,7 +24829,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '103'
+var VERSIONE = '104'
 
 function controllaVersionePagina() {
   try {
@@ -26204,6 +26557,7 @@ document.addEventListener('DOMContentLoaded', function () {
       loadAziendaId().then(async function () {
         updateSidebarAuth()
         if (!(await controllaSoloTitolare())) return   // 103
+        loadIbanRubrica(true).catch(function () { /* lo dice la Rubrica, quando si apre */ })   // 104
         // Se l'indirizzo chiede una schermata precisa si apre quella, altrimenti
         // si parte dal setup come sempre.
         if (!apriDaIndirizzo()) { showPage('setup'); runSetupCheck() }

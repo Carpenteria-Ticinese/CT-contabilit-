@@ -1411,6 +1411,22 @@ textarea.cell-desc {
 .iban-mask { font-family: monospace; color: var(--text2); }
 .iban-row .iban-actions { margin-left: auto; display: flex; gap: 6px; }
 
+/* 104 — Rubrica dei conti: tasti grandi, icona sempre con scritta */
+.conto-riga {
+  padding: 12px; border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 10px; background: var(--surface); font-size: 15px;
+}
+.conto-riga.chiuso { opacity: .65; }
+.conto-testa { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
+.conto-riga .iban-mask { font-size: 16px; overflow-wrap: anywhere; }
+.conto-tipo { border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 14px; }
+.conto-commessa { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.conto-tasti { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.conto-tasto { min-height: 44px; font-size: 15px; }
+.conto-storico { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.conto-storico-riga { padding: 4px 0; overflow-wrap: anywhere; }
+.conto-avviso { margin-bottom: 8px; }
+
 /* ── FASE 24 — LA DIFFERENZA IVA (indicatore, pagina Situazione) ──────────
    Due riquadri affiancati, che su schermo stretto si impilano. Il verso del
    risultato non e' MAI dato dal solo colore: accanto c'e' sempre scritto a
