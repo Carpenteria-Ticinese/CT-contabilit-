@@ -8826,6 +8826,7 @@ function renderAcquistoDetail(a, righe, erroreRighe) {
     riga('Codice IVA', a.codice_iva_id ? esc(ivaLabel(a.codice_iva_id)) : '—') +
     riga('Imponibile', impo != null ? fmtNum2(impo) + ' ' + esc(a.valuta || 'CHF') : '', true) +
     riga('IVA', ivaI != null ? fmtNum2(ivaI) + ' ' + esc(a.valuta || 'CHF') : '', true) +
+    riga('Tasse legali (non IVA)', safeNum(a.tasse_legali) != null ? fmtNum2(safeNum(a.tasse_legali)) + ' ' + esc(a.valuta || 'CHF') : '', true) +   // 102
     (isSoggettoIva() ? '' : '<div class="ro-lbl"></div><div class="ro-val" style="font-weight:400;color:var(--text3)">ℹ️ IVA non recuperabile (non soggetto IVA)</div>') +
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Pagamento</div>' +
@@ -8947,7 +8948,7 @@ async function loadAcquistiList() {
       .select(colonne)
       .eq('azienda_id', currentAziendaId)
       .order('data', { ascending: false }).order('id') }) }
-    var rAcq = await leggiAcq(COLONNE_ACQ + ', giustificativo_cartaceo, giustificativo_posizione, ordine_pagamento_data, ordine_pagamento_creato_il')
+    var rAcq = await leggiAcq(COLONNE_ACQ + ', giustificativo_cartaceo, giustificativo_posizione, ordine_pagamento_data, ordine_pagamento_creato_il, tasse_legali')   // 102: tasse_legali
     sqlFase89Mancante = !!rAcq.error
     if (rAcq.error) rAcq = await leggiAcq(COLONNE_ACQ)
     const { data, error } = rAcq
@@ -9251,9 +9252,10 @@ function renderAcquistiTable() {
   }
   var rows = list.map(function (a) {
     // riga secondaria compatta: scomposizione IVA
-    var impo = safeNum(a.imponibile), ivaI = safeNum(a.iva_importo)
-    var ivaSub = (impo != null || ivaI != null)
-      ? '<span class="cell-sub">imp. ' + fmtNum2(impo) + ' · IVA ' + fmtNum2(ivaI) + '</span>'
+    var impo = safeNum(a.imponibile), ivaI = safeNum(a.iva_importo), tasseL = safeNum(a.tasse_legali)
+    var ivaSub = (impo != null || ivaI != null || tasseL != null)
+      ? '<span class="cell-sub">imp. ' + fmtNum2(impo) + ' · IVA ' + fmtNum2(ivaI) +
+        (tasseL != null ? ' · tasse legali ' + fmtNum2(tasseL) : '') + '</span>'   // 102
       : ''
     // Riga secondaria: la sola data del pagamento, che il trigger scrive dai
     // pagamenti veri. Il metodo NON si mostra piu' qui: dalla FASE 8 ogni
@@ -9296,12 +9298,14 @@ function recalcAcquistoIva() {
   acquistoIvaManuale = false
   var imp = safeNum(getVal('a-importo'))
   var alq = acquistoAliquotaSelezionata()
+  // 102 — le tasse legali non sono IVA e l'IVA non si calcola su di loro.
+  var tasse = safeNum(getVal('a-tasse-legali')) || 0
   if (imp == null || alq == null) {
     // niente totale o nessun codice IVA → campi vuoti (si salva solo il totale)
-    setVal('a-imponibile', '')
+    setVal('a-imponibile', (imp != null && tasse) ? round2(imp - tasse) : '')
     setVal('a-iva', '')
   } else {
-    var c = calcolaIva(imp, alq, true)          // true = IVA inclusa nel totale
+    var c = calcolaIva(round2(imp - tasse), alq, true)          // true = IVA inclusa nel totale
     setVal('a-imponibile', c.imponibile == null ? '' : c.imponibile)
     setVal('a-iva', c.iva == null ? '' : c.iva)
   }
@@ -9309,6 +9313,11 @@ function recalcAcquistoIva() {
 }
 
 function onAcquistoIvaCodeChange() { recalcAcquistoIva() }
+
+function onAcquistoTasseChange() {   // 102
+  if (!acquistoIvaManuale) recalcAcquistoIva()
+  else updateAcquistoIvaSummary()
+}
 
 function onAcquistoImportoChange() {
   if (getVal('a-offerta') && typeof onOffertaCollegataChange === 'function') onOffertaCollegataChange()   // FASE 29
@@ -9339,14 +9348,16 @@ function updateAcquistoIvaSummary() {
     box.innerHTML = 'Totale <strong>' + fmtNum2(imp) + ' ' + esc(valuta) + '</strong> — nessun codice IVA scelto: si salva solo il totale.' + nota
     return
   }
-  var somma = round2((impo || 0) + (iva || 0))
+  var tasseL = safeNum(getVal('a-tasse-legali'))   // 102
+  var somma = round2((impo || 0) + (iva || 0) + (tasseL || 0))
   var diff = Math.abs(round2(somma - imp)) > 0.005
   box.innerHTML =
     'Totale <strong>' + fmtNum2(imp) + ' ' + esc(valuta) + '</strong> = imponibile <strong>' + fmtNum2(impo) +
     '</strong> + IVA <strong>' + fmtNum2(iva) + '</strong>' +
+    (tasseL != null ? ' + tasse legali <strong>' + fmtNum2(tasseL) + '</strong>' : '') +
     (alq != null ? ' (aliquota ' + (alq === 0 ? '0' : fmtNum2(alq)) + '%)' : '') +
     (acquistoIvaManuale ? ' · <em>valori inseriti a mano</em>' : '') +
-    (diff ? ' <span style="color:var(--warn)">⚠️ imponibile + IVA = ' + fmtNum2(somma) + ', diverso dal totale</span>' : '') +
+    (diff ? ' <span style="color:var(--warn)">⚠️ la somma fa ' + fmtNum2(somma) + ', diverso dal totale</span>' : '') +
     nota
 }
 
@@ -9795,6 +9806,7 @@ function fillAcquistoForm(v) {
   if (ivaSel) ivaSel.innerHTML = buildIvaOptions(v.codice_iva_id || null)
   setVal('a-imponibile', v.imponibile == null ? '' : v.imponibile)
   setVal('a-iva',        v.iva_importo == null ? '' : v.iva_importo)
+  setVal('a-tasse-legali', v.tasse_legali == null ? '' : v.tasse_legali)   // 102
   // valori già presenti = inseriti/confermati in precedenza: non sovrascriverli
   acquistoIvaManuale = (v.imponibile != null || v.iva_importo != null)
   // I dati del pagamento non si compilano piu' da qui: vedi il rimando
@@ -9883,6 +9895,7 @@ async function editAcquisto(id) {
       stato_pagamento: data.stato_pagamento || 'aperto', note: data.note || '',
       codice_iva_id: data.codice_iva_id || null,
       imponibile: data.imponibile, iva_importo: data.iva_importo,
+      tasse_legali: data.tasse_legali,   // 102 — senza, salvando si cancellerebbero
       gruppo_codice: data.gruppo_codice || null, contatto_id: data.contatto_id || null,
       cantiere_id:   data.cantiere_id || null,                     // FASE 27
       offerta_id:    data.offerta_id || null,                      // FASE 29
@@ -9950,6 +9963,7 @@ function collectAcquisto() {
     codice_iva_id:    getVal('a-codice-iva') || null,
     imponibile:       impo,
     iva_importo:      ivaI,
+    tasse_legali:     safeNum(getVal('a-tasse-legali')) || null,   // 102 — vuoto o zero: nessuna
     // FASE 8 — data, metodo e riferimento stanno su OGNI pagamento, in
     // tm_conta_pagamenti: un documento pagato in tre volte ha tre metodi, e
     // queste colonne non potrebbero dirlo. Restano nel database come storico
@@ -16827,6 +16841,7 @@ function testoPromptFattura() {
     '  "valuta": "CHF",\n' +
     '  "imponibile": 0.00,\n' +
     '  "iva_importo": 0.00,\n' +
+    '  "tasse_legali": null,\n' +
     '  "aliquota_iva": 8.1,\n' +
     '  "descrizione": "cosa e\' stato acquistato",\n' +
     '  "conto_suggerito": "codice a 4 cifre",\n' +
@@ -16836,6 +16851,12 @@ function testoPromptFattura() {
     'REGOLE:\n' +
     '- Copia imponibile e IVA COSI\' COME SONO STAMPATI\n' +
     '  sulla fattura. NON ricalcolarli.\n' +
+    // 102 — le tasse legali delle assicurazioni non sono IVA.
+    '- iva_importo e\' SOLO la voce chiamata IVA, MWST, TVA o VAT.\n' +
+    '- ASSICURAZIONI: «tasse legali», «tassa di bollo», «Stempelabgabe»,\n' +
+    '  «gesetzliche Abgaben» e simili NON sono IVA: l\'importo va in tasse_legali.\n' +
+    '  In quel caso iva_importo e aliquota_iva sono null, salvo una voce IVA vera\n' +
+    '  con la sua percentuale stampata. imponibile = il premio senza le tasse.\n' +
     '- Se un dato non c\'e\' o non si legge: null.\n' +
     '  Non inventare mai un valore.\n' +
     '- Le date in formato AAAA-MM-GG.\n' +
@@ -16985,6 +17006,42 @@ function codiceIvaPerAliquota(aliquota) {
   return c || null
 }
 
+// ── 102 — LE TASSE LEGALI NON SONO IVA ──────────────────────────────────────
+// Le aliquote svizzere, di oggi e di prima del 2024: servono solo a riconoscere
+// se una cifra è IVA, non a calcolarla. Il margine viene dagli arrotondamenti.
+var ALIQUOTE_IVA_CH = [8.1, 7.7, 3.8, 3.7, 2.6, 2.5]
+function ivaSospetta(imponibile, iva) {
+  if (!(imponibile > 0) || !(iva > 0)) return false
+  var r = iva / imponibile * 100
+  return !ALIQUOTE_IVA_CH.some(function (a) { return Math.abs(a - r) <= 0.1 })
+}
+// Imponibile = totale − IVA − tasse legali, e l'IVA non si calcola sulle tasse.
+// Senza tasse legali non si tocca niente: la fattura normale resta com'è letta.
+// Una differenza non diventa mai IVA: resta vuota, e l'avviso dice che non torna.
+function dividiConTasse(importo, imponibile, iva, aliquota, tasse) {
+  var out = { imponibile: imponibile, iva: iva, note: [] }
+  if (importo == null || tasse == null) return out
+  var base = round2(importo - tasse)
+  if (imponibile == null && iva != null) {
+    out.imponibile = round2(base - iva)
+    out.note.push('Imponibile calcolato: totale meno IVA e tasse legali.')
+  } else if (imponibile != null && iva == null) {
+    if (Math.abs(round2(base - imponibile)) <= 0.05) out.iva = 0
+  } else if (imponibile == null && iva == null) {
+    var a = safeNum(aliquota)
+    if (a > 0) {
+      var c = calcolaIva(base, a, true)
+      out.imponibile = c.imponibile
+      out.iva = c.iva
+      out.note.push('IVA divisa dal programma: ' + fmtNumIt(a) + ' % sul totale senza le tasse legali.')
+    } else {
+      out.imponibile = base
+      out.iva = 0
+    }
+  }
+  return out
+}
+
 // ── Applicazione al modulo ───────────────────────────────────────────────────
 
 // La porta del ponte manuale: legge la casella e passa il testo alla
@@ -17070,6 +17127,19 @@ async function applicaTestoLettura(testo) {
   v.valuta = validaValuta(dati.valuta)
   if (dati.valuta && !v.valuta) scartati.push('la valuta «' + dati.valuta + '» non è ammessa (solo CHF o EUR)')
 
+  // 102 — le tasse legali. Zero vuol dire nessuna: il campo resta vuoto.
+  v.tasse = validaImporto(dati.tasse_legali) || null
+  if (dati.tasse_legali != null && validaImporto(dati.tasse_legali) == null) scartati.push('le tasse legali «' + dati.tasse_legali + '» non sono un numero valido')
+  var divisa = dividiConTasse(v.importo, v.imponibile, v.iva, dati.aliquota_iva, v.tasse)
+  v.imponibile = divisa.imponibile
+  v.iva = divisa.iva
+  var noteIva = divisa.note.slice()
+  if (ivaSospetta(v.imponibile, v.iva)) {
+    noteIva.push('L\'IVA letta (' + fmtNumIt(v.iva) + ' CHF) è il ' + fmtNumIt(round2(v.iva / v.imponibile * 100)) +
+      ' % dell\'imponibile: non è un\'aliquota IVA. Se sono «tasse legali» di un\'assicurazione, spostala nel campo «Tasse legali». ' +
+      'Con più aliquote sulla stessa fattura può essere giusta: guarda il documento.')
+  }
+
   var conto = validaConto(dati.conto_suggerito)
   if (dati.conto_suggerito && !conto) {
     scartati.push('il conto «' + dati.conto_suggerito + '» non esiste nel piano dei conti')
@@ -17089,11 +17159,13 @@ async function applicaTestoLettura(testo) {
   // Gli arrotondamenti di stampa fanno ballare i centesimi, quindi si tollera
   // uno scarto di 5 centesimi.
   var avvisoScarto = null
-  if (v.importo != null && v.imponibile != null && v.iva != null) {
-    var scarto = Math.abs((v.imponibile + v.iva) - v.importo)
+  if (v.importo != null && v.imponibile != null && (v.iva != null || v.tasse != null)) {   // 102
+    var sommaLetta = round2(v.imponibile + (v.iva || 0) + (v.tasse || 0))
+    var scarto = Math.abs(sommaLetta - v.importo)
     if (scarto > 0.05) {
-      avvisoScarto = 'Imponibile ' + fmtNumIt(v.imponibile) + ' CHF + IVA ' + fmtNumIt(v.iva) +
-        ' CHF fa ' + fmtNumIt(v.imponibile + v.iva) + ' CHF, ma il totale letto è ' +
+      avvisoScarto = 'Imponibile ' + fmtNumIt(v.imponibile) + ' CHF + IVA ' + fmtNumIt(v.iva || 0) +
+        (v.tasse != null ? ' CHF + tasse legali ' + fmtNumIt(v.tasse) : '') +
+        ' CHF fa ' + fmtNumIt(sommaLetta) + ' CHF, ma il totale letto è ' +
         fmtNumIt(v.importo) + ' CHF: ballano ' + fmtNumIt(scarto) +
         ' CHF. Controlla sulla fattura quale dei tre è sbagliato.'
     }
@@ -17108,6 +17180,7 @@ async function applicaTestoLettura(testo) {
   if (v.valuta)             setVal('a-valuta', v.valuta)
   if (v.imponibile != null) setVal('a-imponibile', v.imponibile)
   if (v.iva != null)        setVal('a-iva', v.iva)
+  setVal('a-tasse-legali', v.tasse == null ? '' : v.tasse)   // 102 — sempre: una lettura di prima non deve restare
   if (dati.descrizione)     setVal('a-note', String(dati.descrizione).trim())
 
   if (codIva && el('a-codice-iva')) el('a-codice-iva').innerHTML = buildIvaOptions(codIva.id)
@@ -17122,15 +17195,21 @@ async function applicaTestoLettura(testo) {
   if (el('a-contatto-id')) el('a-contatto-id').value = ''
   html('a-contatto-legato', '')
 
-  renderNoteLettura(dati.note_lettura, scartati, avvisoScarto, conto, notaScadenza)
+  updateAcquistoIvaSummary()   // 102 — la somma qui sotto dice quello che è stato letto
+  renderNoteLettura(dati.note_lettura, scartati, avvisoScarto, conto, notaScadenza, noteIva)
   moduloModificato('acquisto')   // 75·5 — i campi li ha scritti la lettura
   return { ok: true }
 }
 
 // Riquadro sopra il modulo: cosa ha segnalato la lettura, cosa e' stato scartato
 // e cosa non torna. Tutto in parole, con l'icona sempre accompagnata dal testo.
-function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto, notaScadenza) {
+function renderNoteLettura(noteLettura, scartati, avvisoScarto, conto, notaScadenza, noteIva) {
   var pezzi = ''
+
+  // 102 — come è stata divisa l'IVA, o perché è sospetta.
+  ;(noteIva || []).forEach(function (n) {
+    pezzi += '<div class="lettura-nota"><span aria-hidden="true">🧾</span><span>' + esc(n) + '</span></div>'
+  })
 
   // 75·2 — da dove viene la scadenza, o perché manca.
   if (notaScadenza) {
@@ -23982,7 +24061,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '100'
+var VERSIONE = '102'
 
 function controllaVersionePagina() {
   try {

@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Contabilità · Carpenteria Ticinese</title>
   <!-- Identità v100: nome, icona e colore uguali dappertutto (00 DIRETTORE\identita) -->
-  <link rel="manifest" href="manifest.json?v=100" />
+  <link rel="manifest" href="manifest.json?v=102" />
   <meta name="theme-color" content="#1f6fd1" />
-  <link rel="icon" type="image/png" sizes="32x32" href="icone/icona-32.png?v=100" />
-  <link rel="apple-touch-icon" href="icone/icona-180.png?v=100" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icone/icona-32.png?v=102" />
+  <link rel="apple-touch-icon" href="icone/icona-180.png?v=102" />
   <meta name="apple-mobile-web-app-title" content="Contabilità" />
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=100" />
+  <link rel="stylesheet" href="css/style.css?v=102" />
 </head>
-<body data-versione="100">
+<body data-versione="102">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -127,7 +127,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 100</span>
+      <span id="sidebar-versione">Versione 102</span>
     </div>
 
   </aside>
@@ -2225,6 +2225,10 @@
               <label for="a-iva" class="form-label">IVA</label>
               <input type="number" id="a-iva" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoIvaManual()" />
             </div>
+            <div class="form-group" style="flex:1">   <!-- 102 — le assicurazioni: non è IVA -->
+              <label for="a-tasse-legali" class="form-label">Tasse legali <span class="dim">(non IVA)</span></label>
+              <input type="number" id="a-tasse-legali" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoTasseChange()" />
+            </div>
             <div class="form-group" style="flex:0 0 auto; display:flex; align-items:flex-end">
               <button type="button" class="btn-secondary" id="a-ricalcola-btn" onclick="recalcAcquistoIva()" title="Ricalcola imponibile e IVA dal totale">↻ Ricalcola</button>
             </div>
@@ -3303,7 +3307,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=100"></script>
+<script src="js/app.js?v=102"></script>
 
 </body>
 </html>
