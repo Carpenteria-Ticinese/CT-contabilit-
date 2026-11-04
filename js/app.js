@@ -8013,6 +8013,10 @@ function avvisiRubricaConti(lista) {
     }
     if (!ibanCifraGiusta(c.iban)) fuori.push('Il conto «' + c.nome + '»: la cifra di controllo dell\'IBAN non torna.')
   })
+  att.forEach(function (c, i) {
+    var altro = att.slice(0, i).filter(function (x) { return ibanNudo(x.iban) === ibanNudo(c.iban) })[0]
+    if (altro) fuori.push('I conti «' + altro.nome + '» e «' + c.nome + '» hanno lo stesso IBAN.')
+  })
   return fuori
 }
 
@@ -8254,7 +8258,7 @@ async function rileggiIbanAziendale() {
     const { data, error } = await sb.from('tm_aziende').select('iban').eq('id', currentAziendaId).single()
     if (error) throw error
     if (aziendaInfo) aziendaInfo.iban = data.iban
-    setVal('imp-iban', data.iban)
+    setVal('imp-iban', ibanLeggibile(data.iban))
   } catch (e) { console.warn('IBAN aziendale:', e.message) }
 }
 function erroreConto(e) {
@@ -11144,7 +11148,7 @@ function fillImpostazioniForm(a) {
   // salvato non e' un codice ISO valido, buildPaeseOptions lo mostra come
   // «da correggere» invece di sostituirlo di nascosto.
   impostaPaese('imp-paese', a.paese || 'CH')
-  setVal('imp-iban',     a.iban)
+  setVal('imp-iban',     ibanLeggibile(a.iban))   // 104
   setVal('imp-termini',  a.termini_pagamento_giorni == null ? '' : a.termini_pagamento_giorni)
   // 92 — vuoto vale la base del programma: lo dice il campo, col numero di GIORNI_PAGAMENTO_BASE.
   if (el('imp-termini')) el('imp-termini').placeholder = String(GIORNI_PAGAMENTO_BASE)
