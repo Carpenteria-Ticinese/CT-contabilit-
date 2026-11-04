@@ -5256,7 +5256,7 @@ async function loadFattureList() {
       // 62c — annullata_motivo serve al tooltip dell'elenco. La colonna arriva
       // con SQL_FASE62c_annullamento.sql: quello va applicato PRIMA di caricare
       // questa versione, altrimenti l'elenco non si carica e lo dice.
-      .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, annullata_motivo')
+      .select('id, numero, anno, data_emissione, cliente_nome, contatto_id, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, annullata_motivo')
       .eq('azienda_id', currentAziendaId)
       .eq('archivio_nascosto', false)   // 103
       .order('created_at', { ascending: false }).order('id') })
@@ -8860,11 +8860,18 @@ function motivoNoRiuso(f, pagamenti, note) {
   return null
 }
 
+// Lo stesso cliente? Con tutti e due i contatti conta il contatto, altrimenti il nome nudo:
+// «Rossi SA» e «Rossi S.A.» sono lo stesso. La stessa regola di tm_conta_riusa_numero. Pura.
+function stessoClienteRiuso(a, b) {
+  function nudo(s) { return String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '') }
+  if (a.contatto_id && b.contatto_id) return a.contatto_id === b.contatto_id
+  return nudo(a.cliente_nome) === nudo(b.cliente_nome)
+}
+
 // Le bozze che possono prendere il numero: fatture, altro cliente, stesso anno. Pura.
 function bozzePerRiuso(f, elenco) {
-  function nudo(s) { return String(s || '').trim().toLowerCase() }
   return (elenco || []).filter(function (x) {
-    return x.stato === 'bozza' && x.tipo === 'fattura' && x.id !== f.id && nudo(x.cliente_nome) !== nudo(f.cliente_nome) &&
+    return x.stato === 'bozza' && x.tipo === 'fattura' && x.id !== f.id && !stessoClienteRiuso(x, f) &&
       String(x.data_emissione || oggiISO()).slice(0, 4) === String(f.anno)
   })
 }
