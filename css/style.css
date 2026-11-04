@@ -218,6 +218,10 @@ body {
 .segno-telefono { display: none; }
 @media (max-width: 900px) { .segno-telefono { display: inline-block; margin-top: 4px; white-space: nowrap; } }
 .pw-testo { margin: 0 0 14px; font-size: 16px; }
+#solo-titolare { z-index: 3000; background: #f4f6f8; }
+#solo-titolare .modal-footer-actions button,
+#riuso-overlay .modal-footer-actions button { min-height: 48px; font-size: 16px; }
+#riuso-overlay .form-input { font-size: 16px; min-height: 48px; }
 #pw-overlay .modal-card { max-width: 460px; }
 #pw-overlay .form-input { font-size: 18px; min-height: 48px; }
 #pw-overlay .modal-footer-actions button { min-height: 48px; font-size: 16px; }

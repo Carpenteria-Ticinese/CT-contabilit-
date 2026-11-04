@@ -481,6 +481,23 @@ async function leggiSeTitolare(forza) {
   return titolareCache === true
 }
 
+// La Contabilità è solo del titolare (Umberto, 4.11.2026). Il database dà zero righe agli
+// altri (CONT_103): un programma vuoto sembrerebbe «nessun documento». Lo si dice, a tutto schermo.
+async function controllaSoloTitolare() {
+  var ov = el('solo-titolare')
+  if (!ov) return true
+  var si = await leggiSeTitolare(true)
+  if (si) { ov.style.display = 'none'; return true }
+  el('solo-titolare-chi').textContent = 'Login in uso: ' + ((currentUser && currentUser.email) || '—')
+  el('solo-titolare-testo').textContent = titolareCache === null
+    ? 'Non riesco a sapere se sei il titolare. Controlla internet e riprova.'
+    : 'La Contabilità è solo del titolare. Con questo login non si vede e non si cambia niente.'
+  el('solo-titolare-riprova').style.display = titolareCache === null ? '' : 'none'
+  ov.style.display = 'flex'
+  return false
+}
+function chiudiSoloTitolare() { var ov = el('solo-titolare'); if (ov) ov.style.display = 'none' }
+
 // La riconferma: il login in uso rifatto con la password riscritta. Stesso modo
 // di «Cambia password» e di Anagrafiche. La password non si salva e non si mostra:
 // il campo si svuota SEMPRE, qualunque cosa succeda dopo.
@@ -578,6 +595,7 @@ async function doLogin() {
     titolareCache = null   // 103 — chi entra adesso può essere un altro
     await loadAziendaId()
     updateSidebarAuth()
+    if (!(await controllaSoloTitolare())) return   // 103
     showPage('setup')
     runSetupCheck()
     await refreshDaClassificareCount()
@@ -599,6 +617,7 @@ async function doLogout() {
   currentUser = null
   currentAziendaId = null
   titolareCache = null   // 103
+  chiudiSoloTitolare()   // 103
   // FASE 23 / P2 — i dati della ditta se ne vanno con la sessione. Restavano
   // in memoria dopo l'uscita, e chi fosse entrato dopo si sarebbe trovato
   // l'intestazione della ditta precedente su un documento nuovo.
@@ -5239,6 +5258,7 @@ async function loadFattureList() {
       // questa versione, altrimenti l'elenco non si carica e lo dice.
       .select('id, numero, anno, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, annullata_motivo')
       .eq('azienda_id', currentAziendaId)
+      .eq('archivio_nascosto', false)   // 103
       .order('created_at', { ascending: false }).order('id') })
     if (error) throw error
     fattureList = data || []
@@ -5537,7 +5557,7 @@ async function initArchivioPage() {
     await richiediAccesso('archivio')
     const rV = await leggiTutto(function () {
       return sb.from('tm_conta_fatture')
-        .select('id, numero, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, tipo, rif_fattura_id, annullata_motivo')
+        .select('id, numero, data_emissione, cliente_nome, totale, valuta, stato, stato_pagamento, tipo, rif_fattura_id, annullata_motivo, archivio_nascosto')
         .eq('azienda_id', currentAziendaId).order('id')
     })
     if (rV.error) throw rV.error
@@ -5583,7 +5603,9 @@ async function initArchivioPage() {
         testo: paroleStatoVendita(f, archivioVendite),   // 103 — la ricerca trova «incassata» e «annullata»
         chiuso: venditaChiusa(f, archivioVendite),
         chiusura: statoChiusuraVendita(f, archivioVendite),   // 103
+        nascosta: f.archivio_nascosto === true,   // 103
         stato: statoFatturaBadge(f.stato, f.annullata_motivo) +
+          (f.archivio_nascosto ? ' ' + badge('info', '🗄️ Archivio nascosto') : '') +
           (nota
             ? (daRimb > 0.005 ? ' ' + badge('warn', '↩️ da rimborsare ' + fmtNumIt(daRimb) + ' CHF') : '')
             : (f.stato === 'emessa' ? ' ' + badgePagamentoConResiduo('entrata', f.stato_pagamento, 'tm_conta_fatture', f.id, f.totale) : '')),
@@ -5700,6 +5722,8 @@ function filtraArchivio(docs, f) {
   var termini = f.testo ? f.testo.split(/\s+/) : []
   return docs.filter(function (d) {
     if (!f.tipi[d.tipo]) return false
+    // 103 — l'archivio nascosto si vede solo chiedendolo, e allora si vede solo lui.
+    if ((f.stato === 'nascoste') !== (d.nascosta === true)) return false
     if (f.stato === 'aperti' && d.chiuso) return false
     // 103 — vendite: Incassate e Annullate. «Altri chiusi»: tutto il resto che è chiuso.
     if (f.stato === 'incassate' && d.chiusura !== 'incassata') return false
@@ -5752,7 +5776,7 @@ function renderArchivio() {
   var altriChiusi = chiusi - incassate - annullate
   html('arch-contatore', '<div class="elenco-contatore-riga"><strong>' + trovati.length + '</strong> ' +
     (trovati.length === 1 ? 'documento trovato' : 'documenti trovati') +
-    ' <span class="dim">su ' + archivioDocs.length + ' in archivio — ' +
+    ' <span class="dim">su ' + archivioDocs.filter(function (d) { return !d.nascosta }).length + ' in archivio — ' +
     (trovati.length - chiusi) + ' aperti · ' + incassate + (incassate === 1 ? ' incassata' : ' incassate') +
     ' · ' + annullate + (annullate === 1 ? ' annullata' : ' annullate') +
     ' · ' + altriChiusi + (altriChiusi === 1 ? ' altro chiuso' : ' altri chiusi') + '</span></div>')
@@ -6558,8 +6582,10 @@ async function salvaCorrezione() {
 // non torna più (il piano rateale). Pura: riceve la fattura e lo storico.
 function avvisiDopoCorrezione(f, versioni) {
   var out = []
-  if (!f || !versioni || !versioni.length) return out
-  var ultima = new Date(versioni[versioni.length - 1].corretta_il).getTime()
+  // 103 — lo storico ha anche annullamenti e riusi: qui contano solo le correzioni.
+  var correzioni = (versioni || []).filter(function (v) { return !v.azione || v.azione === 'correzione' })
+  if (!f || !correzioni.length) return out
+  var ultima = new Date(correzioni[correzioni.length - 1].corretta_il).getTime()
   var prima = function (al) { return al && al.created_at && new Date(al.created_at).getTime() < ultima }
   var pol = polizzaDi(f.id)
   if (prima(pol)) {
@@ -6586,7 +6612,7 @@ function avvisiDopoCorrezione(f, versioni) {
 async function caricaVersioniDetail(f) {
   versioniDetail = []
   html('fatture-versioni', '')
-  if (!f || f.tipo !== 'fattura' || f.stato === 'bozza') return
+  if (!f || f.stato === 'bozza') return   // 103 — anche una nota di credito annullata ha lo storico
   // 103 — lo storico lo vede solo il titolare (anche nel database: CONT_103).
   // Ruolo non letto: si dice, perché un riquadro che manca sembra «mai corretta».
   if (titolareCache === null) {
@@ -6597,7 +6623,7 @@ async function caricaVersioniDetail(f) {
   if (titolareCache !== true) return
   try {
     const { data, error } = await sb.from('tm_conta_fatture_versioni')
-      .select('id, versione, motivo, totale_prima, corretta_il')
+      .select('id, versione, motivo, totale_prima, corretta_il, azione')
       .eq('fattura_id', f.id).eq('azienda_id', currentAziendaId)
       .order('versione')
     if (error) throw error
@@ -6617,7 +6643,7 @@ function boxVersioniHtml(f, versioni) {
   var righe = versioni.map(function (v) {
     return '<tr>' +
       '<td>Versione ' + esc(String(v.versione)) + '</td>' +
-      '<td>sostituita il ' + esc(fmtDateTime(v.corretta_il)) + '</td>' +
+      '<td>' + esc(({ annullamento: 'annullata il ', cancellazione: 'messa nell\'archivio nascosto il ', riuso_numero: 'numero riusato il ' })[v.azione] || 'sostituita il ') + esc(fmtDateTime(v.corretta_il)) + '</td>' +
       '<td class="num">' + esc(fmtNumIt(safeNum(v.totale_prima) || 0)) + ' CHF</td>' +
       '<td>«' + esc(v.motivo) + '»</td>' +
       '<td><button type="button" class="btn-secondary" onclick="apriVersione(\'' + esc(v.id) + '\')">👁 Vedi</button></td>' +
@@ -6625,7 +6651,10 @@ function boxVersioniHtml(f, versioni) {
   }).join('')
   var avvisi = avvisiDopoCorrezione(f, versioni)
   return '<div class="card versioni-box">' +
-    '<div class="card-title">✏️ Fattura corretta ' + (versioni.length === 1 ? 'una volta' : versioni.length + ' volte') + '</div>' +
+    // 103 — se ci sono anche annullamenti e riusi, il titolo è più largo.
+    '<div class="card-title">' + (versioni.every(function (v) { return !v.azione || v.azione === 'correzione' })
+      ? '✏️ Fattura corretta ' + (versioni.length === 1 ? 'una volta' : versioni.length + ' volte')
+      : '🕐 Storico del documento') + '</div>' +
     '<div class="form-hint">Numero e data di emissione sono quelli di sempre. Le versioni di prima restano qui, ' +
       'non si cancellano e non valgono più come documento.</div>' +
     '<table class="versioni-tabella"><tbody>' + righe + '</tbody></table>' +
@@ -8167,6 +8196,7 @@ async function viewFattura(id) {
     // 62c — se il documento e' annullato, il perche' sta in cima: e' la prima
     // cosa da sapere guardandolo.
     html('fatture-annullata', boxAnnullamentoHtml(f))
+    await disegnaBoxRiuso(f)   // 103
     // 91 — la condizione di sconto sta sulla rata: senza i contratti il foglio
     // non la saprebbe stampare, e lo si dice.
     var avvisoContratti91 = ''
@@ -8639,6 +8669,11 @@ async function annullaDocumento(id) {
     // vuoto per sbaglio vorrebbe dire «via libera». Stessa regola di
     // scriviPagamento: se il controllo non può contare, non si annulla.
     await richiediSessione('il documento NON è stato annullato')
+    // 103 — solo il titolare, con la password: il database lo ricontrolla.
+    if (!(await leggiSeTitolare(true))) {
+      window.alert('Non annullato.\n\nUn documento emesso lo annulla solo il titolare.')
+      return
+    }
     const { data: pag, error: ePag } = await sb.from('tm_conta_pagamenti')
       .select('id, importo, data')
       .eq('tabella_origine', 'tm_conta_fatture').eq('id_origine', id)
@@ -8647,6 +8682,9 @@ async function annullaDocumento(id) {
     try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }   // 84
     var no = motivoNoAnnullamento(f, pag || [])
     if (no) { window.alert('Non annullato.\n\n' + no); return }
+
+    var passataA = await chiediPasswordLogin('Stai per annullare la ' + nomeDoc + ' n. ' + (f.numero || '—') + '.')   // 103
+    if (!passataA) return
 
     // Le conseguenze, dette PRIMA con le cifre davanti. Sono due casi diversi
     // e vanno spiegati diversamente: annullare una nota fa RISALIRE il residuo
@@ -8678,33 +8716,22 @@ async function annullaDocumento(id) {
     var motivo = window.prompt(
       'Annullare la ' + nomeDoc + ' n. ' + (f.numero || '—') + ' di ' +
       fmtNumIt(safeNum(f.totale) || 0) + ' ' + (f.valuta || 'CHF') + '?\n\n' +
-      'Il numero resta ed è bruciato: non si riusa. Il documento non si cancella ' +
-      'e non si modifica, esce solo da tutte le somme.' + conseguenze + '\n\n' +
+      'Il numero resta sul documento. Il documento non si cancella ' +
+      'e non si modifica, esce solo da tutte le somme. La versione di adesso va nello storico.' + conseguenze + '\n\n' +
       'Scrivi PERCHÉ la annulli (obbligatorio, resta sul documento):', '')
     if (motivo === null) return                       // annullato l'annullamento
     motivo = String(motivo).trim()
-    if (motivo.length < 3) {
-      window.alert('Non annullato: la motivazione è obbligatoria.\n\n' +
+    if (motivo.length < 5) {   // 103 — come lo storico: almeno 5 caratteri
+      window.alert('Non annullato: la motivazione è obbligatoria (almeno 5 caratteri).\n\n' +
         'Riletta fra un anno, «annullata» senza un perché non si spiega da sola.')
       return
     }
 
     html('fatture-detail-banner', loadingRow('Annullamento…'))
-    // Un UPDATE normale: il trigger di immutabilità ammette già
-    // emessa → annullata, e le due colonne della motivazione sono nuove,
-    // quindi non sono nell'elenco dei campi congelati.
-    const { data: agg, error } = await sb.from('tm_conta_fatture')
-      // annullata_il e' un ISTANTE (timestamptz), non una data di calendario:
-      // qui toISOString e' giusto — porta con se' il fuso e non sposta niente.
-      // La regola «mai toISOString» vale per le DATE (data, scadenza, emissione),
-      // dove tagliare la stringa a dieci caratteri sposta il giorno.
-      .update({ stato: 'annullata', annullata_motivo: motivo, annullata_il: new Date().toISOString() })
-      .eq('id', id).eq('azienda_id', currentAziendaId).eq('stato', 'emessa')
-      .select()
+    // 103 — una strada sola: la funzione scrive la riga nello storico e annulla, tutto o niente.
+    // Un UPDATE diretto il database lo rifiuta (CONT_103).
+    const { error } = await sb.rpc('tm_conta_annulla_fattura', { p_fattura_id: id, p_motivo: motivo })
     if (error) throw error
-    if (!agg || !agg.length) {
-      throw new Error('nessuna riga aggiornata: il documento potrebbe essere già stato annullato da un\'altra scheda. Ricarica la pagina.')
-    }
 
     // Le note di credito cambiano peso: se era una nota, il residuo della
     // fattura che stornava torna su. Gli elenchi si rileggono da capo.
@@ -8713,7 +8740,7 @@ async function annullaDocumento(id) {
     await loadFattureList()
     await viewFattura(id)
     showFattureBanner('fatture-detail-banner', 'ok',
-      'Documento n. ' + (f.numero || '—') + ' annullato. Il numero resta e non si riusa; ' +
+      'Documento n. ' + (f.numero || '—') + ' annullato. Il numero resta sul documento e la versione di prima è nello storico; ' +
       'il documento è fuori da tutte le somme, dalle Scadenze e dall\'export.' +
       (eNC ? ' Il residuo della fattura stornata è tornato su.' : ''))
   } catch (e) {
@@ -8751,10 +8778,205 @@ function boxAnnullamentoHtml(f) {
         : '<span class="dim">Nessuna motivazione registrata: annullato prima che il programma la chiedesse.</span>') +
     '</div>' +
     '<div class="form-hint" style="margin-top:8px">' +
-      'Il numero resta assegnato e non si riusa. Il documento non conta in nessuna somma, ' +
-      'non compare nelle Scadenze e non entra nell\'export.' +
+      (f.numero_riusato_da ? 'Il numero è passato a un\'altra fattura. ' : 'Il numero resta assegnato. ') +
+      'Il documento non conta in nessuna somma, non compare nelle Scadenze e non entra nell\'export.' +
+      (f.archivio_nascosto ? ' È nell\'archivio nascosto: fuori dagli elenchi, si conserva per 10 anni (CO 958f).' : '') +
     '</div>' +
   '</div>'
+}
+
+// ══ 103 · CANCELLARE E RIUSARE IL NUMERO ═════════════════════════════════════
+// Solo il titolare, dopo la password, sempre con una riga nello storico. Il database fa
+// il lavoro in una funzione sola, tutto o niente, e rifiuta le altre strade (CONT_103).
+// Cancellare una emessa NON toglie la riga: è un documento fiscale, si tiene 10 anni.
+// Va nell'archivio nascosto: Archivio, filtro Stato.
+async function pagamentiDelDocumento(id) {
+  const { data, error } = await sb.from('tm_conta_pagamenti').select('id, importo, data')
+    .eq('tabella_origine', 'tm_conta_fatture').eq('id_origine', id)
+  if (error) throw new Error('Non riesco a leggere i pagamenti di questo documento, quindi NON vado avanti: ' + (error.message || error))
+  return data || []
+}
+
+// Perché un documento non si cancella. null = si può. Pura; il database ricontrolla.
+function motivoNoCancellazione(f, pagamenti, note) {
+  if (!f) return 'Documento non trovato.'
+  if (f.stato === 'bozza') return 'È una bozza: si elimina col suo tasto.'
+  if (f.archivio_nascosto) return 'È già nell\'archivio nascosto.'
+  if (pagamenti && pagamenti.length) return 'Ci sono pagamenti registrati: prima si tolgono, poi si cancella.'
+  if ((note || []).some(function (n) { return n.stato !== 'annullata' })) return 'Ha una nota di credito: prima si annulla la nota, poi si cancella.'
+  if (f.stato === 'emessa' && f.tipo !== 'nota_credito' && stralcioAttivo(f.id)) return testoFermaFattura(f.id, 'poi cancella')
+  return null
+}
+
+async function cancellaDocumento(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f) { window.alert('Documento non trovato: riaprilo dall\'elenco.'); return }
+  try {
+    await richiediSessione('il documento NON è stato cancellato')
+    if (!(await leggiSeTitolare(true))) {
+      window.alert('Non cancellato.\n\nUn documento emesso lo cancella solo il titolare.')
+      return
+    }
+    var pag = await pagamentiDelDocumento(id)
+    try { await loadNoteCredito(true) } catch (_) { /* lo ricontrolla il database */ }
+    try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }
+    var no = motivoNoCancellazione(f, pag, f.tipo === 'nota_credito' ? [] : noteCreditoDi(id))
+    if (no) { window.alert('Non cancellato.\n\n' + no); return }
+    var passata = await chiediPasswordLogin('Stai per cancellare il documento n. ' + f.numero + '.')
+    if (!passata) return
+    var motivo = window.prompt(
+      'Cancellare il documento n. ' + f.numero + ' di ' + fmtNumIt(safeNum(f.totale) || 0) + ' ' + (f.valuta || 'CHF') + '?\n\n' +
+      'Esce da tutti gli elenchi e da tutte le somme. La riga non sparisce: va nell\'archivio nascosto per 10 anni (CO 958f). ' +
+      'Il numero resta suo. La versione di adesso va nello storico.\n\n' +
+      'Scrivi PERCHÉ lo cancelli (obbligatorio, resta nello storico):', '')
+    if (motivo === null) return
+    motivo = String(motivo).trim()
+    if (motivo.length < 5) { window.alert('Non cancellato: il motivo è obbligatorio (almeno 5 caratteri).'); return }
+    var conferma = window.prompt('Per confermare, riscrivi il numero del documento:\n\n' + f.numero, '')
+    if (conferma === null) return
+    html('fatture-detail-banner', loadingRow('Cancellazione…'))
+    const { error } = await sb.rpc('tm_conta_cancella_fattura', { p_fattura_id: id, p_numero_conferma: String(conferma).trim(), p_motivo: motivo })
+    if (error) throw error
+    invalidaCachePagamenti()
+    scadeCache('noteCredito')
+    await loadFattureList()
+    await viewFattura(id)
+    showFattureBanner('fatture-detail-banner', 'ok', 'Documento n. ' + f.numero + ' cancellato: è fuori dagli elenchi, nell\'archivio nascosto. ' +
+      'Si ritrova in Archivio, filtro Stato «Archivio nascosto».')
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Documento NON cancellato: ' + (e.message || e))
+  }
+}
+
+// Perché il numero non si riusa. null = si può. Pura; il database ricontrolla.
+function motivoNoRiuso(f, pagamenti, note) {
+  if (!f) return 'Fattura non trovata.'
+  if (f.tipo !== 'fattura') return 'Il numero di una nota di credito non si riusa.'
+  if ((f.stato !== 'emessa' && f.stato !== 'annullata') || !f.numero) return 'Si riusa solo il numero di una fattura emessa o annullata.'
+  if (f.numero_riusato_da) return 'Questo numero è già passato a un\'altra fattura.'
+  if (pagamenti && pagamenti.length) return 'Ci sono pagamenti registrati: si riusa solo il numero di una fattura non pagata.'
+  if ((note || []).some(function (n) { return n.stato === 'bozza' })) return 'Ha una nota di credito in bozza: prima si elimina.'
+  if (f.stato === 'emessa' && stralcioAttivo(f.id)) return testoFermaFattura(f.id, 'poi riusa il numero')
+  return null
+}
+
+// Le bozze che possono prendere il numero: fatture, altro cliente, stesso anno. Pura.
+function bozzePerRiuso(f, elenco) {
+  function nudo(s) { return String(s || '').trim().toLowerCase() }
+  return (elenco || []).filter(function (x) {
+    return x.stato === 'bozza' && x.tipo === 'fattura' && x.id !== f.id && nudo(x.cliente_nome) !== nudo(f.cliente_nome) &&
+      String(x.data_emissione || oggiISO()).slice(0, 4) === String(f.anno)
+  })
+}
+
+var riusoCorrente = null
+
+async function riusaNumero(id) {
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f) { window.alert('Fattura non trovata: riaprila dall\'elenco.'); return }
+  try {
+    await richiediSessione('il numero NON è stato riusato')
+    if (!(await leggiSeTitolare(true))) {
+      window.alert('Non riusato.\n\nIl numero di una fattura lo riusa solo il titolare.')
+      return
+    }
+    var pag = await pagamentiDelDocumento(id)
+    try { await loadNoteCredito(true) } catch (_) { /* lo ricontrolla il database */ }
+    try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }
+    var no = motivoNoRiuso(f, pag, noteCreditoDi(id))
+    if (no) { window.alert('Non riusato.\n\n' + no); return }
+    await loadFattureList()
+    var bozze = bozzePerRiuso(f, fattureList)
+    if (!bozze.length) {
+      window.alert('Non riusato: manca la fattura nuova.\n\n' +
+        '1. Vai in Fatture di vendita, Nuova fattura.\n' +
+        '2. Scrivi l\'altro cliente e le righe, con una data del ' + f.anno + '.\n' +
+        '3. Salva la bozza, senza emetterla.\n' +
+        '4. Torna qui e premi di nuovo «Riusa il numero».')
+      return
+    }
+    var passata = await chiediPasswordLogin('Stai per riusare il numero ' + f.numero + ' per un altro cliente.')
+    if (!passata) return
+    riusoCorrente = { id: id, numero: f.numero }
+    el('riuso-titolo').textContent = '🔁 Riusa il numero ' + f.numero
+    html('riuso-avviso', '<div class="fase-banner warn"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">' +
+      '<strong>' + esc(f.cliente_nome || '—') + ' ha in mano la fattura vecchia con questo numero, e forse la polizza.</strong> ' +
+      'Avvisalo per iscritto: se paga, quel numero è di un altro. La vecchia e le sue note di credito si annullano e vanno ' +
+      'nell\'archivio nascosto per 10 anni (CO 958f). La versione di adesso va nello storico.</div></div>')
+    html('riuso-bozza', bozze.map(function (b) {
+      return '<option value="' + esc(b.id) + '">' + esc(b.cliente_nome || '—') + ' · ' + esc(fmtImporto(b.totale, b.valuta)) + '</option>'
+    }).join(''))
+    el('riuso-motivo').value = ''
+    el('riuso-numero').value = ''
+    html('riuso-errore', '')
+    el('riuso-overlay').style.display = 'flex'
+    el('riuso-bozza').focus()
+  } catch (e) {
+    showFattureBanner('fatture-detail-banner', 'err', 'Numero NON riusato: ' + (e.message || e))
+  }
+}
+
+function chiudiRiuso() {
+  riusoCorrente = null
+  var o = el('riuso-overlay'); if (o) o.style.display = 'none'
+}
+
+async function confermaRiuso() {
+  var r = riusoCorrente, btn = el('riuso-conferma')
+  if (!r || (btn && btn.disabled)) return
+  var idNuova = getVal('riuso-bozza'), motivo = String(getVal('riuso-motivo')).trim(), numero = String(getVal('riuso-numero')).trim()
+  html('riuso-errore', '')
+  if (!idNuova) { showFattureBanner('riuso-errore', 'err', 'Scegli la fattura nuova.'); return }
+  if (motivo.length < 5) { showFattureBanner('riuso-errore', 'err', 'Il motivo è obbligatorio (almeno 5 caratteri).'); return }
+  if (numero !== r.numero) { showFattureBanner('riuso-errore', 'err', 'Il numero scritto non è ' + r.numero + '.'); return }
+  if (btn) btn.disabled = true
+  try {
+    const { data, error } = await sb.rpc('tm_conta_riusa_numero', { p_vecchia: r.id, p_nuova: idNuova, p_numero_conferma: numero, p_motivo: motivo })
+    if (error) throw error
+    var nuova = Array.isArray(data) ? data[0] : data
+    chiudiRiuso()
+    invalidaCachePagamenti()
+    scadeCache('noteCredito')
+    await loadFattureList()
+    await viewFattura(nuova.id)
+    showFattureBanner('fatture-detail-banner', 'ok', 'Il numero ' + nuova.numero + ' ora è di ' + (nuova.cliente_nome || '—') +
+      '. La fattura vecchia è nell\'archivio nascosto, con la riga nello storico.')
+  } catch (e) {
+    showFattureBanner('riuso-errore', 'err', 'Numero NON riusato: ' + (e.message || e))
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+// Sulla scheda: da dove viene il numero, o a chi è passato. Legge l'altra fattura solo per il nome.
+async function disegnaBoxRiuso(f) {
+  var altro = f && (f.numero_riusato_di || f.numero_riusato_da)
+  html('fatture-riuso', '')
+  if (!altro) return
+  var cliente = '—'
+  try {
+    const { data, error } = await sb.from('tm_conta_fatture').select('cliente_nome').eq('id', altro).single()
+    if (!error && data) cliente = data.cliente_nome || '—'
+  } catch (_) { /* il nome è un aiuto */ }
+  html('fatture-riuso', '<div class="sol-stato-riga">🔁 ' + (f.numero_riusato_di
+      ? 'Questo numero prima era della fattura di <strong>' + esc(cliente) + '</strong>, ora nell\'archivio nascosto.'
+      : 'Il numero di questa fattura è passato a <strong>' + esc(cliente) + '</strong>.') +
+    ' <button type="button" class="btn-secondary" onclick="viewFattura(\'' + esc(altro) + '\')">📄 Apri l\'altra</button></div>')
+}
+
+// 103 — riuso del numero e cancellazione: li vede solo il titolare.
+function tastiTitolareDocumento(f) {
+  if (titolareCache !== true) return ''
+  var s = ''
+  if (f.tipo === 'fattura' && !f.numero_riusato_da) {
+    s += '<button class="btn-secondary danger" onclick="riusaNumero(\'' + esc(f.id) + '\')" ' +
+         'title="Il numero passa alla bozza di un altro cliente. Solo se non è pagata. La vecchia va nell\'archivio nascosto.">🔁 Riusa il numero</button>'
+  }
+  if (!f.archivio_nascosto) {
+    s += '<button class="btn-secondary danger" onclick="cancellaDocumento(\'' + esc(f.id) + '\')" ' +
+         'title="Esce da tutti gli elenchi. La riga resta nell\'archivio nascosto per 10 anni (CO 958f).">🗑️ Cancella (archivio nascosto)</button>'
+  }
+  return s
 }
 
 function renderDetailActions(f) {
@@ -8835,7 +9057,9 @@ function renderDetailActions(f) {
       // Rosso perche' non si torna indietro, ma non e' una cancellazione: il
       // documento resta dov'e' ed e' per questo che si chiama «Annulla».
       a += '<button class="btn-secondary danger" onclick="annullaDocumento(\'' + esc(f.id) +
-           '\')" title="Il documento tiene il suo numero e smette di contare. Serve una motivazione scritta.">🚫 Annulla documento</button>'
+           '\')" title="Solo il titolare, dopo la password. Il documento tiene il suo numero e smette di contare. Serve una motivazione scritta.">🚫 Annulla documento</button>'
+      // 103 — solo il titolare, dopo la password.
+      a += tastiTitolareDocumento(f)
       // 91 — pagato in tempo, manca al massimo lo sconto: si chiude con lo sconto.
       var sC91 = scontoCassaFattura(f)
       if (sC91 && cacheOk('pagamenti') &&
@@ -8854,6 +9078,7 @@ function renderDetailActions(f) {
     // Ramo che prima non esisteva: lo stato annullata era gia ammesso dal
     // database ma nell'interfaccia la scheda restava senza indicazioni.
     a += '<span class="lock-tag" title="Documento annullato">🚫 Annullata — sola lettura</span>'
+    a += tastiTitolareDocumento(f)   // 103
   }
   a += '<button class="btn-secondary" onclick="fattureBackToList()">← Indietro</button>'
   a += '</div>'
@@ -14862,6 +15087,7 @@ async function renderFattureDelContatto(contattoId) {
       .from('tm_conta_fatture')
       .select('id, numero, data_emissione, totale, valuta, stato, stato_pagamento, tipo')
       .eq('azienda_id', currentAziendaId)
+      .eq('archivio_nascosto', false)   // 103
       .eq('contatto_id', contattoId)
       .order('data_emissione', { ascending: false, nullsFirst: false }).order('id') })
     if (error) throw error
@@ -25950,6 +26176,7 @@ document.addEventListener('DOMContentLoaded', function () {
       currentUser = null
       currentAziendaId = null
       titolareCache = null   // 103
+      chiudiSoloTitolare()   // 103
       updateSidebarAuth()
       var badgeNav = el('nav-badge-movimenti')
       if (badgeNav) badgeNav.textContent = '0'
@@ -25967,8 +26194,9 @@ document.addEventListener('DOMContentLoaded', function () {
     var session = result.data && result.data.session
     if (session && session.user) {
       currentUser = session.user
-      loadAziendaId().then(function () {
+      loadAziendaId().then(async function () {
         updateSidebarAuth()
+        if (!(await controllaSoloTitolare())) return   // 103
         // Se l'indirizzo chiede una schermata precisa si apre quella, altrimenti
         // si parte dal setup come sempre.
         if (!apriDaIndirizzo()) { showPage('setup'); runSetupCheck() }

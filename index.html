@@ -1245,6 +1245,7 @@
               <option value="incassate">✅ Incassate (vendite)</option>
               <option value="annullate">🚫 Annullate (vendite)</option>
               <option value="chiusi">Altri chiusi (acquisti, movimenti, conferme…)</option>
+              <option value="nascoste">🗄️ Archivio nascosto (numeri riusati e cancellate)</option>
             </select>
           </div>
         </div>
@@ -1731,6 +1732,8 @@
         <!-- 103 - «Incassata» o «Annullata», in cima -->
         <div class="no-print" id="fatture-stato-vendita"></div>
         <div id="fatture-annullata"></div>
+        <!-- 103 - da dove viene il numero, o a chi è passato -->
+        <div class="no-print" id="fatture-riuso"></div>
         <!-- 83 - le versioni di prima di una fattura corretta -->
         <div class="no-print" id="fatture-versioni"></div>
         <!-- 84 - lo stralcio come perdita: quanto, quando, perché -->
@@ -3049,6 +3052,55 @@
   </div>
 
   <!-- ══ MODALE: una versione precedente di una fattura corretta — 83 ══════ -->
+  <!-- 103 — il cancello: la Contabilità è solo del titolare -->
+  <div id="solo-titolare" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="solo-titolare-titolo">
+    <div class="modal-card">
+      <div class="modal-header"><div class="modal-title" id="solo-titolare-titolo">🔒 Solo il titolare</div></div>
+      <div class="modal-body">
+        <p id="solo-titolare-testo" class="pw-testo"></p>
+        <div class="form-hint" id="solo-titolare-chi"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" id="solo-titolare-riprova" onclick="controllaSoloTitolare()">🔄 Riprova</button>
+          <button type="button" class="btn-primary" onclick="doLogout()">🚪 Esci</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 103 — riusare il numero: quale bozza, perché, numero riscritto. La password è già stata chiesta. -->
+  <div id="riuso-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="riuso-titolo">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title" id="riuso-titolo">🔁 Riusa il numero</div>
+        <button class="modal-close" onclick="chiudiRiuso()" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="riuso-avviso"></div>
+        <div class="form-group">
+          <label for="riuso-bozza" class="form-label">La fattura nuova (bozza dell'altro cliente)</label>
+          <select id="riuso-bozza" class="form-input"></select>
+        </div>
+        <div class="form-group">
+          <label for="riuso-motivo" class="form-label">Perché (resta nello storico)</label>
+          <input id="riuso-motivo" class="form-input" type="text" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="riuso-numero" class="form-label">Riscrivi il numero per confermare</label>
+          <input id="riuso-numero" class="form-input" type="text" autocomplete="off" />
+        </div>
+        <div id="riuso-errore" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiRiuso()">✕ Annulla</button>
+          <button type="button" class="btn-primary" id="riuso-conferma" onclick="confermaRiuso()">🔁 Riusa il numero</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 103 — la riconferma del login prima di modificare una fattura emessa. Il campo si svuota sempre. -->
   <div id="pw-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="pw-titolo" onkeydown="tastoPasswordLogin(event)">
     <div class="modal-card">
