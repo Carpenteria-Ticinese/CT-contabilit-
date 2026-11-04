@@ -317,7 +317,7 @@ function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
   }
   // 91 — incassata con lo sconto di cassa: si dice, con la cifra.
   if (statoVero === 'pagato' && tabella === 'tm_conta_fatture' && cacheOk('stralci') && scontoCassaAttivo(id)) {
-    return badge('ok', '✅ Incassato — sconto di cassa ' + fmtNumIt(safeNum(scontoCassaAttivo(id).importo) || 0) + ' CHF')
+    return badge('ok', '✅ Incassata — sconto di cassa ' + fmtNumIt(safeNum(scontoCassaAttivo(id).importo) || 0) + ' CHF')   // 103
   }
   // 75·4 — pagato con una data che deve ancora venire: è un pagamento
   // programmato. Nessun avviso di scadenza (per il trigger è pagato), e la
@@ -341,10 +341,12 @@ function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
   var nota = ''
   if (tabella === 'tm_conta_fatture' && cacheOk('noteCredito') && stornoAncoraDovuto(id) > 0.005) {   // 70·R
     nota = (statoVero === 'pagato' && stato !== 'pagato')
-      ? ' — chiusa con nota di credito'
+      ? ' — tramite nota di credito'   // 103
       : ' (al netto della nota di credito)'
   }
-  return badge(e.cls, e.icona + ' ' + e.testo + cifra + nota)
+  // 103 — la fattura di vendita chiusa si dice «Incassata», al femminile come il filtro.
+  var parola = (tabella === 'tm_conta_fatture' && statoVero === 'pagato') ? 'Incassata' : e.testo
+  return badge(e.cls, e.icona + ' ' + parola + cifra + nota)
 }
 
 // Testo del bottone che porta ALLO stato indicato.
@@ -459,6 +461,100 @@ function updateSidebarAuth() {
   }
 }
 
+// ══ 103 · IL TITOLARE E LA PASSWORD ══════════════════════════════════════════
+// Decisione di Umberto (4.11.2026): la Modifica di una fattura emessa e il suo
+// storico sono solo del titolare. Il ruolo lo dice il database (app_e_titolare),
+// che rifiuta comunque (CONT_103): qui serve a non mostrare il tasto.
+// null = non si sa ancora, o la lettura è fallita: vale come «no», e si riprova.
+var titolareCache = null
+
+async function leggiSeTitolare(forza) {
+  if (titolareCache !== null && !forza) return titolareCache === true
+  try {
+    const { data, error } = await sb.rpc('app_e_titolare')
+    if (error) throw error
+    titolareCache = data === true
+  } catch (e) {
+    titolareCache = null
+    console.warn('Ruolo non letto:', (e && e.message) || e)
+  }
+  return titolareCache === true
+}
+
+// La riconferma: il login in uso rifatto con la password riscritta. Stesso modo
+// di «Cambia password» e di Anagrafiche. La password non si salva e non si mostra:
+// il campo si svuota SEMPRE, qualunque cosa succeda dopo.
+async function verificaPasswordLogin(password) {
+  var s = await richiediSessione('la password non è stata controllata')
+  var r = await sb.auth.signInWithPassword({ email: s.user.email, password: password })
+  if (r.error) {
+    var m = String(r.error.message || '')
+    if (r.error.code === 'invalid_credentials' || /invalid login|invalid_credentials/i.test(m)) return false
+    if (r.error.status === 429 || /rate limit|too many/i.test(m)) throw new Error('troppi tentativi: aspetta qualche minuto e riprova.')
+    throw new Error('non riesco a controllare la password (' + m + ').')
+  }
+  var u = r.data && (r.data.user || (r.data.session && r.data.session.user))
+  if (!u || u.id !== s.user.id) throw new Error('il controllo della password ha risposto con un altro utente: esci e rientra.')
+  return true
+}
+
+var pwAttesa = null   // chi aspetta la risposta della finestra
+
+// Apre la finestra e aspetta: true = password giusta, false = annullato.
+function chiediPasswordLogin(testo) {
+  return new Promise(function (resolve) {
+    if (pwAttesa) pwAttesa(false)
+    pwAttesa = resolve
+    var inp = el('pw-password')
+    if (inp) inp.value = ''
+    html('pw-errore', '')
+    el('pw-testo').textContent = testo
+    el('pw-chi').textContent = 'Login in uso: ' + ((currentUser && currentUser.email) || '—')
+    el('pw-overlay').style.display = 'flex'
+    if (inp) inp.focus()
+  })
+}
+
+function chiudiPasswordLogin(esito) {
+  var inp = el('pw-password')
+  if (inp) inp.value = ''
+  html('pw-errore', '')
+  el('pw-overlay').style.display = 'none'
+  var fatto = pwAttesa
+  pwAttesa = null
+  if (fatto) fatto(esito === true)
+}
+
+async function confermaPasswordLogin() {
+  var inp = el('pw-password'), btn = el('pw-conferma')
+  if (!inp || (btn && btn.disabled)) return
+  var pw = inp.value
+  inp.value = ''
+  html('pw-errore', '')
+  if (!pw) { showFattureBanner('pw-errore', 'err', 'Scrivi la password.'); inp.focus(); return }
+  if (btn) btn.disabled = true
+  try {
+    var giusta = await verificaPasswordLogin(pw)
+    pw = null
+    if (!giusta) {
+      showFattureBanner('pw-errore', 'err', 'Password sbagliata. Non ho aperto niente.')
+      inp.focus()
+      return
+    }
+    chiudiPasswordLogin(true)
+  } catch (e) {
+    pw = null
+    showFattureBanner('pw-errore', 'err', 'Non ho aperto niente: ' + (e.message || e))
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+function tastoPasswordLogin(ev) {
+  if (ev.key === 'Enter') { ev.preventDefault(); confermaPasswordLogin() }
+  if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); chiudiPasswordLogin(false) }
+}
+
 // ─── Auth — login / logout ────────────────────────────────────────────────────
 async function doLogin() {
   const emailEl  = el('login-email')
@@ -479,6 +575,7 @@ async function doLogin() {
     if (error) throw error
 
     currentUser = data.user
+    titolareCache = null   // 103 — chi entra adesso può essere un altro
     await loadAziendaId()
     updateSidebarAuth()
     showPage('setup')
@@ -501,6 +598,7 @@ async function doLogout() {
   } catch (_) { /* ignora errori di logout */ }
   currentUser = null
   currentAziendaId = null
+  titolareCache = null   // 103
   // FASE 23 / P2 — i dati della ditta se ne vanno con la sessione. Restavano
   // in memoria dopo l'uscita, e chi fosse entrato dopo si sarebbe trovato
   // l'intestazione della ditta precedente su un documento nuovo.
@@ -5110,7 +5208,7 @@ function statoFatturaBadge(stato, motivo) {
   // posto di «emessa» faceva sparire l'informazione che la fattura era emessa.
   var map  = { bozza: 'info', emessa: 'warn', annullata: 'err' }
   var icon = { bozza: '✏️', emessa: '📨', annullata: '🚫' }
-  var testo = (icon[stato] || '') + ' ' + (stato || '')
+  var testo = (icon[stato] || '') + ' ' + (stato === 'annullata' ? 'Annullata' : (stato || ''))   // 103
   // 62c — su un documento annullato il perche' si legge passandoci sopra.
   // Nella scheda c'e' per esteso: il tooltip non e' mai l'unico posto.
   if (stato === 'annullata' && motivo) {
@@ -5235,6 +5333,28 @@ function venditaChiusa(f, fatture) {
   var letto = statoConStorno('tm_conta_fatture', f.id, f.totale, f.stato_pagamento)
   return letto === 'pagato' || letto === 'stralciata'   // 84 — stralciata: chiusa, con la perdita
 }
+// 103 — sulle vendite «Chiuso» non si dice più (Umberto, 4.11.2026): si dice
+// perché è chiusa. «incassata» (anche tramite nota di credito) o «annullata»;
+// una stralciata resta stralciata e una nota senza niente da rimborsare resta una
+// nota: nessuna delle due è incassata, e sulla riga hanno già la loro scritta.
+// null = aperta. Acquisti, movimenti e conferme tengono «Chiuso».
+function statoChiusuraVendita(f, fatture) {
+  if (!venditaChiusa(f, fatture)) return null
+  if (f.stato === 'annullata') return 'annullata'
+  if (f.tipo === 'nota_credito') return 'nota'
+  return statoConStorno('tm_conta_fatture', f.id, f.totale, f.stato_pagamento) === 'stralciata' ? 'stralciata' : 'incassata'
+}
+// Sul telefono la colonna Stato è fuori schermo: lo stato si vede anche accanto al
+// numero. Sullo schermo grande questa scritta è nascosta (CSS), per non dirlo due volte.
+function segnoVenditaTelefono(chiusura) {
+  if (chiusura === 'incassata') return ' <span class="badge badge-ok segno-telefono">✅ Incassata</span>'
+  if (chiusura === 'annullata') return ' <span class="badge badge-err segno-telefono">🚫 Annullata</span>'
+  return ''
+}
+// Le parole che la ricerca trova.
+function paroleStatoVendita(f, fatture) {
+  return ({ incassata: 'incassata incassate', annullata: 'annullata annullate', stralciata: 'stralciata stralciate' })[statoChiusuraVendita(f, fatture)] || ''
+}
 function acquistoChiuso(a)   { return a.stato_pagamento === 'pagato' }
 function movimentoChiuso(m)  { return m.stato_pagamento === 'pagato' }
 function confermaChiusa(o) {
@@ -5251,6 +5371,21 @@ function rigaChiusiNascostiHtml(n) {
   return '<div class="chiusi-nascosti">+ ' + n + (n === 1 ? ' chiuso non mostrato' : ' chiusi non mostrati') +
     ' — scegli «Tutti» nel filtro Stato, oppure ' +
     '<button type="button" class="link-btn" onclick="vaiAllArchivio()">cercali nell\'Archivio</button>.</div>'
+}
+
+// 103 — la stessa riga per le vendite: dice quali sono, non «chiusi».
+function rigaVenditeNascosteHtml(vendite) {
+  if (!vendite || !vendite.length) return ''
+  var quante = { incassata: 0, annullata: 0, stralciata: 0, nota: 0 }
+  vendite.forEach(function (f) { var c = statoChiusuraVendita(f); if (c) quante[c]++ })
+  var parti = []
+  if (quante.incassata)  parti.push(quante.incassata + (quante.incassata === 1 ? ' incassata' : ' incassate'))
+  if (quante.annullata)  parti.push(quante.annullata + (quante.annullata === 1 ? ' annullata' : ' annullate'))
+  if (quante.stralciata) parti.push(quante.stralciata + (quante.stralciata === 1 ? ' stralciata' : ' stralciate'))
+  if (quante.nota)       parti.push(quante.nota + (quante.nota === 1 ? ' nota di credito' : ' note di credito') + ' senza rimborsi')
+  return '<div class="chiusi-nascosti">+ ' + parti.join(', ') + ' non ' + (vendite.length === 1 ? 'mostrata' : 'mostrate') +
+    ' — scegli «Tutte» nel filtro Stato, oppure ' +
+    '<button type="button" class="link-btn" onclick="vaiAllArchivio()">cercale nell\'Archivio</button>.</div>'
 }
 
 // ══ 80·2 — UN COMANDO SOLO: IL FILTRO «STATO» ══════════════════════════════
@@ -5444,8 +5579,10 @@ async function initArchivioPage() {
       docs.push({
         tipo: nota ? 'nota' : 'vendita', tabella: 'tm_conta_fatture', id: f.id,
         numero: f.numero || '', data: f.data_emissione || '', controparte: f.cliente_nome || '',
-        importo: safeNum(f.totale), valuta: f.valuta || 'CHF', testo: '',
+        importo: safeNum(f.totale), valuta: f.valuta || 'CHF',
+        testo: paroleStatoVendita(f, archivioVendite),   // 103 — la ricerca trova «incassata» e «annullata»
         chiuso: venditaChiusa(f, archivioVendite),
+        chiusura: statoChiusuraVendita(f, archivioVendite),   // 103
         stato: statoFatturaBadge(f.stato, f.annullata_motivo) +
           (nota
             ? (daRimb > 0.005 ? ' ' + badge('warn', '↩️ da rimborsare ' + fmtNumIt(daRimb) + ' CHF') : '')
@@ -5564,7 +5701,10 @@ function filtraArchivio(docs, f) {
   return docs.filter(function (d) {
     if (!f.tipi[d.tipo]) return false
     if (f.stato === 'aperti' && d.chiuso) return false
-    if (f.stato === 'chiusi' && !d.chiuso) return false
+    // 103 — vendite: Incassate e Annullate. «Altri chiusi»: tutto il resto che è chiuso.
+    if (f.stato === 'incassate' && d.chiusura !== 'incassata') return false
+    if (f.stato === 'annullate' && d.chiusura !== 'annullata') return false
+    if (f.stato === 'chiusi' && (!d.chiuso || d.chiusura === 'incassata' || d.chiusura === 'annullata')) return false
     if (f.anno && String(d.data).slice(0, 4) !== String(f.anno)) return false
     // 85 — importo e data come in tutti gli elenchi: totale o un pagamento.
     var pagD = (d.tabella === 'tm_conta_offerte' || d.tabella === 'spese') ? [] : pagamentiDi(d.tabella, d.id)
@@ -5606,10 +5746,16 @@ function renderArchivio() {
   if (!archivioDocs) return
   var trovati = filtraArchivio(archivioDocs, filtriArchivio())
   var chiusi = trovati.filter(function (d) { return d.chiuso }).length
+  // 103 — le vendite dicono come sono chiuse; «chiusi» è il resto.
+  var incassate = trovati.filter(function (d) { return d.chiusura === 'incassata' }).length
+  var annullate = trovati.filter(function (d) { return d.chiusura === 'annullata' }).length
+  var altriChiusi = chiusi - incassate - annullate
   html('arch-contatore', '<div class="elenco-contatore-riga"><strong>' + trovati.length + '</strong> ' +
     (trovati.length === 1 ? 'documento trovato' : 'documenti trovati') +
     ' <span class="dim">su ' + archivioDocs.length + ' in archivio — ' +
-    (trovati.length - chiusi) + ' aperti · ' + chiusi + ' chiusi</span></div>')
+    (trovati.length - chiusi) + ' aperti · ' + incassate + (incassate === 1 ? ' incassata' : ' incassate') +
+    ' · ' + annullate + (annullate === 1 ? ' annullata' : ' annullate') +
+    ' · ' + altriChiusi + (altriChiusi === 1 ? ' altro chiuso' : ' altri chiusi') + '</span></div>')
   if (!trovati.length) {
     html('arch-risultati', '<div class="cru-vuoto">Nessun documento con questi filtri.</div>')
     return
@@ -5620,12 +5766,13 @@ function renderArchivio() {
     return '<tr class="row-clickable' + (d.chiuso ? ' riga-chiusa' : '') + '" ' +
       'onclick="apriDaArchivio(\'' + esc(d.tabella) + '\', \'' + esc(d.id) + '\')">' +
       '<td><span class="off-tipo">' + t.ic + ' ' + esc(t.et) + '</span></td>' +
-      '<td><span class="cod">' + esc(d.numero || '—') + '</span></td>' +
+      '<td><span class="cod">' + esc(d.numero || '—') + '</span>' + segnoVenditaTelefono(d.chiusura) + '</td>' +
       '<td class="dim">' + esc(d.data ? fmtDate(d.data) : '—') + '</td>' +
       '<td>' + esc(d.controparte || '—') +
         ((d.tipo === 'movimento' || d.tipo === 'spesa') && d.testo ? '<div class="dim" style="font-size:11px">' + esc(d.testo) + '</div>' : '') + '</td>' +
       '<td class="num">' + (d.importo != null ? fmtImporto(d.importo, d.valuta) : '—') + '</td>' +
-      '<td>' + d.stato + (d.chiuso ? segnoChiuso() : '') + '</td>' +
+      // 103 — le vendite hanno già «✅ Incassata» o «🚫 Annullata» nella loro scritta.
+      '<td>' + d.stato + (d.chiuso && !d.chiusura ? segnoChiuso() : '') + '</td>' +
       '<td class="dim">' + esc(nomiCantieri(d.cantieri)) + '</td>' +
     '</tr>'
   }).join('')
@@ -5865,7 +6012,7 @@ function predicatoFiltriFatture() {
   if (!q && !fid.attivo) return null
   return function (f) {
     var pag = pagamentiDi('tm_conta_fatture', f.id)
-    if (!corrispondeTesto(q, [f.numero || '', f.cliente_nome || ''],
+    if (!corrispondeTesto(q, [f.numero || '', f.cliente_nome || '', paroleStatoVendita(f)],   // 103
           [f.totale].concat(pag.map(function (p) { return p.importo })))) return false
     return corrispondeImportoData(fid, { importo: f.totale,
       date: { documento: f.data_emissione, registrazione: f.created_at }, pagamenti: pag })
@@ -5900,7 +6047,9 @@ function renderFattureTable() {
   }
 
   // 59·B — quante, e in che stato. Sempre, anche a elenco vuoto.
-  html('fatture-contatore', rigaChiusiNascostiHtml(diviso.nascosti) + contatoreElencoHtml(diviso.universo, list,
+  html('fatture-contatore', rigaVenditeNascosteHtml(diviso.nascosti ? fattureList.filter(function (f) {   // 103
+      return venditaChiusa(f) && (!anno || String(f.anno) === String(anno))
+    }) : []) + contatoreElencoHtml(diviso.universo, list,
     { sing: 'fattura', plur: 'fatture' },
     function (f) { return f.stato },
     { emessa: { sing: 'emessa', plur: 'emesse' }, bozza: { sing: 'bozza', plur: 'bozze' },
@@ -5917,7 +6066,8 @@ function renderFattureTable() {
   var rows = list.map(function (f) {
     var chiusa = venditaChiusa(f)   // 78
     return '<tr class="row-clickable' + (chiusa ? ' riga-chiusa' : '') + '" onclick="viewFattura(\'' + f.id + '\')">' +
-      '<td><span class="cod">' + esc(f.numero || '— bozza —') + '</span>' + (chiusa ? segnoChiuso() : '') + '</td>' +
+      // 103 — lo stato sta nella colonna Stato: «✅ Incassata» o «🚫 Annullata».
+      '<td><span class="cod">' + esc(f.numero || '— bozza —') + '</span>' + segnoVenditaTelefono(statoChiusuraVendita(f)) + '</td>' +
       '<td class="dim">' + esc(fmtDate(f.data_emissione)) + '</td>' +
       // 61c — il badge «Nota credito» qui non c'e' piu': lo dice la colonna
       // Stato, per esteso e con la fattura stornata. Due volte sulla stessa
@@ -6287,6 +6437,11 @@ async function riapriPerCorreggere(id) {
   var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
   if (!f) { window.alert('Fattura non trovata: riaprila dall\'elenco.'); return }
   try {
+    // 103 — il tasto lo vede solo il titolare, e il database rifiuta gli altri (CONT_103).
+    if (!(await leggiSeTitolare(true))) {
+      window.alert('Non riaperta.\n\nUna fattura emessa la modifica solo il titolare.')
+      return
+    }
     // I pagamenti si leggono ADESSO dal database, come per l'annullamento:
     // un elenco vuoto per sbaglio vorrebbe dire «via libera».
     await richiediSessione('la fattura NON è stata riaperta')
@@ -6298,6 +6453,10 @@ async function riapriPerCorreggere(id) {
     try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }   // 84
     var no = motivoNoCorrezione(f, pag || [], noteCreditoDi(id))
     if (no) { window.alert('Non riaperta.\n\n' + no); return }
+
+    // 103 — prima di tutto il resto: chi è seduto qui riscrive la password.
+    var passata = await chiediPasswordLogin('Stai per modificare la fattura n. ' + f.numero + '.')
+    if (!passata) return
 
     var rata = null
     try { await loadContrattiCantiere(); var t = trovaAccontoPerFattura(id); if (t) rata = t.a } catch (_) { /* lo dice il database */ }
@@ -6428,6 +6587,14 @@ async function caricaVersioniDetail(f) {
   versioniDetail = []
   html('fatture-versioni', '')
   if (!f || f.tipo !== 'fattura' || f.stato === 'bozza') return
+  // 103 — lo storico lo vede solo il titolare (anche nel database: CONT_103).
+  // Ruolo non letto: si dice, perché un riquadro che manca sembra «mai corretta».
+  if (titolareCache === null) {
+    html('fatture-versioni', '<div class="sol-stato-riga">⚠️ Non riesco a sapere se sei il titolare: ' +
+      'storico e tasto Modifica non si vedono. Riapri la scheda per riprovare.</div>')
+    return
+  }
+  if (titolareCache !== true) return
   try {
     const { data, error } = await sb.from('tm_conta_fatture_versioni')
       .select('id, versione, motivo, totale_prima, corretta_il')
@@ -7956,6 +8123,7 @@ async function viewFattura(id) {
   html('fatture-detail-banner', '')
   html('fatture-print', loadingRow('Caricamento fattura…'))
   html('fatture-detail-actions', '')
+  html('fatture-stato-vendita', '')   // 103
   try {
     const { data: f, error } = await sb.from('tm_conta_fatture').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
@@ -8012,6 +8180,7 @@ async function viewFattura(id) {
     // 61g — i solleciti della fattura: servono al bottone e alla riga di stato.
     try { await loadSolleciti() } catch (_) { /* il bottone ripartira' dal primo */ }
     renderFatturaPrint(f, righe || [], rifInfo)
+    await leggiSeTitolare()   // 103 — il tasto Modifica e lo storico dipendono da qui
     renderDetailActions(f)
     // La riga che racconta il ritardo e i solleciti, sopra il documento.
     var statoSol = (f.stato === 'emessa' && f.tipo !== 'nota_credito') ? testoStatoSolleciti(f) : ''
@@ -8028,6 +8197,7 @@ async function viewFattura(id) {
     // esiste ancora niente da pagare.
     try {
       await loadPagamenti(); await loadRate()
+      html('fatture-stato-vendita', rigaStatoVenditaHtml(f))   // 103
       // 61c — su una nota di credito il riquadro non c'e': non si incassa, non
       // ha residuo e non ha rate. Al suo posto una riga che dice cosa storna.
       if (f.stato === 'annullata') {
@@ -8558,6 +8728,15 @@ async function annullaDocumento(id) {
   }
 }
 
+// 103 — in cima alla scheda: «✅ Incassata» (anche tramite nota) o «🚫 Annullata».
+function rigaStatoVenditaHtml(f) {
+  var c = statoChiusuraVendita(f)
+  if (c !== 'incassata' && c !== 'annullata') return ''
+  return '<div class="stato-vendita-riga">' + (c === 'annullata'
+    ? badge('err', '🚫 Annullata')
+    : badgePagamentoConResiduo('entrata', f.stato_pagamento, 'tm_conta_fatture', f.id, f.totale)) + '</div>'
+}
+
 // Il riquadro che resta sulla scheda di un documento annullato: quando, e
 // perché. Vuoto se il documento non è annullato.
 function boxAnnullamentoHtml(f) {
@@ -8646,10 +8825,11 @@ function renderDetailActions(f) {
            esc(String(f.cliente_nome || '').replace(/'/g, '')) + '\')">➕ Registra incasso</button>'
       if (f.tipo !== 'nota_credito') a += '<button class="btn-secondary" onclick="creaNotaCredito(\'' + f.id + '\')">↩️ Crea nota di credito</button>'
       // 83 — stesso numero, stessa data; la versione di adesso va nello storico.
-      if (f.tipo !== 'nota_credito') {
+      // 103 — solo il titolare (titolareCache è letto da viewFattura). Si chiede la password.
+      if (f.tipo !== 'nota_credito' && titolareCache === true) {
         a += '<button class="btn-secondary" onclick="riapriPerCorreggere(\'' + esc(f.id) + '\')" ' +
-             'title="Stesso numero e stessa data di emissione. Solo senza pagamenti né note di credito; la versione di adesso va nello storico con il motivo.">' +
-             '✏️ Riapri e correggi</button>'
+             'title="Solo il titolare, dopo la password. Stesso numero e stessa data di emissione. Solo senza pagamenti né note di credito; la versione di adesso va nello storico con il motivo.">' +
+             '✏️ Modifica (riapri e correggi)</button>'
       }
       // 62c — annullare: il numero resta, il documento esce da tutte le somme.
       // Rosso perche' non si torna indietro, ma non e' una cancellazione: il
@@ -14739,7 +14919,9 @@ function fattureContattoHtml(list, residuo) {
     var isNC = f.tipo === 'nota_credito'
     var nome = f.numero ? esc(f.numero) : 'bozza senza numero'
     var stati = statoFatturaBadge(f.stato) +
-                (f.stato === 'emessa' && !isNC ? ' ' + badgePagamento('entrata', f.stato_pagamento) : '')
+                (f.stato === 'emessa' && !isNC
+                  ? ' ' + (f.stato_pagamento === 'pagato' ? badge('ok', '✅ Incassata') : badgePagamento('entrata', f.stato_pagamento))   // 103
+                  : '')
     return '<div class="contatto-fatt-row"' +
              ' onclick="apriFatturaDaRubrica(\'' + f.id + '\')" role="button" tabindex="0"' +
              ' onkeydown="if(event.key===\'Enter\'){apriFatturaDaRubrica(\'' + f.id + '\')}">' +
@@ -18675,37 +18857,34 @@ function nomeUnico(usati, cartella, nome) {
 // I filtri sono quelli del §7C: niente bozze, niente annullate, niente
 // «da confermare». La regia non fatturata resta fuori: non e' un documento
 // fiscale, e' lavoro ancora da fatturare.
-// 83 — quando è stata corretta per l'ultima volta ogni fattura: { id: istante }.
+// 83 · 103 — quali allegati «Fattura» sono di prima dell'ultima correzione: { id: true }.
+// Lo storico lo legge solo il titolare, ma il pacchetto lo prepara anche chi non lo
+// è: la funzione del database (CONT_103) dice solo gli id, per chiunque.
 // Fallisce a voce alta: senza, il pacchetto potrebbe portare al commercialista
 // il PDF di una fattura com'era PRIMA della correzione.
-async function correzioniFatture() {
-  const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_fatture_versioni')
-    .select('fattura_id, corretta_il').eq('azienda_id', currentAziendaId).order('corretta_il').order('id') })   // 84: ordine stabile fra le pagine
+async function allegatiSuperati() {
+  const { data, error } = await leggiTutto(function () { return sb.rpc('tm_conta_allegati_superati').order('allegato_id') })
   if (error) {
-    throw new Error('Non riesco a leggere lo storico delle correzioni delle fatture (' + (error.message || error) +
+    throw new Error('Non riesco a sapere quali PDF sono di prima di una correzione (' + (error.message || error) +
       '): il pacchetto non lo preparo, potrebbe contenere il PDF di una fattura com\'era prima della correzione.')
   }
-  var ultima = {}
-  ;(data || []).forEach(function (v) { ultima[v.fattura_id] = v.corretta_il })
-  return ultima
+  var superati = {}
+  ;(data || []).forEach(function (r) { superati[r.allegato_id] = true })
+  return superati
 }
 
 // 83 — gli allegati di una fattura di vendita che vanno nel pacchetto: un PDF
 // «Fattura» caricato PRIMA dell'ultima correzione è la versione vecchia e resta
 // fuori (al suo posto il programma genera quello giusto). Pura.
-function allegatiValidiPacchetto(lista, correttaIl) {
-  if (!correttaIl) return lista || []
-  var t = new Date(correttaIl).getTime()
-  return (lista || []).filter(function (al) {
-    return !(al.tipo === 'fattura' && al.created_at && new Date(al.created_at).getTime() < t)
-  })
+function allegatiValidiPacchetto(lista, superati) {
+  return (lista || []).filter(function (al) { return !(superati && superati[al.id]) })
 }
 
 async function raccogliDocumentiPacchetto(da, a) {
   var ds = await loadExportDataset()
   // Senza questa lettura ogni documento risulterebbe senza allegati.
   try { await loadAllegati() } catch (_) {}
-  var corrette = await correzioniFatture()   // 83
+  var superati = await allegatiSuperati()   // 83 · 103
   var d  = docsPeriodo(ds, da, a)      // applica gia' il filtro «da confermare»
   var usati = {}
   var voci = []
@@ -18718,7 +18897,7 @@ async function raccogliDocumentiPacchetto(da, a) {
       data: f.data_emissione,
       chi: f.cliente_nome,
       importo: f.totale,
-      allegati: allegatiValidiPacchetto(allegatiDi('tm_conta_fatture', f.id), corrette[f.id]),   // 83
+      allegati: allegatiValidiPacchetto(allegatiDi('tm_conta_fatture', f.id), superati),   // 83 · 103
       id: f.id,
       // Una fattura senza PDF non e' un errore dello Storage: e' un PDF che
       // nessuno ha ancora allegato. Il motivo va scritto per esteso.
@@ -21714,7 +21893,8 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
       (rimborsato > 0.005 ? rigaPagSegno('Rimborsato al cliente', rimborsato) : '') +
       (stralcio > 0.005 ? rigaPagSegno(sconto91 ? 'Sconto di cassa concesso' : 'Stralciato come perdita', -stralcio) : '') +   // 84 · 91
       rigaPagSegno('Residuo', residuo, true, '=') +
-      '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + e.testo) + '</div>' +
+      // 103 — una vendita chiusa si dice «Incassata».
+      '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + ((tabella === 'tm_conta_fatture' && e.testo === 'Incassato') ? 'Incassata' : e.testo)) + '</div>' +
     '</div>' +
     elencoPagamentiHtml(tabella, id, verso, stralcio > 0.005) +
     '<div class="form-actions" style="margin-top:12px">' +
@@ -21728,9 +21908,11 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
           '<button type="button" class="btn-secondary" onclick="apriPianoRateale(\'' + esc(tabella) + '\', \'' +
             esc(id) + '\', ' + (safeNum(importoDoc) || 0) + ', \'' + esc(String(nome || '').replace(/'/g, '')) + '\')">' +
             (rate.length ? '📅 Modifica il piano rateale' : '📅 Crea piano rateale') + '</button>') +
+      // 103 — sulle vendite la storia la vede solo il titolare (CONT_103).
+      ((tabella === 'tm_conta_fatture' && titolareCache !== true) ? '' :
       '<button type="button" class="btn-secondary" onclick="apriStoriaPagamenti(\'' +
         esc(tabella) + '\', \'' + esc(id) + '\', \'' +
-        esc(String(nome || '').replace(/'/g, '')) + '\')">🕐 Storia</button>' +
+        esc(String(nome || '').replace(/'/g, '')) + '\')">🕐 Storia</button>') +
     '</div>' +
     (rate.length
       ? '<div class="card-title" style="margin-top:16px">📅 Rate</div>' + elencoRateHtml(tabella, id)
@@ -24061,7 +24243,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '102'
+var VERSIONE = '103'
 
 function controllaVersionePagina() {
   try {
@@ -25751,6 +25933,8 @@ document.addEventListener('DOMContentLoaded', function () {
   // Ascolta cambi auth
   sb.auth.onAuthStateChange(function (event, session) {
     if (event === 'SIGNED_IN' && session && session.user) {
+      // 103 — la riconferma della password rifà il login dello STESSO utente: il ruolo resta.
+      if (!currentUser || currentUser.id !== session.user.id) titolareCache = null
       currentUser = session.user
       loadAziendaId().then(function () {
         updateSidebarAuth()
@@ -25765,6 +25949,7 @@ document.addEventListener('DOMContentLoaded', function () {
     } else if (event === 'SIGNED_OUT') {
       currentUser = null
       currentAziendaId = null
+      titolareCache = null   // 103
       updateSidebarAuth()
       var badgeNav = el('nav-badge-movimenti')
       if (badgeNav) badgeNav.textContent = '0'

@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Contabilità · Carpenteria Ticinese</title>
   <!-- Identità v100: nome, icona e colore uguali dappertutto (00 DIRETTORE\identita) -->
-  <link rel="manifest" href="manifest.json?v=102" />
+  <link rel="manifest" href="manifest.json?v=103" />
   <meta name="theme-color" content="#1f6fd1" />
-  <link rel="icon" type="image/png" sizes="32x32" href="icone/icona-32.png?v=102" />
-  <link rel="apple-touch-icon" href="icone/icona-180.png?v=102" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icone/icona-32.png?v=103" />
+  <link rel="apple-touch-icon" href="icone/icona-180.png?v=103" />
   <meta name="apple-mobile-web-app-title" content="Contabilità" />
   <!-- ?v= : forza il browser a riprendere CSS/JS aggiornati (niente versioni vecchie in cache) -->
-  <link rel="stylesheet" href="css/style.css?v=102" />
+  <link rel="stylesheet" href="css/style.css?v=103" />
 </head>
-<body data-versione="102">
+<body data-versione="103">
 
 <div id="versione-banner"></div>
 <div id="app">
@@ -127,7 +127,7 @@
 
     <div class="sidebar-footer">
       Carpenteria Ticinese Sagl<br>
-      <span id="sidebar-versione">Versione 102</span>
+      <span id="sidebar-versione">Versione 103</span>
     </div>
 
   </aside>
@@ -1242,7 +1242,9 @@
             <select id="arch-stato" class="form-input" onchange="onFiltroArchivio()">
               <option value="">Tutti</option>
               <option value="aperti">Aperti</option>
-              <option value="chiusi">Chiusi</option>
+              <option value="incassate">✅ Incassate (vendite)</option>
+              <option value="annullate">🚫 Annullate (vendite)</option>
+              <option value="chiusi">Altri chiusi (acquisti, movimenti, conferme…)</option>
             </select>
           </div>
         </div>
@@ -1464,15 +1466,15 @@
             <div class="form-group" style="flex:2; margin-bottom:0">
               <label for="fatture-filtro-stato" class="form-label">Stato</label>
               <select id="fatture-filtro-stato" class="form-input" onchange="renderFattureTable()">
-                <option value="tutti" selected>Tutti (aperti e chiusi)</option>
-                <option value="aperti">Aperti</option>
+                <option value="tutti" selected>Tutte</option>
+                <option value="aperti">Aperte</option>
                 <optgroup label="Fatture">
                   <option value="bozza">Bozze</option>
                   <option value="non_incassato">🔵 Non incassate</option>
                   <option value="parziale">🟠 Incassate in parte</option>
                   <option value="incassato">✅ Incassate</option>
                   <option value="stralciata">📉 Stralciate (perdite)</option>
-                  <option value="annullata">Annullate</option>
+                  <option value="annullata">🚫 Annullate</option>
                 </optgroup>
                 <optgroup label="Note di credito">
                   <option value="nc_da_rimborsare">↩️ Da rimborsare</option>
@@ -1726,6 +1728,8 @@
 
         <div id="fatture-detail-banner" role="status" aria-live="polite" style="margin-bottom:16px"></div>
         <!-- 62c - il riquadro del documento annullato: quando, e perche'. -->
+        <!-- 103 - «Incassata» o «Annullata», in cima -->
+        <div class="no-print" id="fatture-stato-vendita"></div>
         <div id="fatture-annullata"></div>
         <!-- 83 - le versioni di prima di una fattura corretta -->
         <div class="no-print" id="fatture-versioni"></div>
@@ -3045,6 +3049,32 @@
   </div>
 
   <!-- ══ MODALE: una versione precedente di una fattura corretta — 83 ══════ -->
+  <!-- 103 — la riconferma del login prima di modificare una fattura emessa. Il campo si svuota sempre. -->
+  <div id="pw-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="pw-titolo" onkeydown="tastoPasswordLogin(event)">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title" id="pw-titolo">🔑 Riscrivi la tua password</div>
+        <button class="modal-close" onclick="chiudiPasswordLogin(false)" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="pw-testo" class="pw-testo"></p>
+        <div class="form-group">
+          <label for="pw-password" class="form-label">Riscrivi la tua password per confermare</label>
+          <div class="form-hint" id="pw-chi"></div>
+          <input id="pw-password" class="form-input" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" />
+          <div class="form-hint">La password non viene salvata né mostrata.</div>
+        </div>
+        <div id="pw-errore" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button type="button" class="btn-secondary" onclick="chiudiPasswordLogin(false)">✕ Annulla</button>
+          <button type="button" class="btn-primary" id="pw-conferma" onclick="confermaPasswordLogin()">🔑 Conferma</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="versione-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="versione-title">
     <div class="modal-card modal-largo">
       <div class="modal-header">
@@ -3307,7 +3337,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- SheetJS (xlsx) — generazione Excel/CSV, da cdnjs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/app.js?v=102"></script>
+<script src="js/app.js?v=103"></script>
 
 </body>
 </html>
