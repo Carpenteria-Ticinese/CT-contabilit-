@@ -597,6 +597,7 @@ async function doLogin() {
     updateSidebarAuth()
     if (!(await controllaSoloTitolare())) return   // 103
     loadIbanRubrica(true).catch(function () { /* lo dice la Rubrica, quando si apre */ })   // 104
+    controllaLettureNuove()   // 104
     showPage('setup')
     runSetupCheck()
     await refreshDaClassificareCount()
@@ -619,6 +620,7 @@ async function doLogout() {
   currentAziendaId = null
   titolareCache = null   // 103
   chiudiSoloTitolare()   // 103
+  lettureNuove = []; disegnaAvvisoLetture()   // 104
   // FASE 23 / P2 — i dati della ditta se ne vanno con la sessione. Restavano
   // in memoria dopo l'uscita, e chi fosse entrato dopo si sarebbe trovato
   // l'intestazione della ditta precedente su un documento nuovo.
@@ -7926,7 +7928,8 @@ function ibanLeggibile(iban) {
 // ══ 104 · RUBRICA DEI CONTI ════════════════════════════════════════════════
 // I conti della ditta: tm_conta_rubrica_conti. La vecchia tm_conta_iban non si scrive più. Solo il titolare.
 // Lo storico delle assegnazioni si scrive solo con tm_conta_assegna_conto: un periodo si chiude, non si sovrascrive.
-var TIPI_CONTO = { principale: '⭐ Principale', uscite: '📤 Uscite', cantiere: '🏗️ Cantiere' }
+// Nel database il tipo si chiama 'principale'; a schermo «conto preferito», la parola di Umberto.
+var TIPI_CONTO = { principale: '⭐ Preferito', uscite: '📤 Uscite', cantiere: '🏗️ Cantiere' }
 var contiAssegnazioni = []     // righe di tm_conta_rubrica_assegnazioni
 var ibanRubricaErrore = null   // lettura fallita: si dice a schermo, mai un elenco vuoto per silenzio
 var contoInAssegnazione = null
@@ -8005,11 +8008,11 @@ function avvisiRubricaConti(lista) {
   var att = (lista || []).filter(function (c) { return c.attivo })
   var fuori = []
   var pr = att.filter(function (c) { return c.tipo === 'principale' })[0]
-  if (!pr) fuori.push('Manca il conto principale: le commesse senza conto e le fatture nuove non sanno su quale farsi pagare.')
+  if (!pr) fuori.push('Manca il conto preferito: le commesse senza conto e le fatture nuove non sanno su quale farsi pagare.')
   if (!att.some(function (c) { return c.tipo === 'uscite' })) fuori.push('Manca un conto Uscite: quando puoi, segna quello da cui paghi.')
   att.forEach(function (c) {
     if (c.tipo !== 'principale' && /princip/i.test(c.nome || '')) {
-      fuori.push('Il conto «' + c.nome + '» si chiama principale, ma il principale è un altro' + (pr ? ' («' + pr.nome + '»)' : '') + '. Controlla quale è giusto: è quello che si stampa sulle fatture senza un conto scelto.')
+      fuori.push('Il conto «' + c.nome + '» si chiama principale, ma il preferito è un altro' + (pr ? ' («' + pr.nome + '»)' : '') + '. Controlla quale è giusto: il preferito è quello che si stampa sulle fatture senza un conto scelto.')
     }
     if (!ibanCifraGiusta(c.iban)) fuori.push('Il conto «' + c.nome + '»: la cifra di controllo dell\'IBAN non torna.')
   })
@@ -8099,7 +8102,7 @@ function buildEditorIbanOptions(currentIban) {
   // FASE 18 — IBAN per intero: qui si SCEGLIE su quale conto farsi pagare, e
   // due conti che finiscono uguale erano indistinguibili.
   var defMask = a.iban ? ' (' + ibanLeggibile(a.iban) + ')' : ' (non impostato)'
-  var out = '<option value="">Conto principale' + esc(defMask) + '</option>'
+  var out = '<option value="">Conto preferito' + esc(defMask) + '</option>'
   var attive = (ibanRubrica || []).filter(function (x) { return x.attivo })
   for (var i = 0; i < attive.length; i++) {
     var e = attive[i]
@@ -8178,7 +8181,7 @@ function rigaContoHtml(e) {
   var aperte = commesseApertePerConto(e.id)
   var commesse = aperte.map(function (a) {
     return '<div class="conto-commessa">🏗️ Incassa per <strong>' + esc(cantiereLabel(a.cantiere_id)) + '</strong> dal ' + esc(fmtDate(a.dal)) +
-      ' <button type="button" class="btn-secondary conto-tasto" onclick="togliAssegnazioneConto(\'' + esc(a.cantiere_id) + '\')">↩️ Torna al principale</button></div>'
+      ' <button type="button" class="btn-secondary conto-tasto" onclick="togliAssegnazioneConto(\'' + esc(a.cantiere_id) + '\')">↩️ Torna al preferito</button></div>'
   }).join('')
   return '<div class="conto-riga' + (e.attivo ? '' : ' chiuso') + '">' +
     '<div class="conto-testa">' +
@@ -8192,14 +8195,36 @@ function rigaContoHtml(e) {
     (e.banca ? '<div class="dim">Banca: ' + esc(e.banca) + '</div>' : '') +
     commesse +
     '<div class="conto-tasti">' +
+      ((e.attivo && e.tipo !== 'principale') ? '<button type="button" class="btn-primary conto-tasto" onclick="faiContoPreferito(\'' + e.id + '\')">⭐ Fai preferito</button>' : '') +
       '<button type="button" class="btn-secondary conto-tasto" onclick="editIbanEntry(\'' + e.id + '\')">✏️ Modifica</button>' +
       (e.attivo ? '<button type="button" class="btn-secondary conto-tasto" onclick="apriAssegnaConto(\'' + e.id + '\')">🏗️ Assegna a commessa</button>' : '') +
       '<button type="button" class="btn-secondary conto-tasto" onclick="mostraStoricoConto(\'' + e.id + '\')">📜 Storico</button>' +
       (e.attivo
-        ? '<button type="button" class="btn-secondary conto-tasto" onclick="toggleIbanChiuso(\'' + e.id + '\', false)">🔒 Disattiva</button>'
+        ? (e.tipo === 'principale' ? '' : '<button type="button" class="btn-secondary conto-tasto" onclick="toggleIbanChiuso(\'' + e.id + '\', false)">🔒 Disattiva</button>')
         : '<button type="button" class="btn-secondary conto-tasto" onclick="toggleIbanChiuso(\'' + e.id + '\', true)">↩️ Riattiva</button>') +
     '</div>' +
     '<div id="conto-storico-' + e.id + '"></div>' +
+  '</div>'
+}
+
+// In cima alla Rubrica: qual è il preferito, e il tasto per cambiarlo. Lo cambia solo il titolare, quando vuole.
+function riquadroPreferitoHtml(lista) {
+  var p = (lista || []).filter(function (c) { return c.tipo === 'principale' && c.attivo })[0]
+  var altri = (lista || []).filter(function (c) { return c.attivo && c.tipo !== 'principale' })
+  return '<div class="conto-preferito">' +
+    '<div class="form-label">⭐ Il tuo conto preferito</div>' +
+    (p ? '<div class="conto-preferito-nome">' + esc(p.nome) + '</div><div class="iban-mask">' + esc(ibanLeggibile(p.iban)) + '</div>'
+       : '<div class="pag-nota conto-avviso">⚠️ Nessun conto preferito: sceglilo qui sotto.</div>') +
+    '<div class="form-hint">Si stampa sulle fatture senza un conto scelto e sulle commesse senza conto. Lo cambi solo tu, quando vuoi. Le fatture già fatte non cambiano.</div>' +
+    (altri.length
+      ? '<div class="conto-tasti"><select id="conto-preferito-scelta" class="form-input conto-preferito-scelta" aria-label="Nuovo conto preferito">' +
+          '<option value="">— scegli il nuovo preferito —</option>' +
+          altri.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.nome + ' · ' + c.valuta + ' · …' + String(c.iban || '').slice(-4)) + '</option>' }).join('') +
+        '</select>' +
+        '<button type="button" class="btn-primary conto-tasto" onclick="cambiaContoPreferito()">⭐ Cambia il conto preferito</button></div>'
+      : '<div class="dim">Per cambiarlo serve un altro conto attivo: creane uno con «➕ Nuovo conto».</div>') +
+    '<div class="conto-tasti"><button type="button" class="btn-secondary conto-tasto" onclick="mostraStoricoPreferito()">📜 Storico del preferito</button></div>' +
+    '<div id="conto-preferito-storico"></div>' +
   '</div>'
 }
 
@@ -8216,6 +8241,7 @@ async function renderIbanRubrica() {
   var list = (ibanRubrica || []).filter(function (x) { return showClosed || x.attivo })
   var avvisi = avvisiRubricaConti(ibanRubrica)
   box.innerHTML =
+    riquadroPreferitoHtml(ibanRubrica) +
     avvisi.map(function (t) { return '<div class="pag-nota conto-avviso">⚠️ ' + esc(t) + '</div>' }).join('') +
     (list.length ? list.map(rigaContoHtml).join('') : '<div class="dim" style="padding:6px 0">Nessun conto in rubrica.</div>')
 }
@@ -8230,6 +8256,9 @@ function riempiFormConto(e) {
   setVal('iban-form-iban', e ? ibanLeggibile(e.iban) : '')
   setVal('iban-form-valuta', e ? e.valuta : 'CHF')
   setVal('iban-form-tipo', e ? e.tipo : 'cantiere')
+  var ePreferito = !!(e && e.tipo === 'principale' && e.attivo)
+  if (el('iban-form-tipo')) el('iban-form-tipo').disabled = ePreferito
+  html('iban-form-tipo-nota', ePreferito ? '<div class="form-hint">È il conto preferito. Per cambiarlo premi «⭐ Fai preferito» su un altro conto.</div>' : '')
   html('iban-form-avviso', '')
   html('iban-banner', '')
   var f = el('iban-form'); if (f) f.style.display = 'block'
@@ -8262,7 +8291,7 @@ async function rileggiIbanAziendale() {
   } catch (e) { console.warn('IBAN aziendale:', e.message) }
 }
 function erroreConto(e) {
-  if (e && e.code === '23505') return 'C\'è già un conto principale attivo: fai principale questo con «Tipo: Principale», oppure disattiva l\'altro.'
+  if (e && e.code === '23505') return 'C\'è già un conto preferito attivo: premi «⭐ Fai preferito» sul conto che vuoi.'
   return (e && e.message) || String(e)
 }
 
@@ -8275,7 +8304,7 @@ async function saveIbanEntry() {
   var prima = editingIbanId ? contoDaId(editingIbanId) : null
   var altro = contoPrincipale()
   var diventaPrincipale = tipo === 'principale' && !(prima && prima.tipo === 'principale' && prima.attivo)
-  if (diventaPrincipale && altro && !window.confirm('Il conto principale oggi è «' + altro.nome + '»: diventa di tipo Cantiere e «' + nome + '» prende il suo posto.\n\nLe fatture nuove e le commesse senza conto useranno questo. Continuare?')) return
+  if (diventaPrincipale && altro && !window.confirm(testoCambioPreferito(altro.nome, nome))) return
   var campi = { nome: nome, banca: getVal('iban-form-banca') || null, iban: iban, valuta: getVal('iban-form-valuta') || 'CHF',
                 // Il passaggio a principale lo fa la funzione, tutto insieme: l'indice ne vuole uno solo.
                 tipo: diventaPrincipale ? ((prima && prima.tipo) || 'cantiere') : tipo }
@@ -8317,9 +8346,11 @@ async function toggleIbanChiuso(id, toAttivo) {
   if (!currentAziendaId) return
   var c = contoDaId(id)
   if (!toAttivo && c) {
+    // Il database lo rifiuta comunque: qui si spiega prima cosa fare.
+    if (c.tipo === 'principale') { showFattureBanner('iban-banner', 'err', '«' + c.nome + '» è il conto preferito: prima scegline un altro, poi puoi disattivarlo.'); return }
     var aperte = commesseApertePerConto(id).map(function (a) { return cantiereLabel(a.cantiere_id) })
-    var testo = c.tipo === 'principale' ? 'Questo è il conto principale: resterai senza principale.\n' : ''
-    if (aperte.length) testo += 'Incassa per: ' + aperte.join(', ') + '. Finché è disattivato, queste commesse stampano il principale.\n'
+    var testo = ''
+    if (aperte.length) testo += 'Incassa per: ' + aperte.join(', ') + '. Finché è disattivato, queste commesse stampano il conto preferito.\n'
     if (testo && !window.confirm(testo + '\nDisattivarlo?')) return
   }
   try {
@@ -8332,6 +8363,150 @@ async function toggleIbanChiuso(id, toAttivo) {
     showFattureBanner('iban-banner', 'ok', toAttivo ? 'Conto riattivato.' : 'Conto disattivato: non si propone più, lo storico resta.')
   } catch (e) {
     showFattureBanner('iban-banner', 'err', 'Aggiornamento del conto: ' + erroreConto(e))
+  }
+}
+
+// ── Il conto preferito: lo cambia solo il titolare, dalla Rubrica, con lo storico ─
+function testoCambioPreferito(primaNome, dopoNome) {
+  return 'Il conto preferito oggi è «' + primaNome + '»: diventa di tipo Cantiere e «' + dopoNome + '» prende il suo posto.\n\nLe fatture nuove e le commesse senza conto useranno «' + dopoNome + '». Le fatture già fatte non cambiano.\n\nContinuare?'
+}
+async function faiContoPreferito(id) {
+  var c = contoDaId(id), prima = contoPrincipale()
+  if (!c) return
+  if (prima && prima.id === id) { showFattureBanner('iban-banner', 'ok', '«' + c.nome + '» è già il conto preferito.'); return }
+  if (!window.confirm(testoCambioPreferito(prima ? prima.nome : '—', c.nome))) return
+  try {
+    const { error } = await sb.rpc('tm_conta_fai_principale', { p_conto: id })
+    if (error) throw error
+    await loadIbanRubrica(true)
+    await rileggiIbanAziendale()
+    await renderIbanRubrica()
+    showFattureBanner('iban-banner', 'ok', 'Conto preferito cambiato alle ' + oraAdesso() + ': ora è «' + c.nome + '». Il cambio è nello storico.')
+  } catch (e) {
+    showFattureBanner('iban-banner', 'err', 'Cambio del conto preferito: ' + erroreConto(e))
+  }
+}
+function cambiaContoPreferito() {
+  var id = getVal('conto-preferito-scelta')
+  if (!id) { showFattureBanner('iban-banner', 'err', 'Scegli prima dalla tendina quale conto vuoi come preferito.'); return }
+  return faiContoPreferito(id)
+}
+// Ogni riga: da quando un conto è diventato preferito. Il cambio lo scrive il registro della rubrica, non l'app.
+function storicoPreferitoHtml(righe, nomeDi) {
+  var entrati = (righe || []).filter(function (x) { return x.campo === 'tipo' && x.dopo === 'principale' })
+  if (!entrati.length) return '<div class="conto-storico dim">Nessun cambio: è il conto che si stampava già prima della Rubrica.</div>'
+  return '<div class="conto-storico">' + entrati.map(function (x) {
+    return '<div class="conto-storico-riga">⭐ ' + esc(fmtDateTime(x.quando)) + ' · diventa preferito <strong>' + esc(nomeDi(x.conto_id)) + '</strong></div>'
+  }).join('') + '</div>'
+}
+async function mostraStoricoPreferito() {
+  var box = el('conto-preferito-storico')
+  if (!box) return
+  if (box.innerHTML) { box.innerHTML = ''; return }
+  try {
+    await richiediAccesso('mostraStoricoPreferito')
+    const { data, error } = await sb.from('tm_conta_rubrica_modifiche').select('conto_id, campo, dopo, quando').eq('azienda_id', currentAziendaId).eq('campo', 'tipo').eq('dopo', 'principale').order('quando', { ascending: false })
+    if (error) throw error
+    box.innerHTML = storicoPreferitoHtml(data, function (id) { var c = contoDaId(id); return c ? c.nome : 'conto tolto' })
+  } catch (e) {
+    box.innerHTML = '<div class="pag-nota conto-avviso">❌ Non riesco a leggere lo storico: ' + esc(e.message || e) + '</div>'
+  }
+}
+
+// ── Il registro delle letture: chi ha avuto un IBAN per stampare ─────────────
+// Lo scrive tm_conta_iban_per_stampa. All'apertura il titolare viene avvisato delle letture di altri non ancora viste.
+var lettureNuove = []
+var NOMI_DOCUMENTO = { commessa: 'commessa', offerta: 'offerta', fattura: 'fattura' }
+function rigaLetturaHtml(x, mioId) {
+  return '<div class="conto-storico-riga">👁️ ' + esc(fmtDateTime(x.quando)) + ' · <strong>' + esc(x.chi) + '</strong>' + (x.utente === mioId ? ' (tu)' : '') +
+    ' · ' + esc(NOMI_DOCUMENTO[x.tipo_documento] || x.tipo_documento) + (x.documento ? ' «' + esc(x.documento) + '»' : '') +
+    ' · conto «' + esc(x.conto_nome || '—') + '»' + ((!x.vista_il && x.utente !== mioId) ? ' · <strong>nuova</strong>' : '') + '</div>'
+}
+// Chi e quante, in una frase. Le letture sono già le sole degli altri.
+function testoLettureNuove(lista) {
+  var perChi = {}
+  ;(lista || []).forEach(function (x) { perChi[x.chi] = (perChi[x.chi] || 0) + 1 })
+  var nomi = Object.keys(perChi).map(function (n) { return n + ' (' + perChi[n] + ')' })
+  var n = (lista || []).length
+  return (n === 1 ? '1 lettura nuova' : n + ' letture nuove') + ' di un IBAN da parte di altri: ' + nomi.join(', ') + '.'
+}
+function disegnaAvvisoLetture(errore) {
+  var box = el('avviso-letture')
+  if (!box) return
+  if (errore) {
+    box.innerHTML = '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span><div class="msg">Non riesco a leggere il registro delle letture: ' + esc(errore) + '</div></div>'
+    return
+  }
+  if (!lettureNuove.length) { box.innerHTML = ''; return }
+  box.innerHTML = '<div class="fase-banner warn"><span class="icon" aria-hidden="true">👁️</span><div class="msg">' + esc(testoLettureNuove(lettureNuove)) +
+    '<div class="conto-tasti"><button type="button" class="btn-secondary conto-tasto" onclick="apriRegistroLetture()">📜 Vedi il registro</button>' +
+    '<button type="button" class="btn-secondary conto-tasto" onclick="segnaLettureViste()">✅ Viste</button></div></div></div>'
+}
+async function controllaLettureNuove() {
+  if (!currentUser || !currentAziendaId) return
+  try {
+    const { data, error } = await sb.from('tm_conta_rubrica_letture').select('chi, tipo_documento, documento, conto_nome, quando')
+      .eq('azienda_id', currentAziendaId).is('vista_il', null).neq('utente', currentUser.id).order('quando', { ascending: false })
+    if (error) throw error
+    lettureNuove = data || []
+    disegnaAvvisoLetture()
+  } catch (e) {
+    lettureNuove = []
+    disegnaAvvisoLetture(e.message || String(e))
+  }
+}
+async function segnaLettureViste() {
+  if (!lettureNuove.length) return
+  try {
+    // Fino all'ultima che si ha davanti: una lettura arrivata intanto resta nuova.
+    const { error } = await sb.rpc('tm_conta_letture_segna_viste', { p_fino: lettureNuove[0].quando })
+    if (error) throw error
+    await controllaLettureNuove()
+    if (el('conti-registro') && el('conti-registro').innerHTML) { el('conti-registro').innerHTML = ''; await mostraRegistroLetture() }
+  } catch (e) {
+    disegnaAvvisoLetture(e.message || String(e))
+  }
+}
+async function mostraRegistroLetture() {
+  var box = el('conti-registro')
+  if (!box) return
+  try {
+    await richiediAccesso('mostraRegistroLetture')
+    const { data, error } = await sb.from('tm_conta_rubrica_letture').select('utente, chi, tipo_documento, documento, conto_nome, quando, vista_il')
+      .eq('azienda_id', currentAziendaId).order('quando', { ascending: false }).limit(200)
+    if (error) throw error
+    var mio = currentUser && currentUser.id
+    box.innerHTML = '<div class="conto-storico"><div class="form-label">👁️ Registro delle letture (le ultime 200)</div>' +
+      ((data || []).length ? data.map(function (x) { return rigaLetturaHtml(x, mio) }).join('') : '<div class="dim">Nessuno ha ancora letto un IBAN per stampare.</div>') + '</div>'
+  } catch (e) {
+    box.innerHTML = '<div class="pag-nota conto-avviso">❌ Non riesco a leggere il registro: ' + esc(e.message || e) + '</div>'
+  }
+}
+// Dall'avviso: si apre Impostazioni ditta e si va al registro.
+async function apriRegistroLetture() {
+  showPage('impostazioni')
+  try { await initImpostazioniPage() } catch (_) { /* la pagina si apre lo stesso: il registro si legge a parte */ }
+  await mostraRegistroLetture()
+  var b = el('conti-registro')
+  if (b && b.scrollIntoView) b.scrollIntoView({ block: 'center' })
+}
+// Un conto tolto (solo dalla vecchia rubrica della v103, o a mano) si ritrova qui, con IBAN e banca.
+function righeContiCancellatiHtml(righe) {
+  if (!(righe || []).length) return '<div class="dim">Nessun conto cancellato.</div>'
+  return righe.map(function (x) {
+    return '<div class="conto-storico-riga">🗑️ ' + esc(fmtDateTime(x.quando)) + ' · <strong>' + esc(x.prima || '—') + '</strong> · ' + esc(ibanLeggibile(x.conto_iban) || '—') + (x.conto_banca ? ' · ' + esc(x.conto_banca) : '') + '</div>'
+  }).join('')
+}
+async function mostraContiCancellati() {
+  var box = el('conti-registro')
+  if (!box) return
+  try {
+    await richiediAccesso('mostraContiCancellati')
+    const { data, error } = await sb.from('tm_conta_rubrica_modifiche').select('prima, conto_iban, conto_banca, quando').eq('azienda_id', currentAziendaId).eq('campo', 'cancellato').order('quando', { ascending: false })
+    if (error) throw error
+    box.innerHTML = '<div class="conto-storico"><div class="form-label">🗑️ Conti cancellati</div>' + righeContiCancellatiHtml(data) + '</div>'
+  } catch (e) {
+    box.innerHTML = '<div class="pag-nota conto-avviso">❌ Non riesco a leggere il registro: ' + esc(e.message || e) + '</div>'
   }
 }
 
@@ -8352,6 +8527,7 @@ async function apriAssegnaConto(id) {
     return '<option value="' + esc(k.id) + '">' + esc(nomeCantiere(k, true)) + '</option>'
   }).join('')
   setVal('conto-assegna-dal', oggiISO())
+  if (el('conto-assegna-dal')) el('conto-assegna-dal').max = oggiISO()   // il database le rifiuta comunque
   setVal('conto-assegna-note', '')
   html('conto-assegna-banner', '')
   aggiornaAvvisoAssegna()
@@ -8369,7 +8545,7 @@ function testiSpostamentoConto(conto, cantiereId) {
   if (conto.tipo === 'uscite') fuori.push('È un conto Uscite: di solito non serve per incassare.')
   if (conto.tipo === 'cantiere') {
     commesseApertePerConto(conto.id).forEach(function (a) {
-      if (a.cantiere_id !== cantiereId) fuori.push('Questo conto oggi incassa per «' + cantiereLabel(a.cantiere_id) + '» dal ' + fmtDate(a.dal) + ': quel periodo si chiude e quella commessa torna al principale.')
+      if (a.cantiere_id !== cantiereId) fuori.push('Questo conto oggi incassa per «' + cantiereLabel(a.cantiere_id) + '» dal ' + fmtDate(a.dal) + ': quel periodo si chiude e quella commessa torna al preferito.')
     })
   }
   var aperta = cantiereId ? assegnazioneAperta(cantiereId) : null
@@ -8387,6 +8563,7 @@ function aggiornaAvvisoAssegna() {
 async function salvaAssegnaConto() {
   var commessa = getVal('conto-assegna-commessa'), dal = getVal('conto-assegna-dal')
   if (!commessa || !dal) { showFattureBanner('conto-assegna-banner', 'err', 'Servono la commessa e la data.'); return }
+  if (dal > oggiISO()) { showFattureBanner('conto-assegna-banner', 'err', 'La data è nel futuro: si può scegliere al massimo oggi.'); return }
   var btn = el('conto-assegna-salva'); if (btn) btn.disabled = true
   try {
     const { error } = await sb.rpc('tm_conta_assegna_conto', { p_cantiere: commessa, p_conto: contoInAssegnazione, p_dal: dal, p_note: getVal('conto-assegna-note') || null })
@@ -8402,13 +8579,13 @@ async function salvaAssegnaConto() {
   }
 }
 async function togliAssegnazioneConto(cantiereId) {
-  if (!window.confirm('«' + cantiereLabel(cantiereId) + '» torna a incassare sul conto principale. Il periodo si chiude oggi e resta nello storico. Continuare?')) return
+  if (!window.confirm('«' + cantiereLabel(cantiereId) + '» torna a incassare sul conto preferito. Il periodo si chiude oggi e resta nello storico. Continuare?')) return
   try {
     const { error } = await sb.rpc('tm_conta_assegna_conto', { p_cantiere: cantiereId, p_conto: null, p_dal: oggiISO() })
     if (error) throw error
     await loadIbanRubrica(true)
     await renderIbanRubrica()
-    showFattureBanner('iban-banner', 'ok', 'Commessa tornata al principale alle ' + oraAdesso() + '.')
+    showFattureBanner('iban-banner', 'ok', 'Commessa tornata al preferito alle ' + oraAdesso() + '.')
   } catch (e) {
     showFattureBanner('iban-banner', 'err', 'Assegnazione: ' + (e.message || e))
   }
@@ -8423,7 +8600,8 @@ function storicoContoHtml(assegnazioni, modifiche) {
   }).join('')
   var m = modifiche.map(function (x) {
     var due = (x.prima != null ? esc(x.prima) : '—') + ' → ' + (x.dopo != null ? esc(x.dopo) : '—')
-    return '<div class="conto-storico-riga">✏️ ' + esc(fmtDateTime(x.quando)) + ' · ' + esc(CAMPI_CONTO[x.campo] || x.campo) + ': ' + due + '</div>'
+    var conto = x.conto_iban ? ' · ' + esc(ibanLeggibile(x.conto_iban)) + (x.conto_banca ? ' · ' + esc(x.conto_banca) : '') : ''
+    return '<div class="conto-storico-riga">✏️ ' + esc(fmtDateTime(x.quando)) + ' · ' + esc(CAMPI_CONTO[x.campo] || x.campo) + ': ' + due + conto + '</div>'
   }).join('')
   return '<div class="conto-storico">' +
     '<div class="form-label">Commesse</div>' + (a || '<div class="dim">Mai assegnato a una commessa.</div>') +
@@ -8435,7 +8613,7 @@ async function mostraStoricoConto(id) {
   if (!box) return
   if (box.innerHTML) { box.innerHTML = ''; return }
   try {
-    const { data, error } = await sb.from('tm_conta_rubrica_modifiche').select('campo, prima, dopo, quando').eq('conto_id', id).order('quando', { ascending: false })
+    const { data, error } = await sb.from('tm_conta_rubrica_modifiche').select('campo, prima, dopo, quando, conto_iban, conto_banca').eq('conto_id', id).order('quando', { ascending: false })
     if (error) throw error
     box.innerHTML = storicoContoHtml((contiAssegnazioni || []).filter(function (a) { return a.conto_id === id }), data || [])
   } catch (e) {
@@ -26562,6 +26740,7 @@ document.addEventListener('DOMContentLoaded', function () {
         updateSidebarAuth()
         if (!(await controllaSoloTitolare())) return   // 103
         loadIbanRubrica(true).catch(function () { /* lo dice la Rubrica, quando si apre */ })   // 104
+        controllaLettureNuove()   // 104
         // Se l'indirizzo chiede una schermata precisa si apre quella, altrimenti
         // si parte dal setup come sempre.
         if (!apriDaIndirizzo()) { showPage('setup'); runSetupCheck() }

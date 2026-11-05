@@ -134,6 +134,7 @@
 
   <!-- ── Contenuto principale ─────────────────────────────────────────────── -->
   <main id="content">
+    <div id="avviso-letture" role="status"></div>
 
     <!-- ══ PAGINA: Login ══════════════════════════════════════════════════ -->
     <div id="page-login" class="page">
@@ -2490,7 +2491,7 @@
       <div class="card">
         <div class="card-title">💳 Pagamento e contatti</div>
         <div class="form-group">
-          <label for="imp-iban" class="form-label">IBAN del conto principale <span class="req" aria-hidden="true">*</span></label>
+          <label for="imp-iban" class="form-label">IBAN del conto preferito <span class="req" aria-hidden="true">*</span></label>
           <input type="text" id="imp-iban" class="form-input" maxlength="40" readonly placeholder="Si sceglie nella Rubrica dei conti" />
           <div class="form-hint">Si cambia nella Rubrica dei conti, più sotto in questa pagina.</div>
         </div>
@@ -2831,7 +2832,7 @@
           <button type="button" class="btn-secondary conto-tasto" onclick="openIbanForm()">➕ Nuovo conto</button>
         </div>
         <p style="font-size:14px; color:var(--text2); margin-bottom:12px">
-          I conti della ditta. Una commessa incassa sul conto assegnato, altrimenti sul principale.
+          I conti della ditta. Una commessa incassa sul conto assegnato, altrimenti sul conto preferito.
           Un conto disattivato non si propone più, ma resta nello storico. Solo tu vedi questa rubrica.
         </p>
 
@@ -2863,10 +2864,11 @@
             <div class="form-group" style="flex:1">
               <label for="iban-form-tipo" class="form-label">Tipo</label>
               <select id="iban-form-tipo" class="form-input">
-                <option value="principale">⭐ Principale</option>
+                <option value="principale">⭐ Preferito</option>
                 <option value="uscite">📤 Uscite</option>
                 <option value="cantiere">🏗️ Cantiere</option>
               </select>
+              <div id="iban-form-tipo-nota"></div>
             </div>
           </div>
           <div class="form-actions" style="margin-top:6px">
@@ -2881,6 +2883,11 @@
           <input type="checkbox" id="iban-show-closed" onchange="renderIbanRubrica()" />
           <span>Mostra anche i conti non attivi</span>
         </label>
+        <div class="conto-tasti">
+          <button type="button" class="btn-secondary conto-tasto" onclick="mostraRegistroLetture()">👁️ Registro delle letture</button>
+          <button type="button" class="btn-secondary conto-tasto" onclick="mostraContiCancellati()">🗑️ Conti cancellati</button>
+        </div>
+        <div id="conti-registro"></div>
       </div>
 
     </div>

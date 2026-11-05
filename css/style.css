@@ -1426,6 +1426,11 @@ textarea.cell-desc {
 .conto-storico { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .conto-storico-riga { padding: 4px 0; overflow-wrap: anywhere; }
 .conto-avviso { margin-bottom: 8px; }
+.conto-preferito { border: 2px solid var(--primary); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.conto-preferito-nome { font-size: 18px; font-weight: 700; }
+.conto-preferito .iban-mask { font-size: 16px; overflow-wrap: anywhere; }
+.conto-preferito-scelta { flex: 1 1 220px; min-height: 44px; width: auto; }
+#avviso-letture .fase-banner { margin: 8px 0; }
 
 /* ── FASE 24 — LA DIFFERENZA IVA (indicatore, pagina Situazione) ──────────
    Due riquadri affiancati, che su schermo stretto si impilano. Il verso del
