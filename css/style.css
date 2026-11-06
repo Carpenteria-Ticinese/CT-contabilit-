@@ -1426,6 +1426,25 @@ textarea.cell-desc {
 .conto-storico { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .conto-storico-riga { padding: 4px 0; overflow-wrap: anywhere; }
 .conto-avviso { margin-bottom: 8px; }
+.nota-riga { font-size: 14px; margin-top: 3px; overflow-wrap: anywhere; }
+tr.riga-trovata { outline: 3px solid var(--primary); outline-offset: -3px; }
+/* 104 — l'elenco Acquisti al telefono: una scheda per riga, senza scorrere di lato. */
+@media (max-width: 700px) {
+  #acquisti-table .table-wrap { overflow: visible; }
+  #acquisti-table table, #acquisti-table tbody, #acquisti-table tr, #acquisti-table td { display: block; width: 100%; }
+  #acquisti-table table { min-width: 0; }
+  #acquisti-table thead { display: none; }
+  #acquisti-table tr { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; padding: 8px 6px; }
+  #acquisti-table td { padding: 3px 6px; border: 0; text-align: left; white-space: normal; }
+  #acquisti-table td:nth-child(2)::before { content: 'Numero o tipo: '; }
+  #acquisti-table td:nth-child(3)::before { content: 'Data: '; }
+  #acquisti-table td:nth-child(4)::before { content: 'Importo: '; }
+  #acquisti-table td:nth-child(5)::before { content: 'Stato: '; }
+  #acquisti-table td:nth-child(6)::before { content: 'Cantiere: '; }
+  #acquisti-table td:nth-child(n+2):nth-child(-n+6)::before { color: var(--text2); font-size: 14px; }
+  #acquisti-table td.row-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  #acquisti-table .icon-btn { min-height: 44px; }
+}
 .conto-preferito { border: 2px solid var(--primary); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
 .conto-preferito-nome { font-size: 18px; font-weight: 700; }
 .conto-preferito .iban-mask { font-size: 16px; overflow-wrap: anywhere; }

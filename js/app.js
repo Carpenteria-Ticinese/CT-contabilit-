@@ -794,6 +794,7 @@ async function loadCanalA() {
   // nel database non c'è ancora si rilegge senza, e senza foto_path come prima.
   try {
     var COLONNE_SPESE = [
+      'id, data, descrizione, importo, valuta, cantiere_id, note, foto_path, tipo_doc, documento, destinazione, tipo_spesa',   // 104
       'id, data, descrizione, importo, valuta, cantiere_id, note, foto_path, tipo_doc, documento',
       'id, data, descrizione, importo, valuta, cantiere_id, note, foto_path, tipo_doc',
       'id, data, descrizione, importo, valuta, cantiere_id, note']
@@ -825,6 +826,9 @@ async function loadCanalA() {
         _foto_path:   s.foto_path || null,   // 88 — il giustificativo nell'App Cantieri
         _tipo_doc:    s.tipo_doc || null,
         _documento:   s.documento || null,
+        note_cantiere: s.note || null,          // 104 — la nota dell'operaio: qui si legge e basta
+        _destinazione: s.destinazione || null,  // 104 — dove va la spesa quando non c'è una commessa
+        _tipo_spesa:  s.tipo_spesa || null,     // 104 — per il consiglio
         _icon:        '📦',
         _match_field: 'desc',
         _match_value: s.descrizione || null
@@ -1011,6 +1015,9 @@ async function loadCanalB() {
 }
 
 // ─── LISTA «DA CLASSIFICARE» ──────────────────────────────────────────────────
+// 104 — updated_at: «Già classificati» parte dalle ultime classificate.
+var COLONNE_CLASSIFICAZIONI = 'id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at, updated_at'
+
 async function loadDaClassificare() {
   if (!currentUser) {
     html('movimenti-banner',
@@ -1046,7 +1053,7 @@ async function loadDaClassificare() {
     try {
       // 96 — con importo_origine (SQL_FASE96), se c'è.
       const { data, error } = await leggiClassificazioniConOrigine(
-        'id, origine_tipo, origine_id, conto_id, codice_iva_id, categoria, note, imponibile, iva_importo, iva_inclusa, cantiere_id, stato, created_at')   // 86: created_at
+        COLONNE_CLASSIFICAZIONI)   // 86: created_at; 104: updated_at
       if (error) throw error
       for (var k = 0; k < (data || []).length; k++) {
         var kc = data[k].origine_tipo + ':' + data[k].origine_id
@@ -1171,13 +1178,13 @@ function renderListeDaClassificare() {
     // 88 — per le spese la cifra e il cantiere della regola (importoRiga, testoExtraRiga)
     // 96 — una spesa classificata per un'altra cifra si trova con tutte e due.
     var app96 = (m.origine_tipo === 'spesa' && m.importo != null) ? [safeNum(m.importo)] : []
-    if (!corrispondeTesto(fidD.testo, [m.descrizione || '', testoExtraRiga(m) || '', m._sorgente || '', m._tipo_label || ''],
+    if (!corrispondeTesto(fidD.testo, [m.descrizione || '', testoExtraRiga(m) || '', m._sorgente || '', m._tipo_label || '', m.note_cantiere || '', (m._class && m._class.note) || ''],
           [importoRiga(m)].concat(app96, pag.map(function (p) { return p.importo })))) return false
     return corrispondeImportoData(fidD, { importo: importoRiga(m), altriImporti: app96, date: { documento: m.data }, pagamenti: pag })
   }
   var cercando = fidD.attivo || !!fidD.testo
   var daClass = cercando ? daClassTutti.filter(passaD) : daClassTutti
-  var classificati = cercando ? classificatiTutti.filter(passaD) : classificatiTutti
+  var classificati = ordinaGiaClassificati(cercando ? classificatiTutti.filter(passaD) : classificatiTutti)   // 104
   daClassList = daClass
   classificatiList = classificati
   if (cercando && !daClass.length && !classificati.length) {
@@ -1247,6 +1254,7 @@ function renderListeDaClassificare() {
           '<td>' +
             '<div class="mov-desc">' + esc(m.descrizione) + '</div>' +
             (testoExtraRiga(m) ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(testoExtraRiga(m)) + '</div>' : '') +
+            notaRigaSpesaHtml(m) +   // 104
             avvisoSenzaGiornataHtml(m) +   // 86
             giustificativoRigaHtml(m, false) +   // 88
           '</td>' +
@@ -1310,6 +1318,8 @@ function renderListeDaClassificare() {
           '<td>' +
             '<div class="mov-desc">' + esc(cm.descrizione) + '</div>' +
             (testoExtraRiga(cm) ? '<div class="dim" style="font-size:11px;margin-top:2px">' + esc(testoExtraRiga(cm)) + '</div>' : '') +
+            notaRigaSpesaHtml(cm) +   // 104
+            ((cc.updated_at || cc.created_at) ? '<div class="dim nota-riga">🏷 Classificata il ' + esc(fmtDateTime(cc.updated_at || cc.created_at)) + '</div>' : '') +
             '<div style="margin-top:4px">' + etichettaOrigineHtml(cm) + '</div>' +   // 86
             avvisoSenzaGiornataHtml(cm) +
             giustificativoRigaHtml(cm, true) +   // 88
@@ -1326,6 +1336,13 @@ function renderListeDaClassificare() {
     sezioneClassificati =
       '<div class="card">' +
         '<div class="card-title">✅ Già classificati ' + badge('ok', classificati.length + ' totali') + '</div>' +
+        '<div class="form-group" style="max-width:320px">' +
+          '<label for="gia-ordine" class="form-label">Ordina per</label>' +
+          '<select id="gia-ordine" class="form-input" onchange="cambiaOrdineGia(this.value)">' +
+            '<option value="classificazione"' + (ordineGiaClassificati === 'classificazione' ? ' selected' : '') + '>Ultime classificate</option>' +
+            '<option value="documento"' + (ordineGiaClassificati === 'documento' ? ' selected' : '') + '>Data del documento</option>' +
+          '</select>' +
+        '</div>' +
         '<div class="table-wrap"><table>' +
           '<thead><tr>' +
             '<th style="width:100px">Data</th>' +
@@ -2349,12 +2366,24 @@ function messaggioDopoClassifica(modo, salvati, esclusi, primo) {
       esc(esclusi.map(function (x) { return '«' + x.m.descrizione + '»: ' + x.motivo }).join(' · ')) + '</small></div></div>')
     return
   }
+  // 104 — dove si ritrova: in Acquisti, su quella riga.
+  var tastoA = function (id) {
+    return '<div class="conto-tasti"><button type="button" class="btn-secondary conto-tasto" onclick="vaiARigaAcquisti(' +
+      (id ? '\'' + esc(id) + '\'' : 'null') + ')">📄 Apri in Acquisti</button></div>'
+  }
   if (modo === 'single' && primo && primo.origine_tipo === 'spesa') {
     var g = statoGiustificativo(primo)
     html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span><div class="msg">' +
-      'Classificata «' + esc(primo.descrizione) + '». ' + (g && g.tipo === 'copia'
+      'Classificato — lo trovi in Acquisti.<small>«' + esc(primo.descrizione) + '». ' + (g && g.tipo === 'copia'
         ? '📎 Il giustificativo è conservato nella Contabilità.'
-        : esc(testoSenzaGiustificativo(primo)) + ': l\'avviso resta sulla riga.') + '</div></div>')
+        : esc(testoSenzaGiustificativo(primo)) + ': l\'avviso resta sulla riga.') + '</small>' + tastoA(primo.origine_id) + '</div></div>')
+  } else if (modo === 'single' && primo && primo.origine_tipo === 'acquisto') {
+    html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span><div class="msg">' +
+      'Classificato — lo trovi in Acquisti.' + tastoA(primo.origine_id) + '</div></div>')
+  } else if (modo !== 'single') {
+    var nSp = (salvati || []).filter(function (x) { return x.origine_tipo === 'spesa' }).length
+    if (nSp) html('movimenti-banner', '<div class="fase-banner ok" role="status"><span class="icon" aria-hidden="true">✅</span><div class="msg">' +
+      (nSp === 1 ? 'Classificato — lo trovi in Acquisti.' : 'Classificate ' + nSp + ' spese — le trovi in Acquisti.') + tastoA(null) + '</div></div>')
   }
 }
 
@@ -2655,11 +2684,12 @@ async function loadCantieri(force) {
     // 'cantieri' e' una tabella di Anagrafiche (commesse): qui si legge e
     // basta. Dalla 98 il programma non scrive piu' su questa tabella.
     const { data, error } = await sb.from('cantieri')
-      .select('id, nome, luogo, stato, committente').limit(500)
+      .select('id, nome, luogo, stato, committente, codice_interno').limit(500)
     if (error) throw error
     cantieriCache = (data || []).map(function (c) {
       return { id: c.id, nome: c.nome, luogo: c.luogo || null,
-               stato: c.stato || null, committente: c.committente || null }
+               stato: c.stato || null, committente: c.committente || null,
+               codice_interno: c.codice_interno || null }   // 104 — gli interni si trovano da qui, mai dal nome
     })
     segnaCacheOk('cantieri')
     return
@@ -2924,7 +2954,8 @@ async function openSingleClassify(m, prefill, opzioni) {
   el('cls-banner').innerHTML = ''
   el('cls-suggest').style.display = 'none'
   el('cls-nuovo-conto').style.display = 'none'
-  el('cls-note').value = (prefill && prefill.note) ? notaSenzaImporto(prefill.note) : ''   // 96 — la parte della cifra sta sopra
+  // 96 — la parte della cifra sta sopra. 104 — una spesa nuova parte dalla nota di Cantieri, che là resta com'è.
+  el('cls-note').value = prefill ? notaSenzaImporto(prefill.note) : (m.note_cantiere || '')
   el('cls-conto-search').value = ''
   el('cls-cantiere-group').style.display = 'block'
   el('cls-cantiere-bulk-group').style.display = 'none'
@@ -2939,7 +2970,8 @@ async function openSingleClassify(m, prefill, opzioni) {
       (m.origine_tipo === 'spesa' && testoDueCifreSpesa(importoRiga(m), m.importo)
         ? '<span class="importo-classificato">🏗️ ' + esc(testoDueCifreSpesa(importoRiga(m), m.importo)) + '</span>' : '') +
       '<span>' + esc(m._sorgente + ' · ' + m._tipo_label) + '</span>' +
-    '</div>'
+    '</div>' +
+    (m.note_cantiere ? '<div class="nota-riga">🏗️ Nota di Cantieri: ' + esc(m.note_cantiere) + '</div>' : '')   // 104
 
   el('classify-overlay').style.display = 'flex'
   registraAperturaModale('classify-overlay')
@@ -2954,8 +2986,9 @@ async function openSingleClassify(m, prefill, opzioni) {
   // Resta modificabile: una spesa si puo' dividere su conti con IVA diversa.
   el('cls-iva').innerHTML = buildIvaOptions(
     prefill ? prefill.codice_iva_id : (m.codice_iva_id || null))
-  el('cls-cantiere').innerHTML = buildCantiereOptions(prefill ? prefill.cantiere_id : m.cantiere_id, true)
+  el('cls-cantiere').innerHTML = buildCantiereOptions(prefill ? prefill.cantiere_id : cantierePropostoSpesa(m), true)   // 104
   html('cls-cantiere-vuoto', notaCantieriVuoti())
+  html('cls-cantiere-origine', esc(testoDestinazioneSpesa(m)))   // 104
   setIvaInclusa(prefill ? (prefill.iva_inclusa !== false) : true)
 
   // FASE 25 — un documento gia' diviso si riapre diviso, con le sue righe.
@@ -2978,6 +3011,7 @@ async function openSingleClassify(m, prefill, opzioni) {
     try {
       var s = await suggestClassificazione(m)
       if (s) applySuggestion(s)
+      else mostraNessunConsiglio(m)   // 104
     } catch (_) { /* suggerimento non bloccante */ }
   }
 }
@@ -3038,7 +3072,8 @@ async function openBulkPanel() {
   preparaCampoGruppo()
   el('cls-iva').innerHTML = buildIvaOptions(null)
   el('cls-cantiere-comune').innerHTML = buildCantiereOptions(null, true)
-  html('cls-cantiere-bulk-vuoto', notaCantieriVuoti())
+  html('cls-cantiere-bulk-vuoto', notaCantieriVuoti() +
+    '<div class="form-hint">Senza un cantiere comune, ogni spesa va sul suo: la commessa, o la destinazione scelta in Cantieri (Spese ditta e Magazzino). Attrezzature e Altro restano da assegnare.</div>')   // 104
   setIvaInclusa(true)
 }
 
@@ -3119,6 +3154,24 @@ async function suggestClassificazione(mov) {
   if (mov && mov.origine_tipo === 'acquisto' && mov._conto_proposto) {
     return { conto_id: mov._conto_proposto, codice_iva_id: mov.codice_iva_id || null, iva_inclusa: true, _daLettura: true }
   }
+  // 104 — l'ordine: stessa descrizione, poi stesso tipo di spesa. La lettura AI solo col tasto: costa.
+  var uguale = await consiglioDaDescrizione(mov)
+  if (uguale) return Object.assign({}, uguale, { _fonte: 'descrizione' })
+  return consiglioDaTipoSpesa(mov)
+}
+
+// 104 — l'ultima spesa dello stesso tipo già classificata. «Altro» non dice niente: non si usa.
+function consiglioDaTipoSpesa(mov) {
+  if (!mov || mov.origine_tipo !== 'spesa' || !mov._tipo_spesa || mov._tipo_spesa === 'Altro') return null
+  var uguali = (classificatiTutti || []).concat(speseElenco || []).filter(function (x) {
+    return x.origine_tipo === 'spesa' && x.origine_id !== mov.origine_id && x._tipo_spesa === mov._tipo_spesa && x._class && x._class.conto_id
+  }).sort(function (a, b) { return String(dataClassificazione(b)).localeCompare(String(dataClassificazione(a))) })
+  if (!uguali.length) return null
+  var c = uguali[0]._class
+  return { conto_id: c.conto_id, codice_iva_id: c.codice_iva_id, iva_inclusa: c.iva_inclusa, _fonte: 'tipo', _tipo: mov._tipo_spesa }
+}
+
+async function consiglioDaDescrizione(mov) {
   if (!currentAziendaId || !mov._match_value) return null
   var ids = []
   try {
@@ -3158,6 +3211,22 @@ async function suggestClassificazione(mov) {
   return null
 }
 
+// 104 — niente da consigliare: si dice, e si indica il tasto. Non parte da solo: costa.
+function testoNessunConsiglio(m) {
+  if ((m._foto_path || copiaGiustificativoDi(m.origine_id)) && letturaAutomaticaAttiva()) {
+    return '💡 <strong>Nessun consiglio</strong>: nessuna spesa con la stessa descrizione o dello stesso tipo è già classificata. ' +
+      'Se vuoi, premi «🤖 Leggi lo scontrino»: parte solo se lo premi, perché costa. Il conto lo scegli tu.'
+  }
+  return '💡 <strong>Nessun consiglio</strong>: nessuna spesa con la stessa descrizione o dello stesso tipo è già classificata, e «🤖 Leggi lo scontrino» qui non si può usare: serve una foto e la lettura automatica attiva. Il conto lo scegli tu.'
+}
+function mostraNessunConsiglio(m) {
+  if (!m || m.origine_tipo !== 'spesa') return
+  var sg = el('cls-suggest')
+  if (!sg) return
+  sg.style.display = 'block'
+  sg.innerHTML = testoNessunConsiglio(m)
+}
+
 function applySuggestion(s) {
   if (!s) return
   // Il suggerimento cambia il conto dopo l'apertura: il gruppo deve seguirlo.
@@ -3170,7 +3239,8 @@ function applySuggestion(s) {
     var conto = (contiCache || []).filter(function (c) { return c.id === s.conto_id })[0]
     sg.style.display = 'block'
     sg.innerHTML = (s._daLettura ? '🤖 <strong>Proposta della lettura AI</strong> della fattura'   // 89·6
-                                 : '💡 <strong>Proposta</strong> dall\'ultima classificazione simile') +
+                 : s._fonte === 'tipo' ? '💡 <strong>Consiglio</strong> dall\'ultima spesa di tipo «' + esc(s._tipo) + '» già classificata'   // 104
+                 : '💡 <strong>Consiglio</strong> da una spesa già classificata con la stessa descrizione') +
       (conto ? ': conto ' + esc(conto.codice_conto + ' · ' + conto.descrizione) : '') +
       '. È solo un suggerimento, modificabile.'
   }
@@ -3548,8 +3618,8 @@ async function saveClassificazione() {
       var cantiereComune = comuneOn && el('cls-cantiere-comune') ? (el('cls-cantiere-comune').value || null) : null
       for (var i = 0; i < bersagliOk.length; i++) {   // 88 — senza quelle la cui copia è fallita
         var t = bersagliOk[i]
-        var cant = comuneOn ? cantiereComune : (t.cantiere_id || null)
-        rows.push(buildClassRow(t, contoId, ivaId, calcolaIva(t.importo, alq, ivaInclusaState), ivaInclusaState, cant, note))
+        var cant = comuneOn ? cantiereComune : cantierePropostoSpesa(t)   // 104
+        rows.push(buildClassRow(t, contoId, ivaId, calcolaIva(t.importo, alq, ivaInclusaState), ivaInclusaState, cant, note || t.note_cantiere || null))
       }
     }
 
@@ -3639,6 +3709,11 @@ async function saveClassificazione() {
     if (currentPage === 'movimenti') await loadDaClassificare()
     await refreshDaClassificareCount()
     if (currentPage === 'movimenti') messaggioDopoClassifica(eraModo, bersagliOk, esclusiCopia, primo)   // 88
+    if (currentPage === 'acquisti' && eraModo === 'single' && primo && primo.origine_tipo === 'spesa') {   // 104
+      await loadAcquistiList()
+      evidenziaRigaAcquisti(primo.origine_id)
+      showFattureBanner('acquisti-list-banner', 'ok', 'Classificato alle ' + oraAdesso() + '.')
+    }
     // Se si stava riclassificando da una scheda, il riquadro si rifa' subito:
     // altrimenti mostrerebbe ancora il conto vecchio.
     var t0 = classifyTargets && classifyTargets[0]
@@ -5464,6 +5539,8 @@ function statoAcquistoFiltro(a, filtro) {
     case 'aperto':
     case 'parziale':
     case 'pagato':       return (a.stato_pagamento || 'aperto') === filtro
+    case 'da_classificare':                                                             // 104 — parole delle spese
+    case 'classificata': return false
   }
   return true
 }
@@ -6024,7 +6101,7 @@ function azzeraFiltriElenco(pageId) {
     statoFiltroDefault('fatture-filtro-stato')
     if (typeof vistaFattureScadute !== 'undefined') vistaFattureScadute = false
   } else if (pageId === 'acquisti') {
-    azzeraFiltroID('acquisti'); setVal('acquisti-search', ''); setVal('acquisti-filtro-anno', ''); setVal('acquisti-filtro-cantiere', '')
+    azzeraFiltroID('acquisti'); setVal('acquisti-search', ''); setVal('acquisti-filtro-anno', ''); setVal('acquisti-filtro-cantiere', ''); setVal('acquisti-filtro-tipo', '')
     statoFiltroDefault('acquisti-filtro-stato')
   } else if (pageId === 'offerte') {
     azzeraFiltroID('offerte'); setVal('offerte-search', '')
@@ -9985,6 +10062,8 @@ async function loadAcquistiList() {
     try { await refreshDaConfermareCount() } catch (eC) { contorno.push('da confermare: ' + (eC.message || eC)) }
     // FASE 6A — il cantiere di ogni fattura sta nelle classificazioni.
     try { await loadCantieri(); await loadMappaCantieri(true) } catch (eK) { contorno.push('cantieri: ' + (eK.message || eK)) }
+    // 104 — le spese dell'App Cantieri: una lista a parte, mai in acquistiList.
+    try { await caricaSpeseElenco() } catch (eS) { speseElenco = []; contorno.push('spese dell\'App Cantieri non lette: ' + (eS.message || eS)) }
     // 79·1 — le conferme servono all'avviso «più alta della conferma».
     try { await loadOfferte() } catch (eO) { contorno.push('conferme d\'ordine: ' + (eO.message || eO)) }
     riempiFiltroCantieriAcquisti()
@@ -10198,6 +10277,9 @@ function riempiFiltroCantieriAcquisti() {
       if (q.cantiere_id) usati[q.cantiere_id] = true; else senza = true
     })
   })
+  ;(speseElenco || []).forEach(function (m) {   // 104
+    cantieriElencoSpesa(m).forEach(function (id) { if (id) usati[id] = true; else senza = true })
+  })
   var prec = sel.value
   var opts = '<option value="">Tutti</option>'
   cantieriOrdinati().forEach(function (c) {
@@ -10217,8 +10299,10 @@ function renderAcquistiTable() {
   // FASE 6A — filtro per cantiere. '__nessuno__' = le spese aziendali, che sono
   // una risposta valida e devono potersi cercare come le altre.
   var cantF = el('acquisti-filtro-cantiere') ? el('acquisti-filtro-cantiere').value : ''
+  var tipoF = el('acquisti-filtro-tipo') ? el('acquisti-filtro-tipo').value : ''   // 104
   // 80·2 — lo stato lo decide elencoConStato qui sotto; qui gli altri filtri.
   var list = acquistiList.filter(function (a) {
+    if (tipoF === 'scontrini') return false   // 104 — una fattura d'acquisto è una fattura
     if (anno && (!a.data || String(a.data).slice(0, 4) !== String(anno))) return false
     if (cantF) {
       // FASE 25 — una fattura divisa appartiene a piu' cantieri: si mostra
@@ -10253,21 +10337,23 @@ function renderAcquistiTable() {
     function (a) { return !!nelFiltro[a.id] }, cercaA, statoAcquistoFiltro,
     function (a) { return acquistoChiuso(a) && !daConfermare(a) && !inBozza(a) })
   list = divisoA.list
+  // 104 — le spese dell'App Cantieri, con gli stessi filtri. Contate a parte.
+  var spese = speseDaMostrare({ stato: stato, anno: anno, cantiere: cantF, tipo: tipoF, testo: qv, id: fidA }).list
 
   // 59·B — quante, e come stanno a pagamento.
   html('acquisti-contatore', rigaChiusiNascostiHtml(divisoA.nascosti) + contatoreElencoHtml(divisoA.universo, list,
     { sing: 'fattura d\'acquisto', plur: 'fatture d\'acquisto' },
     function (a) { return a.stato_pagamento || 'aperto' },
     { aperto: { sing: 'da pagare', plur: 'da pagare' }, parziale: { sing: 'pagata in parte', plur: 'pagate in parte' },
-      pagato: { sing: 'pagata', plur: 'pagate' } }))
+      pagato: { sing: 'pagata', plur: 'pagate' } }) + speseContatoreHtml(spese))
 
-  if (!list.length) {
-    var attivo = qv || (stato && stato !== 'tutti') || anno || cantF || fidA.attivo   // 85, 89·1
+  if (!list.length && !spese.length) {
+    var attivo = qv || (stato && stato !== 'tutti') || anno || cantF || tipoF || fidA.attivo   // 85, 89·1
     html('acquisti-table', '<div class="dim" style="padding:10px 0">' +
       (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
     return
   }
-  var rows = list.map(function (a) {
+  var righeFatture = list.map(function (a) {
     // riga secondaria compatta: scomposizione IVA
     var impo = safeNum(a.imponibile), ivaI = safeNum(a.iva_importo), tasseL = safeNum(a.tasse_legali)
     var ivaSub = (impo != null || ivaI != null || tasseL != null)
@@ -10282,21 +10368,26 @@ function renderAcquistiTable() {
       ? '<span class="cell-sub">il ' + esc(fmtDate(a.data_pagamento)) + '</span>'
       : ''
     var chiusoA = acquistoChiuso(a)   // 78
-    return '<tr class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') + (inBozza(a) ? ' riga-bozza' : '') + (chiusoA ? ' riga-chiusa' : '') +
+    return { data: a.data, html: '<tr id="acq-riga-' + esc(a.id) + '" class="row-clickable' + (daConfermare(a) ? ' riga-da-confermare' : '') + (inBozza(a) ? ' riga-bozza' : '') + (chiusoA ? ' riga-chiusa' : '') +
       (a.origine === 'import_ai' ? ' riga-orig-ai' : '') +   // 86
       '" onclick="viewAcquisto(\'' + a.id + '\')">' +
       '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + spiaBozza(a) + (chiusoA ? segnoChiuso() : '') +   // 89·4
-        (a.origine === 'import_ai' ? '<div><span class="orig-etichetta orig-ai">🤖 letta dall\'AI</span></div>' : '') + '</td>' +
+        (a.origine === 'import_ai' ? '<div><span class="orig-etichetta orig-ai">🤖 letta dall\'AI</span></div>' : '<div class="dim nota-riga">✍️ caricata a mano</div>') +   // 104
+        (a.note ? '<div class="nota-riga">📝 Nota: ' + esc(a.note) + '</div>' : '') + '</td>' +   // 104
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
       '<td>' + statoEAvvisoAcquisto(a) + paySub + '</td>' +   // 75·3
       '<td>' + etichettaCantiereRiga(cantiereDiAcquisto(a.id), a.id) + '</td>' +
       '<td class="row-actions">' + acquistiRowActions(a) + '</td>' +
-    '</tr>'
-  }).join('')
+    '</tr>' }
+  })
+  // 104 — fatture e spese insieme, le più recenti prima. Le spese hanno la loro riga e le loro azioni.
+  var rows = righeFatture.concat(spese.map(function (m) { return { data: m.data, html: rigaSpesaElencoHtml(m) } }))
+    .sort(function (x, y) { return String(y.data || '').localeCompare(String(x.data || '')) })
+    .map(function (r) { return r.html }).join('')
   html('acquisti-table', '<div class="table-wrap"><table><thead><tr>' +
-    '<th>Fornitore</th><th style="width:130px">Numero</th><th style="width:100px">Data</th>' +
+    '<th>Fornitore o spesa</th><th style="width:130px">Numero o tipo</th><th style="width:100px">Data</th>' +
     '<th style="width:130px;text-align:right">Importo</th><th style="width:120px">Stato</th>' +
     '<th style="width:150px">Cantiere</th><th style="width:170px">Azioni</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>')
@@ -18757,13 +18848,185 @@ function cantiereSpesaTesto(s) {
   if (q.length === 1) return nome(q[0].cantiere_id)
   return q.map(function (x) { return nome(x.cantiere_id) + ' ' + fmtNumIt(x.importo) }).join(' · ')
 }
+// ══ 104 · SPESE DA CANTIERI ═══════════════════════════════════════════════
+// Dove va la spesa quando non c'è una commessa: i valori di `spese.destinazione`, con le parole dell'App Cantieri.
+// Gli interni si trovano per codice_interno, mai per nome. Attrezzature e Altro: nessun cantiere, si dice cosa ha scelto l'operaio.
+var DESTINAZIONI_CANTIERI = {
+  ditta_ufficio: { etichetta: '🏢 Spese ditta e ufficio', codice: 'ditta' },
+  magazzino:     { etichetta: '📦 Magazzino', codice: 'magazzino' },
+  attrezzature:  { etichetta: '🛠️ Attrezzature e macchinari', codice: null },
+  altro:         { etichetta: '❓ Altro (da sistemare in ufficio)', codice: null }
+}
+function cantiereInternoPerCodice(codice) {
+  return (cantieriCache || []).filter(function (c) { return c.codice_interno === codice })[0] || null
+}
+function cantierePropostoSpesa(m) {
+  if (!m) return null
+  if (m.cantiere_id || m.origine_tipo !== 'spesa') return m.cantiere_id || null
+  var d = DESTINAZIONI_CANTIERI[m._destinazione]
+  var c = (d && d.codice) ? cantiereInternoPerCodice(d.codice) : null
+  return c ? c.id : null
+}
+function testoDestinazioneSpesa(m) {
+  if (!m || m.origine_tipo !== 'spesa' || m.cantiere_id || !m._destinazione) return ''
+  var d = DESTINAZIONI_CANTIERI[m._destinazione]
+  var scelto = 'In Cantieri l\'operaio ha scelto «' + (d ? d.etichetta : m._destinazione) + '»'
+  if (!d || !d.codice) return scelto + ': nessun cantiere proposto, scegli tu.'
+  var c = cantiereInternoPerCodice(d.codice)
+  return c ? scelto + ': proposto «' + c.nome + '», si può cambiare.' : scelto + ', ma il cantiere interno «' + d.codice + '» non c\'è: scegli tu.'
+}
+// La riga «Cantiere» di una spesa non ancora classificata dice anche la proposta.
+function testoCantiereRigaSpesa(m) {
+  if (!m.cantiere_id && m._destinazione && !spesaClassificata(m)) {
+    var d = DESTINAZIONI_CANTIERI[m._destinazione], id = cantierePropostoSpesa(m)
+    var scelta = 'in Cantieri: ' + (d ? d.etichetta : m._destinazione)
+    return id ? 'Cantiere proposto: ' + cantiereLabel(id) + ' · ' + scelta : 'Cantiere da scegliere · ' + scelta
+  }
+  return 'Cantiere: ' + cantiereSpesaTesto(m)
+}
+// La nota: quella della classificazione, e quella di Cantieri se è diversa. Là non si scrive mai.
+function notaRigaSpesaHtml(m) {
+  if (!m || m.origine_tipo !== 'spesa') return ''
+  var orig = String(m.note_cantiere || '').trim()
+  var mia = m._class ? String(notaSenzaImporto(m._class.note)).trim() : ''
+  return (mia ? '<div class="nota-riga">📝 Nota: ' + esc(mia) + '</div>' : '') +
+    ((orig && orig !== mia) ? '<div class="nota-riga">🏗️ Nota di Cantieri: ' + esc(orig) + '</div>' : '')
+}
+// «Già classificati»: di base le ultime classificate (proposta del 12.10).
+var ordineGiaClassificati = 'classificazione'
+function dataClassificazione(m) { return (m && m._class && (m._class.updated_at || m._class.created_at)) || '' }
+function ordinaGiaClassificati(lista) {
+  return (lista || []).slice().sort(function (a, b) {
+    if (ordineGiaClassificati === 'documento') return String(b.data || '').localeCompare(String(a.data || ''))
+    return new Date(dataClassificazione(b) || 0).getTime() - new Date(dataClassificazione(a) || 0).getTime()
+  })
+}
+function cambiaOrdineGia(v) { ordineGiaClassificati = v === 'documento' ? 'documento' : 'classificazione'; renderListeDaClassificare() }
+
+// Le spese nell'elenco Acquisti. Stanno QUI, mai in acquistiList: somme, scadenze, pagamenti ed export non le vedono.
+// tipo_doc «Fattura fornitore» sotto Fatture; Scontrino, Bolla, Altro e vuoto sotto Scontrini.
+var speseElenco = []
+async function caricaSpeseElenco() {
+  speseElenco = []
+  var canal = await loadCanalA()
+  var mancate = canalAErrori.filter(function (x) { return /spese/.test(x) })
+  if (mancate.length) throw new Error(mancate.join(' · '))
+  const { data, error } = await leggiClassificazioniConOrigine(COLONNE_CLASSIFICAZIONI)
+  if (error) throw error
+  var righe = {}, totali = {}
+  ;(data || []).forEach(function (c) {
+    var k = c.origine_tipo + ':' + c.origine_id
+    righe[k] = c
+    if (!totali[k]) totali[k] = { tot: 0, consegnata: false }
+    totali[k].tot = round2(totali[k].tot + (safeNum(c.imponibile) || 0) + (safeNum(c.iva_importo) || 0))
+    if (c.stato === 'bloccato' || c.stato === 'esportato') totali[k].consegnata = true
+  })
+  classByKey = righe
+  if (!classCantiereMap) classCantiereMap = mappaQuoteDa(data)
+  await loadScarti(true)
+  try { await loadCartaceiSpese() } catch (_) { /* il riquadro lo dice dove serve */ }
+  speseDaClassPerId = speseDaClassPerId || {}
+  speseElenco = canal.filter(function (m) { return m.origine_tipo === 'spesa' && !spesaScartata(m) })
+  speseElenco.forEach(function (m) {
+    speseDaClassPerId[String(m.origine_id)] = m
+    var k = 'spesa:' + m.origine_id
+    if (righe[k]) { m._class = righe[k]; m._totClass = totali[k].tot; m._consegnata = totali[k].consegnata }
+  })
+}
+function tipoElencoSpesa(m) { return m._tipo_doc === 'Fattura fornitore' ? 'fatture' : 'scontrini' }
+function statoSpesaFiltro(m, filtro) {
+  switch (filtro) {
+    case '':
+    case 'tutti':           return true
+    case 'aperti':
+    case 'da_classificare': return !m._class
+    case 'classificata':    return !!m._class
+  }
+  return false   // pagate, bozze, ordini: sono parole delle fatture
+}
+function cantieriElencoSpesa(m) {
+  if (m._class || spesaClassificata(m)) return quoteSpesaCantieri(m).map(function (q) { return q.cantiere_id || null })
+  return [cantierePropostoSpesa(m)]
+}
+function speseDaMostrare(f) {
+  var nelFiltro = function (m) {
+    if (f.anno && (!m.data || String(m.data).slice(0, 4) !== String(f.anno))) return false
+    if (f.tipo && f.tipo !== tipoElencoSpesa(m)) return false
+    if (f.cantiere) {
+      var ids = cantieriElencoSpesa(m)
+      if (f.cantiere === '__nessuno__') { if (!ids.some(function (x) { return !x })) return false }
+      else if (ids.indexOf(f.cantiere) === -1) return false
+    }
+    return true
+  }
+  var cerca = (f.testo || (f.id && f.id.attivo)) ? function (m) {
+    var altri = m.importo != null ? [safeNum(m.importo)] : []
+    if (!corrispondeTesto(f.testo, [m.descrizione || '', m.note_cantiere || '', (m._class && m._class.note) || '', m._tipo_doc || '', m._tipo_spesa || '', 'app cantieri'],
+          [importoSpesa(m)].concat(altri))) return false
+    return !f.id || corrispondeImportoData(f.id, { importo: importoSpesa(m), altriImporti: altri, date: { documento: m.data }, pagamenti: [] })
+  } : null
+  return elencoConStato(speseElenco, f.stato || 'tutti', nelFiltro, cerca, statoSpesaFiltro, function (m) { return !!m._class })
+}
+// Quanto contano: si dice, e si dice che non è nei numeri delle fatture.
+function speseContatoreHtml(lista) {
+  if (!lista || !lista.length) return ''
+  var perValuta = {}
+  lista.forEach(function (m) { var v = m.valuta || 'CHF'; perValuta[v] = round2((perValuta[v] || 0) + importoSpesa(m)) })
+  var somme = Object.keys(perValuta).map(function (v) { return fmtNumIt(perValuta[v]) + ' ' + v }).join(' + ')
+  var daFare = lista.filter(function (m) { return !m._class }).length
+  return '<div class="pag-nota nota-riga">🏗️ In più ' + (lista.length === 1 ? '1 spesa' : lista.length + ' spese') + ' dell\'App Cantieri: ' + esc(somme) +
+    (daFare ? ', di cui ' + daFare + ' da classificare' : '') + '. Non sono nel conteggio delle fatture e non si pagano da qui; nei costi del cantiere contano già.</div>'
+}
+function rigaSpesaElencoHtml(m) {
+  var bloccata = m._class && m._class.stato === 'bloccato'
+  var azioni = bloccata ? '<span class="lock-tag" title="Periodo consegnato — sola lettura">🔒 Consegnato</span>'
+    : '<button class="icon-btn classify" onclick="event.stopPropagation(); apriSpesaElenco(\'' + esc(m.origine_id) + '\')">' +
+      (m._class ? '✏️ Riclassifica' : '🏷 Classifica') + '</button>'
+  var cantiere = testoCantiereRigaSpesa(m).replace(/^Cantiere: /, '')
+  return '<tr id="acq-riga-' + esc(m.origine_id) + '" class="row-clickable riga-spesa ' + classeOrigine(m) + '" onclick="apriSpesaElenco(\'' + esc(m.origine_id) + '\')">' +
+    '<td><div class="mov-desc">' + esc(m.descrizione) + '</div>' +
+      '<div>' + etichettaOrigineHtml(m) + '</div>' +
+      (m._tipo_spesa ? '<div class="dim nota-riga">' + esc(m._tipo_spesa) + '</div>' : '') +
+      notaRigaSpesaHtml(m) + giustificativoRigaHtml(m, !!m._class) + '</td>' +
+    '<td class="dim">' + esc(m._tipo_doc || 'Scontrino') + '</td>' +
+    '<td class="dim">' + esc(fmtDate(m.data)) + '</td>' +
+    '<td class="num">' + fmtImporto(importoSpesa(m), m.valuta) + importoAppCantieriHtml(m) + '</td>' +
+    '<td>' + (m._class ? '✅ Classificata' : '🏷 Da classificare') + '</td>' +
+    '<td>' + esc(cantiere) + '</td>' +
+    '<td class="row-actions">' + azioni + '</td>' +
+  '</tr>'
+}
+function apriSpesaElenco(id) {
+  var m = (speseElenco || []).filter(function (x) { return String(x.origine_id) === String(id) })[0]
+  if (!m) return
+  if (m._class && m._class.stato === 'bloccato') {
+    window.alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «Export & consegna» per riclassificare.')
+    return
+  }
+  return openSingleClassify(m, m._class || null)
+}
+function evidenziaRigaAcquisti(id) {
+  var riga = id ? el('acq-riga-' + id) : null
+  if (!riga) return false
+  riga.classList.add('riga-trovata')
+  if (riga.scrollIntoView) riga.scrollIntoView({ block: 'center' })
+  return true
+}
+// Dal messaggio dopo la classificazione: Acquisti, filtri azzerati, su quella riga.
+async function vaiARigaAcquisti(id) {
+  showPage('acquisti')
+  azzeraFiltriElenco('acquisti')
+  await initAcquistiPage()
+  if (id && !evidenziaRigaAcquisti(id)) showFattureBanner('acquisti-list-banner', 'warn', 'Non trovo la riga in questo elenco: forse è stata scartata.')
+}
+
 function spesaScartata(s) {
   var id = s.origine_id != null ? s.origine_id : s.id
   return !!scartoAttivo('scarto', 'spesa', id)
 }
 // La cifra e la riga «Cantiere» che gli elenchi di «Da classificare» mostrano.
 function importoRiga(m) { return m.origine_tipo === 'spesa' ? importoSpesa(m) : m.importo }
-function testoExtraRiga(m) { return m.origine_tipo === 'spesa' ? 'Cantiere: ' + cantiereSpesaTesto(m) : m.extra }
+function testoExtraRiga(m) { return m.origine_tipo === 'spesa' ? testoCantiereRigaSpesa(m) : m.extra }
 // Le quote di classificazione per documento, da un elenco di righe: la stessa
 // mappa per la pagina Cantieri e per «Da classificare».
 function mappaQuoteDa(righe) {

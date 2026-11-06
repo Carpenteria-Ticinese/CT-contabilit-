@@ -2044,11 +2044,19 @@
           <div class="card-title">📄 Elenco</div>
           <div class="form-group" style="margin-bottom:12px">
             <div class="search-wrap">
-              <input type="text" id="acquisti-search" class="form-input" placeholder="🔍 Cerca (fornitore, numero, importo)…" oninput="renderAcquistiTable()" autocomplete="off" aria-label="Cerca fattura d'acquisto" />
+              <input type="text" id="acquisti-search" class="form-input" placeholder="🔍 Cerca (fornitore, numero, importo, nota)…" oninput="renderAcquistiTable()" autocomplete="off" aria-label="Cerca fattura d'acquisto" />
               <button type="button" class="search-clear" id="acquisti-search-clear" onclick="clearAcquistiSearch()" aria-label="Svuota ricerca" title="Svuota" style="display:none">✕</button>
             </div>
           </div>
           <div class="form-row" style="margin-bottom:12px">
+            <div class="form-group" style="flex:1; margin-bottom:0">
+              <label for="acquisti-filtro-tipo" class="form-label">Tipo</label>
+              <select id="acquisti-filtro-tipo" class="form-input" onchange="renderAcquistiTable()">
+                <option value="" selected>Tutti</option>
+                <option value="fatture">Fatture</option>
+                <option value="scontrini">Scontrini</option>
+              </select>
+            </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
               <label for="acquisti-filtro-stato" class="form-label">Stato</label>
               <!-- 80·2 — un comando solo; 89·1 — da «Tutti» -->
@@ -2061,6 +2069,8 @@
                 <option value="ordine">📤 Ordine di pagamento creato</option>
                 <option value="da_confermare">⏳ Da confermare</option>
                 <option value="bozza">📝 Bozze (senza giustificativo)</option>
+                <option value="da_classificare">🏷 Spese da classificare</option>
+                <option value="classificata">✅ Spese classificate</option>
               </select>
             </div>
             <div class="form-group" style="flex:1; margin-bottom:0">
@@ -3338,6 +3348,7 @@
           <!-- FASE 20 — se l'elenco è vuoto qui compare il perché: un menu
                vuoto e muto sembra un guasto del programma. -->
           <div id="cls-cantiere-vuoto"></div>
+          <div id="cls-cantiere-origine" class="form-hint"></div>
           <div class="form-hint">Vuoto = «Ditta (generale)». Per le spese da App Cantieri è precompilato.</div>
           <!-- FASE 25 — la porta della divisione. Sta qui e non in cima perché
                chi non divide non deve accorgersi che si può dividere. -->
@@ -3373,7 +3384,7 @@
 
         <!-- NOTE -->
         <div class="form-group">
-          <label for="cls-note" class="form-label">Note <span class="dim">(facoltative)</span></label>
+          <label for="cls-note" class="form-label">Note <span class="dim">(facoltative; una spesa parte dalla nota di Cantieri, che là resta com'è)</span></label>
           <textarea id="cls-note" class="form-input" rows="2" maxlength="500" placeholder="Annotazione interna…"></textarea>
         </div>
 
