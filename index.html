@@ -82,7 +82,7 @@
 
     <button class="nav-item auth-only" data-page="acquisti">
       <span aria-hidden="true">📥</span>
-      <span>Fatture acquisto</span>
+      <span>Acquisti</span>
       <span class="nav-badge badge-conferma" id="nav-badge-acquisti"
             style="display:none" aria-live="polite"></span>
     </button>
@@ -1515,6 +1515,8 @@
 
         <!-- FASE 58 — da quale rata d'acconto viene questa bozza (scritto dal JS) -->
         <div id="fatture-acconto-ref"></div>
+        <div id="fatture-saldo-ref"></div>
+        <div id="fatture-saldo-avviso"></div>
         <!-- 83 — quale fattura emessa si sta correggendo, e perché (scritto dal JS) -->
         <div id="fatture-correzione-ref"></div>
 
@@ -1606,6 +1608,7 @@
             <!-- FASE 21 — una riga-titolo raggruppa le voci sotto di sé e non
                  ha importi: come sulle fatture dei fornitori. -->
             <button type="button" class="link-btn" onclick="addTitolo()">+ Aggiungi titolo</button>
+            <button type="button" class="link-btn" onclick="addRigaTesto()">+ Aggiungi testo</button>
           </div>
           <!-- Le unità più usate in carpenteria. È un elenco di SUGGERIMENTI:
                il campo resta libero e accetta qualsiasi cosa. -->
@@ -1657,6 +1660,7 @@
             <div id="fatture-tot-sconto-row" style="display:none"><span class="ft-label">Sconto documento</span> <span class="ft-val" id="fatture-tot-sconto">0.00</span></div>
             <div id="fatture-tot-imponibile-row"><span class="ft-label">Imponibile</span> <span class="ft-val" id="fatture-tot-imponibile">0.00</span></div>
             <div id="fatture-tot-iva-row"><span class="ft-label">IVA</span> <span class="ft-val" id="fatture-tot-iva">0.00</span></div>
+            <div id="fatture-tot-arrotondamento-row" style="display:none"><span class="ft-label">Arrotondamento</span> <span class="ft-val" id="fatture-tot-arrotondamento">0.00</span></div>
             <div class="ft-grand"><span class="ft-label">Totale</span> <span class="ft-val" id="fatture-tot-totale">0.00</span></div>
           </div>
         </div>
@@ -2031,8 +2035,8 @@
       <div id="acquisti-list-view">
         <div class="page-header">
           <div>
-            <div class="page-title">📥 Fatture acquisto</div>
-            <div class="page-subtitle">Registrazione manuale dei documenti ricevuti dai fornitori. Modificabili ed eliminabili.</div>
+            <div class="page-title">📥 Acquisti</div>
+            <div class="page-subtitle">Ogni costo, fattura o scontrino, si trova qui.</div>
           </div>
           <button class="btn-primary" onclick="newAcquisto()">➕ Nuova fattura d'acquisto</button>
         </div>

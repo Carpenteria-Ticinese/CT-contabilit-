@@ -328,6 +328,10 @@ function badgePagamentoConResiduo(verso, stato, tabella, id, totale) {
       return badge('info', '🗓️ Pagamento programmato il ' + fmtDate(ultimo.data))
     }
   }
+  // 104 — pagato più del dovuto: si dice, con la cifra. Vale anche per la nota di credito che copre più del resto.
+  if (tabella === 'tm_conta_fatture' && statoVero === 'pagato' && residuoPronto() && eccedenzaFattura(id, totale) > 0.005) {
+    return badge('warn', '⚠️ Pagato in eccesso CHF ' + fmtNumIt(eccedenzaFattura(id, totale)))
+  }
   var e = etichettaPagamento(verso, statoVero)
   var cifra = ''
   // La cifra solo se i pagamenti sono stati letti davvero: senza, si omette.
@@ -962,7 +966,7 @@ async function loadCanalA() {
           cantiere_id:  acq.cantiere_id || null,   // FASE 27 — vedi sopra
           ente:         acq.fornitore || null,
           extra:        acq.fornitore ? 'Fornitore: ' + acq.fornitore : null,
-          _sorgente:    'Fatture acquisto',
+          _sorgente:    'Acquisti',
           _tipo_label:  'Fattura acquisto',
           _ai:          acq.origine === 'import_ai',   // 86
           _conto_proposto: acq.conto_proposto_id || null,   // 89·6
@@ -1189,7 +1193,7 @@ function renderListeDaClassificare() {
   classificatiList = classificati
   if (cercando && !daClass.length && !classificati.length) {
     html('movimenti-lista', '<div class="cru-vuoto">Nessun movimento trovato con questi filtri, né fra quelli da ' +
-      'classificare né fra quelli già classificati. Le fatture d\'acquisto si cercano nella loro pagina, ' +
+      'classificare né fra quelli già classificati. Le fatture d\'acquisto si cercano in Acquisti, ' +
       'tutto il resto anche nell\'Archivio.</div>')
     return
   }
@@ -4271,7 +4275,7 @@ async function loadExportDataset(force) {
   try {
     const { data, error } = await leggiTutto(function () { return sb
       .from('tm_conta_fatture')
-      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id')
+      .select('id, numero, data_emissione, cliente_nome, totale_imponibile, totale_iva, totale, valuta, stato, stato_pagamento, data_scadenza, data_pagamento, gruppo_codice, contatto_id, tipo, iban, rif_fattura_id, arrotondamento')
       .eq('azienda_id', currentAziendaId)
       .eq('stato', 'emessa').order('id') })
     if (error) throw error
@@ -4526,7 +4530,7 @@ function buildSheetVendite(list, ds, negativo, mappaAllegati) {
   // FASE 8 — PAGATO e RESIDUO: vedi la nota sul foglio Acquisti.
   if (mappaAllegati) head.push('PAGATO', 'RESIDUO', 'ALLEGATO')
   // FASE 26 — in CODA, dopo tutto il resto: le colonne di prima non si spostano.
-  head.push('Riga', 'Conto', 'Codice IVA')
+  head.push('Riga', 'Conto', 'Codice IVA', 'Arrotondamento')   // 104 — in coda: Totale = Imponibile + IVA + Arrotondamento
   var aoa = [head]
   var segno = negativo ? -1 : 1
   for (var i = 0; i < list.length; i++) {
@@ -4566,7 +4570,8 @@ function buildSheetVendite(list, ds, negativo, mappaAllegati) {
       }
       riga.push(etichettaRigaDiviso(r, n),
                 c ? contoLabel(c.conto_id) : '',
-                c ? ivaLabel(c.codice_iva_id) : '')
+                c ? ivaLabel(c.codice_iva_id) : '',
+                (r === 0 && safeNum(f.arrotondamento)) ? round2(segno * safeNum(f.arrotondamento)) : '')   // 104 — una volta sola
       aoa.push(riga)
     }
   }
@@ -6272,6 +6277,10 @@ function etichettaUnita(u) {
 function isRigaTitolo(r) {
   return !!r && r.tipo_riga === 'titolo'
 }
+// 104 — la riga di solo testo: senza quantità, unità e prezzo. Non ha numero e non entra nei totali.
+function isRigaTesto(r) {
+  return !!r && r.tipo_riga === 'testo'
+}
 
 // La numerazione, calcolata in un colpo solo su tutte le righe. Solo cifre e
 // punti, mai lettere: «a.» e «a.1.» non li leggeva nessuno.
@@ -6282,7 +6291,7 @@ function isRigaTitolo(r) {
 //   il titolo successivo               -> l'intero successivo:   4
 //
 // Una riga normale che viene DOPO un titolo sta sotto quel titolo, finche' non
-// ne arriva un altro: il modello dati (tipo_riga = voce | titolo) non ha un
+// ne arriva un altro: il modello dati (tipo_riga = voce | titolo | testo) non ha un
 // modo di dire «qui il gruppo finisce». Per chiudere un gruppo si apre il
 // successivo.
 //
@@ -6294,7 +6303,9 @@ function posizioniRighe(righe) {
   var sotto = 0            // righe sotto il titolo corrente
   var dentroTitolo = false // true dopo un titolo, finche' non ne arriva un altro
   for (var i = 0; i < (righe || []).length; i++) {
-    if (isRigaTitolo(righe[i])) {
+    if (isRigaTesto(righe[i])) {
+      out.push('')
+    } else if (isRigaTitolo(righe[i])) {
       intero++
       sotto = 0
       dentroTitolo = true
@@ -6342,7 +6353,7 @@ function scontoRigaPct(r) {
 
 // L'importo LORDO e NETTO di una riga (passi 1). Null se la riga non ha numeri.
 function importiRiga(r) {
-  if (isRigaTitolo(r)) return null
+  if (isRigaTitolo(r) || isRigaTesto(r)) return null
   var qta = safeNum(r.quantita), prezzo = safeNum(r.prezzo_unitario)
   if (qta == null || prezzo == null) return null
   var lordo = round2(qta * prezzo)
@@ -6502,18 +6513,14 @@ function motivoNoCorrezione(f, pagamenti, note) {
   if (f.stato === 'bozza') return 'È una bozza: si modifica con «✏️ Modifica bozza».'
   if (f.stato !== 'emessa') return 'Si correggono solo le fatture emesse: questa è «' + f.stato + '».'
   if (f.tipo === 'nota_credito') return 'Una nota di credito non si riapre: si annulla e se ne emette una nuova.'
-  // 93 — i blocchi restano (è aritmetica: un incasso che nessun documento
-  // spiega), ma dicono cosa fare, passo per passo. Le stesse parole le dice il
-  // database (SQL_FASE93), se ci si arriva da un'altra strada.
-  // 84 · 91 — stralcio o sconto di cassa: prima si toglie (lo sconto c'è sempre
-  // insieme a un incasso, quindi viene prima dei pagamenti).
+  // 104 — resta solo questo blocco. Stralcio e sconto sono una scrittura sul conto fatta col totale di allora:
+  // cambiando il totale resterebbe una cifra sbagliata. Si toglie con un tasto, lo storico resta. Le stesse parole le dice il database (CONT_104).
   var st = stralcioAttivo(f.id)
   if (st && eScontoCassa(st)) {
-    return 'La fattura è chiusa con lo sconto di cassa: prima si toglie lo sconto, poi i pagamenti.\n\n' +
+    return 'La fattura è chiusa con lo sconto di cassa: prima si toglie lo sconto.\n\n' +
       '1. Qui nella scheda: «↩️ Togli lo sconto», col motivo.\n' +
-      '2. Riquadro Pagamenti: annota data e importo di ogni pagamento, poi eliminalo.\n' +
-      '3. «✏️ Riapri e correggi».\n' +
-      '4. Registra di nuovo i pagamenti con le loro date: se rientrano nello sconto, il programma lo ripropone.'
+      '2. «✏️ Riapri e correggi».\n' +
+      '3. Se vale ancora, chiudi di nuovo con lo sconto.'
   }
   if (st) {
     return 'La fattura è stralciata come perdita: prima si toglie lo stralcio.\n\n' +
@@ -6521,30 +6528,25 @@ function motivoNoCorrezione(f, pagamenti, note) {
       '2. «✏️ Riapri e correggi».\n' +
       '3. Se la perdita resta, stralcia di nuovo col nuovo importo («📉 Stralcia come perdita»).'
   }
+  // 104 — pagamenti e note di credito non fermano più (Umberto, 6.11): li mostra testoPagamentiCorrezione.
+  return null
+}
+
+// 104 — l'avviso prima di riaprire: quello che è già registrato. I pagamenti non si toccano.
+function testoPagamentiCorrezione(pagamenti, note) {
+  var righe = []
   if (pagamenti && pagamenti.length) {
-    var somma = round2(pagamenti.reduce(function (s, p) { return s + (safeNum(p.importo) || 0) }, 0))
-    var elenco = pagamenti.slice().sort(function (a, b) { return String(a.data).localeCompare(String(b.data)) })
-      .map(function (p) { return '   · ' + fmtDate(p.data) + ' — ' + fmtNumIt(safeNum(p.importo) || 0) + ' CHF' }).join('\n')
-    return 'Su questa fattura ' +
-      (pagamenti.length === 1 ? 'c\'è un pagamento registrato' : 'ci sono ' + pagamenti.length + ' pagamenti registrati') +
-      ', per ' + fmtNumIt(somma) + ' CHF: prima si tolgono, poi si corregge, poi si rimettono.\n' +
-      'Correggendo con i pagamenti dentro, resterebbero in cassa soldi che nessun documento spiega.\n\n' +
-      '1. Annota i pagamenti:\n' + elenco + '\n' +
-      '2. Riquadro Pagamenti, qui nella scheda: elimina ' + (pagamenti.length === 1 ? 'il pagamento' : 'i pagamenti') + '.\n' +
-      '3. «✏️ Riapri e correggi».\n' +
-      '4. «➕ Registra incasso» di nuovo, con le stesse date.\n\n' +
-      'Se il nuovo totale è più basso di ' + fmtNumIt(somma) + ' CHF, la differenza non entra nella fattura: ' +
-      'decidi prima se restituirla al cliente.'
+    var somma = round2(pagamenti.reduce(function (x, p) { return x + (safeNum(p.importo) || 0) }, 0))
+    righe.push('Pagamenti già registrati, per ' + fmtNumIt(somma) + ' CHF (non si toccano):\n' + pagamenti.slice().sort(function (x, y) { return String(x.data).localeCompare(String(y.data)) })
+      .map(function (p) { return '   · ' + fmtDate(p.data) + ' — ' + fmtNumIt(safeNum(p.importo) || 0) + ' CHF' }).join('\n'))
   }
   var vive = (note || []).filter(function (n) { return n.stato !== 'annullata' })
-  if (vive.length) {
-    return 'Questa fattura ha ' + (vive.length === 1 ? 'una nota di credito' : vive.length + ' note di credito') +
-      ' (n. ' + vive.map(function (n) { return n.numero || 'bozza' }).join(', ') + '): prima si annulla la nota, poi si corregge.\n\n' +
-      '1. Apri la nota di credito: se è una bozza «🗑️ Elimina», se è emessa «🚫 Annulla documento» col motivo.\n' +
-      '2. «✏️ Riapri e correggi» questa fattura.\n' +
-      '3. Se serve ancora, crea una nota di credito nuova dalla fattura corretta.'
-  }
-  return null
+  if (vive.length) righe.push((vive.length === 1 ? 'Nota di credito' : 'Note di credito') + ' collegate (restano): n. ' + vive.map(function (n) { return n.numero || 'bozza' }).join(', ') + '.')
+  return righe.length ? '\n\n' + righe.join('\n') + '\nSe il nuovo totale è sotto il pagato, il programma segna «pagato in eccesso».' : ''
+}
+// 104 — quanto risulterebbe pagato in più col nuovo totale. Mai uno zero per un dato non letto: la riapertura legge tutto prima.
+function eccessoConTotale(id, totale) {
+  return residuoPronto() ? eccedenzaFattura(id, totale) : 0
 }
 
 async function riapriPerCorreggere(id) {
@@ -6563,7 +6565,8 @@ async function riapriPerCorreggere(id) {
       .select('id, importo, data')
       .eq('tabella_origine', 'tm_conta_fatture').eq('id_origine', id)
     if (ePag) throw new Error('Non riesco a leggere i pagamenti di questa fattura, quindi NON la riapro: ' + (ePag.message || ePag))
-    try { await loadNoteCredito() } catch (_) { /* le ricontrolla il database */ }
+    try { await loadPagamenti() } catch (_) { /* per il conto dell'eccesso: la correzione non dipende da questo */ }   // 104
+    try { await loadNoteCredito() } catch (_) { /* per l'avviso */ }
     try { await loadStralci(true) } catch (_) { /* lo ricontrolla il database */ }   // 84
     var no = motivoNoCorrezione(f, pag || [], noteCreditoDi(id))
     if (no) { window.alert('Non riaperta.\n\n' + no); return }
@@ -6579,6 +6582,7 @@ async function riapriPerCorreggere(id) {
       'Riaprire e correggere la fattura n. ' + f.numero + ' di ' + fmtNumIt(safeNum(f.totale) || 0) + ' ' + (f.valuta || 'CHF') + '?\n\n' +
       'Restano lo stesso numero e la stessa data di emissione. La versione di adesso va nello ' +
       'storico della fattura, con il motivo, e non si cancella.' +
+      testoPagamentiCorrezione(pag || [], noteCreditoDi(id)) +   // 104
       (rata ? '\n\nÈ la fattura della rata «' + rata.descrizione + '»: se cambi l\'imponibile ' +
               '(oggi ' + fmtNumIt(safeNum(f.totale_imponibile) || 0) + ' CHF), la rata lo segue, insieme alla fattura.' : '') +   // 93
       '\n\nScrivi PERCHÉ la correggi (obbligatorio, resta nello storico):', '')
@@ -6637,6 +6641,7 @@ async function salvaCorrezione() {
         'Totale: ' + fmtNumIt(c.totalePrima) + ' → ' + fmtNumIt(dopo) + ' ' + (header.valuta || 'CHF') + '\n' +
         (rataCambia ? 'Rata «' + c.rata.descrizione + '»: ' + fmtNumIt(c.rata.importo) + ' → ' + fmtNumIt(impDopo) +
                       ' CHF (IVA esclusa), insieme alla fattura.\n' : '') +
+        (eccessoConTotale(c.id, dopo) > 0.005 ? 'Pagato in eccesso CHF ' + fmtNumIt(eccessoConTotale(c.id, dopo)) + ': il nuovo totale è sotto quanto è già stato pagato. I pagamenti non si toccano.\n' : '') +   // 104
         'Motivo: «' + c.motivo + '»\n\n' +
         'Numero e data di emissione restano. La versione di prima va nello storico della fattura e non si cancella.')) return
     await maybeSaveNewIbanToRubrica()
@@ -6654,6 +6659,7 @@ async function salvaCorrezione() {
     var rataOra = null
     try { await loadContrattiCantiere(); var tr93 = trovaAccontoPerFattura(c.id); if (tr93) rataOra = tr93.a } catch (_) { /* lo dice la scheda */ }
     var avvisi = avvisiDopoCorrezione(currentDetailFattura, versioniDetail)
+    if (eccessoConTotale(c.id, dopo) > 0.005) avvisi.unshift('Pagato in eccesso CHF ' + fmtNumIt(eccessoConTotale(c.id, dopo)) + ': i pagamenti restano come sono. Se serve, si restituisce al cliente.')   // 104
     showFattureBanner('fatture-detail-banner', avvisi.length ? 'warn' : 'ok',
       'Fattura n. ' + c.numero + ' corretta: totale ' + fmtNumIt(c.totalePrima) + ' → ' + fmtNumIt(dopo) + ' ' +
       (header.valuta || 'CHF') + '. La versione di prima è nello storico, qui sotto.' +
@@ -6997,6 +7003,7 @@ async function newFattura(tipo) {
   impostaCantierePicker('v', null)
   // FASE 58 — una fattura nuova non viene da nessuna rata d'acconto.
   editorAccontoId = null
+  editorSaldo = null; html('fatture-saldo-ref', ''); html('fatture-saldo-avviso', '')   // 104
   _avvisoAccontoBozza = null
   html('fatture-acconto-ref', '')
   // FASE 29 — nessuno sconto di documento su una fattura nuova.
@@ -7101,6 +7108,8 @@ async function editFattura(id, correzione) {
       el('fatture-edit-title').textContent = 'Correzione della fattura n. ' + f.numero
       impostaModoCorrezione(correzione)
     }
+    // 104 — una fattura che ha già la sua riga, senza un calcolo da rifare: la tiene.
+    if (!editorSaldo && Math.abs(safeNum(f.arrotondamento) || 0) >= 0.005) editorSaldo = { fisso: safeNum(f.arrotondamento) }
     // FASE 29 — lo sconto di documento salvato torna nel modulo.
     if (el('f-sconto-tipo'))   el('f-sconto-tipo').value   = f.sconto_doc_tipo || 'pct'
     if (el('f-sconto-valore')) el('f-sconto-valore').value = f.sconto_doc_valore == null ? '' : f.sconto_doc_valore
@@ -7127,7 +7136,8 @@ function renderRigheEditor() {
   for (var i = 0; i < fatturaRighe.length; i++) {
     var r = fatturaRighe[i]
     var calc = calcolaRiga(r)
-    var titolo = isRigaTitolo(r)
+    var testo = isRigaTesto(r)   // 104
+    var titolo = isRigaTitolo(r) || testo
     // FASE 21 — su una riga-titolo i campi numerici non ci sono proprio: non
     // devono essere «disattivati ma presenti», perche' un campo grigio invita
     // comunque a provarci. Al loro posto una cella vuota.
@@ -7135,18 +7145,19 @@ function renderRigheEditor() {
     var celleVuote = '<td></td><td></td><td></td><td></td>' + (ivaOn ? '<td></td>' : '') +
                      '<td></td>' + (ivaOn ? '<td></td>' : '')
     rows +=
-      '<tr' + (titolo ? ' class="riga-titolo"' : '') + '>' +
+      '<tr' + (testo ? ' class="riga-testo"' : titolo ? ' class="riga-titolo"' : '') + '>' +
         '<td class="cell-pos">' + esc(posizioni[i]) + '</td>' +
         // FASE 20 — descrizione su piu' righe: e' la parte che legge il
         // cliente, e su una riga sola il testo lungo spariva a destra. Il
         // «\n» dopo il tag e' voluto: l'HTML scarta il primo a capo dentro un
         // textarea, e senza di quello una descrizione che comincia con un a
         // capo lo perderebbe al primo salvataggio.
-        '<td><textarea class="cell-input cell-desc' + (titolo ? ' cell-titolo' : '') + '" rows="1"' +
-          ' placeholder="' + (titolo ? 'Titolo del gruppo (senza importi)' : 'Descrizione') + '"' +
+        // 104 — il testo prende tutta la riga, anche le colonne dei numeri.
+        '<td' + (testo ? ' colspan="' + (ivaOn ? 8 : 6) + '"' : '') + '><textarea class="cell-input cell-desc' + ((titolo && !testo) ? ' cell-titolo' : '') + '" rows="1"' +
+          ' placeholder="' + (testo ? 'Testo (senza quantità e prezzo, non entra nel totale)' : titolo ? 'Titolo del gruppo (senza importi)' : 'Descrizione') + '"' +
           ' oninput="onRigaInput(' + i + ',\'descrizione\',this.value); autoGrowRiga(this)">' +
-          '\n' + esc(r.descrizione || '') + '</textarea></td>' +
-        (titolo ? celleVuote :
+          '\n' + esc(r.descrizione || '') + '</textarea>' + (testo ? controlliTestoHtml(i, r) : '') + '</td>' +
+        (testo ? '' : titolo ? celleVuote :
           // FASE 21 — l'unita': campo libero con i suggerimenti piu' usati.
           // Una tendina chiusa prima o poi non ha l'unita' che serve.
           '<td><input class="cell-input cell-unita" list="unita-suggerite" maxlength="16"' +
@@ -7172,6 +7183,8 @@ function renderRigheEditor() {
           '<button type="button" class="icon-btn cambia-tipo" onclick="cambiaTipoRiga(' + i + ')" title="' +
             (titolo ? 'Torna a riga normale, con quantita e prezzo' : 'Trasforma in titolo di gruppo') + '">' +
             (titolo ? '📝 Riga normale' : '📌 Titolo') + '</button>' +
+          '<button type="button" class="icon-btn" title="Sposta sopra" onclick="spostaRiga(' + i + ',-1)"' + (i === 0 ? ' disabled' : '') + '>⬆️ Su</button>' +   // 104
+          '<button type="button" class="icon-btn" title="Sposta sotto" onclick="spostaRiga(' + i + ',1)"' + (i === fatturaRighe.length - 1 ? ' disabled' : '') + '>⬇️ Giù</button>' +   // 104
           '<button type="button" class="icon-btn danger" title="Rimuovi riga" onclick="removeRiga(' + i + ')">✕</button>' +
         '</td>' +
       '</tr>'
@@ -7222,6 +7235,67 @@ function addTitolo() {
   renderRigheEditor()
 }
 
+// 104 — la riga di solo testo, e i testi pronti. Stanno in tm_conta_impostazioni: solo il titolare, come tutta la Contabilità.
+var CHIAVE_TESTI_PRONTI = 'testi_pronti_fattura'
+var TESTO_PRONTO_DI_BASE = 'Il versamento del presente acconto costituisce conferma dell\'incarico e accettazione dell\'offerta aggiornata e delle condizioni in essa riportate.'
+function testiPronti() {
+  var grezzo = impostazione(CHIAVE_TESTI_PRONTI, null)
+  if (grezzo == null) return [TESTO_PRONTO_DI_BASE]   // finché non ne salva altri, c'è la sua frase
+  try { var l = JSON.parse(grezzo); return Array.isArray(l) ? l : [] } catch (_) { return [] }
+}
+function controlliTestoHtml(i, r) {
+  var lista = testiPronti(), attuale = String(r.descrizione || '').trim()
+  return '<div class="testo-pronti">' +
+    '<select class="cell-input" aria-label="Testi pronti" onchange="usaTestoPronto(' + i + ',this.value)">' +
+      '<option value="">📝 Scegli un testo pronto…</option>' +
+      lista.map(function (t, k) { return '<option value="' + k + '">' + esc(t.length > 70 ? t.slice(0, 70) + '…' : t) + '</option>' }).join('') +
+    '</select>' +
+    '<button type="button" class="icon-btn" onclick="salvaTestoPronto(' + i + ')">💾 Salva come testo pronto</button>' +
+    (attuale && lista.indexOf(attuale) !== -1 ? '<button type="button" class="icon-btn" onclick="togliTestoPronto(' + i + ')">🗑️ Togli dai pronti</button>' : '') +
+  '</div>'
+}
+function usaTestoPronto(i, k) {
+  var t = testiPronti()[Number(k)]
+  if (t == null || !fatturaRighe[i] || k === '') return
+  fatturaRighe[i].descrizione = t
+  renderRigheEditor()
+}
+async function scriviTestiPronti(lista) {
+  await salvaImpostazioneConta(CHIAVE_TESTI_PRONTI, JSON.stringify(lista), 'Testi pronti per le righe di solo testo delle fatture (104).')
+}
+async function salvaTestoPronto(i) {
+  var t = String((fatturaRighe[i] || {}).descrizione || '').trim()
+  if (!t) { showFattureBanner('fatture-edit-banner', 'warn', 'Scrivi prima il testo: non c\'è niente da salvare.'); return }
+  try {
+    var lista = testiPronti()
+    if (lista.indexOf(t) === -1) lista.push(t)
+    await scriviTestiPronti(lista)
+    showFattureBanner('fatture-edit-banner', 'ok', 'Testo pronto salvato: lo trovi nella tendina delle righe di testo.')
+    renderRigheEditor()
+  } catch (e) { showFattureBanner('fatture-edit-banner', 'err', 'Testo pronto non salvato: ' + (e.message || e)) }
+}
+async function togliTestoPronto(i) {
+  var t = String((fatturaRighe[i] || {}).descrizione || '').trim()
+  try {
+    await scriviTestiPronti(testiPronti().filter(function (x) { return x !== t }))
+    showFattureBanner('fatture-edit-banner', 'ok', 'Testo tolto dai pronti: su questa fattura resta scritto.')
+    renderRigheEditor()
+  } catch (e) { showFattureBanner('fatture-edit-banner', 'err', 'Testo pronto non tolto: ' + (e.message || e)) }
+}
+async function addRigaTesto() {
+  try { await loadImpostazioniConta() } catch (_) { /* la tendina ha la frase di base */ }
+  fatturaRighe.push({ descrizione: '', quantita: '', prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'testo', sconto_pct: '' })
+  renderRigheEditor()
+}
+function spostaRiga(i, d) {
+  var j = i + d
+  if (j < 0 || j >= fatturaRighe.length) return
+  var x = fatturaRighe[i]
+  fatturaRighe[i] = fatturaRighe[j]
+  fatturaRighe[j] = x
+  renderRigheEditor()
+}
+
 function addRiga() {
   fatturaRighe.push({ descrizione: '', quantita: 1, prezzo_unitario: '', codice_iva_id: '', unita: '', tipo_riga: 'voce', sconto_pct: '' })
   renderRigheEditor()
@@ -7237,7 +7311,7 @@ function addRiga() {
 function cambiaTipoRiga(i) {
   var r = fatturaRighe[i]
   if (!r) return
-  if (isRigaTitolo(r)) {
+  if (isRigaTitolo(r) || isRigaTesto(r)) {
     r.tipo_riga = 'voce'
     // Una riga nata titolo non ha mai avuto una quantita': parte da 1, come
     // una riga nuova. Se ce l'aveva, la ritrova.
@@ -7258,7 +7332,42 @@ function removeRiga(i) {
 function computeCurrentTotale() {
   // FASE 29 — stesso motore dei totali a schermo, sconto di documento incluso.
   var sd = scontoDocumentoDalForm()
-  return calcolaTotaliFattura(fatturaRighe, sd.tipo, sd.valore).totale
+  var t = calcolaTotaliFattura(fatturaRighe, sd.tipo, sd.valore).totale
+  return round2(t + arrotondamentoSaldo(t))   // 104
+}
+
+// 104 — IL SALDO ARROTONDATO. Saldo = totale offerta arrotondato − fatture già emesse.
+// Vale solo sulla fattura di una rata di tipo Saldo, se sul contratto è scritto il totale dell'offerta arrotondato:
+// vuoto vuol dire offerta vecchia o nessuna offerta, e il saldo non si tocca. Le fatture già emesse non cambiano.
+var editorSaldo = null   // { offerta, emesse, target } oppure { fisso } su una fattura che ha già la sua riga
+var SOGLIA_ARROTONDAMENTO = 2   // oltre, non è un arrotondamento: si avvisa e non si scrive niente
+function arrotondamentoSaldo(totale) {
+  if (!editorSaldo) return 0
+  if (editorSaldo.fisso != null) return editorSaldo.fisso
+  var d = round2(editorSaldo.target - totale)
+  return Math.abs(d) < SOGLIA_ARROTONDAMENTO ? d : 0
+}
+function testoArrotondamento(n) {
+  return (n < 0 ? '\u2212' : '') + fmtNumIt(Math.abs(n))
+}
+async function preparaSaldoEditor(c, a, fatturaId) {
+  editorSaldo = null
+  var offerta = safeNum(c && c.totale_offerta_arrotondato)
+  if (offerta == null || tipoDiRata(a) !== 'saldo') return
+  var ids = (c.acconti || []).filter(function (x) { return x.id !== a.id && x.fattura_id && x.fattura_id !== fatturaId }).map(function (x) { return x.fattura_id })
+  var emesse = 0
+  if (ids.length) {
+    const { data: fatt, error } = await sb.from('tm_conta_fatture').select('id, totale, stato').in('id', ids)
+    if (error) throw error
+    const { data: note, error: eN } = await sb.from('tm_conta_fatture').select('totale').in('rif_fattura_id', ids).eq('tipo', 'nota_credito').eq('stato', 'emessa')
+    if (eN) throw eN
+    ;(fatt || []).forEach(function (f) { if (f.stato === 'emessa') emesse += safeNum(f.totale) || 0 })
+    ;(note || []).forEach(function (n) { emesse -= safeNum(n.totale) || 0 })
+  }
+  editorSaldo = { offerta: offerta, emesse: round2(emesse), target: round2(offerta - emesse) }
+  html('fatture-saldo-ref', '<div class="nota-cruscotto" style="margin-top:8px"><span aria-hidden="true">🧮</span><span><strong>Saldo</strong>: totale offerta arrotondato ' +
+    esc(fmtNumIt(offerta)) + ' − fatture già emesse ' + esc(fmtNumIt(emesse)) + ' = <strong>' + esc(fmtNumIt(editorSaldo.target)) + '</strong> CHF, IVA inclusa.</span></div>')
+  recalcFatturaTotals()
 }
 
 // Verifica storno: la nota di credito non deve superare il totale della fattura originale
@@ -7296,6 +7405,14 @@ function recalcFatturaTotals() {
   // stampa leggono gli stessi numeri, e non possono divergere.
   var sd = scontoDocumentoDalForm()
   var t = calcolaTotaliFattura(fatturaRighe, sd.tipo, sd.valore)
+  // 104 — la riga piccola prima del totale. Se è 0.00 non si vede.
+  var arrot = arrotondamentoSaldo(t.totale)
+  var rowAr = el('fatture-tot-arrotondamento-row')
+  if (rowAr) rowAr.style.display = Math.abs(arrot) >= 0.005 ? '' : 'none'
+  if (el('fatture-tot-arrotondamento')) el('fatture-tot-arrotondamento').textContent = testoArrotondamento(arrot)
+  t = Object.assign({}, t, { totale: round2(t.totale + arrot), arrotondamento: arrot })
+  html('fatture-saldo-avviso', (editorSaldo && editorSaldo.target != null && Math.abs(round2(editorSaldo.target - t.totale)) >= 0.005 && t.imponibile > 0)
+    ? '<div class="nota-cruscotto avviso" style="margin-top:8px"><span aria-hidden="true">⚠️</span><span>Il saldo non torna con l\'offerta: differenza ' + esc(fmtNumIt(round2(editorSaldo.target - t.totale))) + ' CHF. Controlla importo e codice IVA: non arrotondo da solo una cifra così.</span></div>' : '')
   // Il subtotale e lo sconto di documento si mostrano SOLO se lo sconto c'e':
   // senza, il riquadro dei totali e' identico a prima.
   var rowSub = el('fatture-tot-subtotale-row'), rowSc = el('fatture-tot-sconto-row')
@@ -7307,7 +7424,7 @@ function recalcFatturaTotals() {
   if (el('fatture-tot-iva'))        el('fatture-tot-iva').textContent = fmtNum2(t.iva)
   if (el('fatture-tot-totale'))     el('fatture-tot-totale').textContent = fmtNum2(t.totale)
   updateNcRefInfo()
-  return { imponibile: t.imponibile, iva: t.iva, totale: t.totale, subtotale: t.subtotale,
+  return { imponibile: t.imponibile, iva: t.iva, totale: t.totale, arrotondamento: t.arrotondamento, subtotale: t.subtotale,
            scontoDoc: t.scontoDoc, scontoDocTipo: t.scontoDocTipo, scontoDocValore: t.scontoDocValore }
 }
 
@@ -7512,6 +7629,7 @@ function collectFatturaHeader() {
     totale_imponibile: tot.imponibile,
     totale_iva:        tot.iva,
     totale:            tot.totale,
+    arrotondamento:    Math.abs(tot.arrotondamento || 0) >= 0.005 ? tot.arrotondamento : null,   // 104
     // FASE 29 — lo sconto di documento: come l'ha scritto Umberto (tipo e
     // valore) e quanto vale in franchi. Il terzo e' un numero derivato, ma
     // serve al documento stampato senza dover rifare il calcolo.
@@ -7533,7 +7651,8 @@ function righeFatturaPayload(fatturaId) {
     // titoli. Un titolo ha SEMPRE una descrizione (e' tutto quello che ha),
     // quindi questa regola non ne butta via nessuno.
     if (!desc) continue
-    var titolo = isRigaTitolo(r)
+    var testoSolo = isRigaTesto(r)   // 104
+    var titolo = isRigaTitolo(r) || testoSolo
     var calc = calcolaRiga(r)
     // FASE 29 — la quota di IVA di questa riga sull'imponibile SCONTATO (dopo
     // lo sconto di documento): cosi' la somma delle righe fa l'IVA del
@@ -7547,7 +7666,7 @@ function righeFatturaPayload(fatturaId) {
       // le colonne sono NOT NULL con default 0, e uno zero esplicito e' piu'
       // onesto di un residuo lasciato nel modulo prima di cambiare tipo riga.
       unita:           titolo ? null : ((r.unita || '').trim() || null),
-      tipo_riga:       titolo ? 'titolo' : 'voce',
+      tipo_riga:       testoSolo ? 'testo' : titolo ? 'titolo' : 'voce',
       quantita:        titolo ? 0 : (safeNum(r.quantita) != null ? safeNum(r.quantita) : 0),
       prezzo_unitario: titolo ? 0 : (safeNum(r.prezzo_unitario) != null ? safeNum(r.prezzo_unitario) : 0),
       codice_iva_id:   (titolo || !isSoggettoIva()) ? null : (r.codice_iva_id || null),
@@ -7795,7 +7914,7 @@ async function emettiFatturaCorrente() {
   var voci = 0, titoli = 0
   for (var i = 0; i < fatturaRighe.length; i++) {
     var r = fatturaRighe[i]
-    if (isRigaTitolo(r)) { titoli++; continue }
+    if (isRigaTitolo(r) || isRigaTesto(r)) { titoli++; continue }
     if ((r.descrizione || '').trim() && safeNum(r.prezzo_unitario) != null) voci++
   }
   if (!voci) {
@@ -7993,6 +8112,7 @@ async function creaNotaCredito(id) {
       sconto_doc_tipo:    f.sconto_doc_tipo || null,
       sconto_doc_valore:  f.sconto_doc_valore == null ? null : f.sconto_doc_valore,
       sconto_doc_importo: f.sconto_doc_importo == null ? null : f.sconto_doc_importo,
+      arrotondamento:    f.arrotondamento == null ? null : f.arrotondamento,   // 104 — la nota storna il documento com'è
       created_by:        currentUser ? currentUser.id : null
     }
     const { data: ins, error: insErr } = await sb.from('tm_conta_fatture').insert(header).select()
@@ -9036,6 +9156,10 @@ function renderFatturaPrint(f, righe, rifInfo) {
   var righeHtml = ''
   for (var i = 0; i < righe.length; i++) {
     var r = righe[i]
+    if (r.tipo_riga === 'testo') {   // 104 — a capo su tutta la riga, senza numeri
+      righeHtml += '<tr class="inv-riga-testo"><td class="inv-desc" colspan="' + (colonneDopoDesc + 1) + '">' + esc(r.descrizione || '') + '</td></tr>'
+      continue
+    }
     if (r.tipo_riga === 'titolo') {
       righeHtml +=
         '<tr class="inv-riga-titolo">' +
@@ -9075,6 +9199,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
     var perAliq = {}
     for (var j = 0; j < righe.length; j++) {
       var rj = righe[j]
+      if (rj.tipo_riga === 'testo') continue   // 104
       var alq = ivaAliquotaById(rj.codice_iva_id)
       if (alq == null) alq = 0
       var key = String(alq)
@@ -9120,6 +9245,9 @@ function renderFatturaPrint(f, righe, rifInfo) {
     (ivaOn
       ? '<div><span>Totale IVA</span><span>' + fmtNum2(safeNum(f.totale_iva)) + ' ' + v + '</span></div>'
       : '') +
+    // 104 — la riga piccola, prima del totale. Se è 0.00 non si stampa.
+    (Math.abs(safeNum(f.arrotondamento) || 0) >= 0.005
+      ? '<div class="inv-arrotondamento"><span>Arrotondamento</span><span>' + testoArrotondamento(safeNum(f.arrotondamento)) + ' ' + v + '</span></div>' : '') +
     '<div class="inv-grand"><span>Totale documento</span><span>' + fmtNum2(safeNum(f.totale)) + ' ' + v + '</span></div>' +
     // 91 — lo sconto di cassa è una CONDIZIONE: il totale resta pieno, sotto si
     // legge quanto pagare entro il termine.
@@ -10353,6 +10481,7 @@ function renderAcquistiTable() {
       (attivo ? 'Nessuna fattura trovata. Prova a cambiare la ricerca o i filtri.' : 'Nessuna fattura d\'acquisto.') + '</div>')
     return
   }
+  var legamiDoppie = legamiFattureDoppie(acquistiList, speseElenco)   // 104 — sull'elenco intero: l'altra può essere fuori dal filtro
   var righeFatture = list.map(function (a) {
     // riga secondaria compatta: scomposizione IVA
     var impo = safeNum(a.imponibile), ivaI = safeNum(a.iva_importo), tasseL = safeNum(a.tasse_legali)
@@ -10373,7 +10502,7 @@ function renderAcquistiTable() {
       '" onclick="viewAcquisto(\'' + a.id + '\')">' +
       '<td>' + esc(a.fornitore || '') + spiaDaConfermare(a) + spiaBozza(a) + (chiusoA ? segnoChiuso() : '') +   // 89·4
         (a.origine === 'import_ai' ? '<div><span class="orig-etichetta orig-ai">🤖 letta dall\'AI</span></div>' : '<div class="dim nota-riga">✍️ caricata a mano</div>') +   // 104
-        (a.note ? '<div class="nota-riga">📝 Nota: ' + esc(a.note) + '</div>' : '') + '</td>' +   // 104
+        (a.note ? '<div class="nota-riga">📝 Nota: ' + esc(a.note) + '</div>' : '') + avvisoFatturaDoppiaHtml(legamiDoppie, a.id) + '</td>' +   // 104
       '<td class="dim">' + esc(a.numero_fornitore || '—') + '</td>' +
       '<td class="dim">' + esc(fmtDate(a.data)) + '</td>' +
       '<td class="num">' + fmtImporto(a.importo, a.valuta) + ivaSub + '</td>' +
@@ -10383,7 +10512,7 @@ function renderAcquistiTable() {
     '</tr>' }
   })
   // 104 — fatture e spese insieme, le più recenti prima. Le spese hanno la loro riga e le loro azioni.
-  var rows = righeFatture.concat(spese.map(function (m) { return { data: m.data, html: rigaSpesaElencoHtml(m) } }))
+  var rows = righeFatture.concat(spese.map(function (m) { return { data: m.data, html: rigaSpesaElencoHtml(m, legamiDoppie) } }))
     .sort(function (x, y) { return String(y.data || '').localeCompare(String(x.data || '')) })
     .map(function (r) { return r.html }).join('')
   html('acquisti-table', '<div class="table-wrap"><table><thead><tr>' +
@@ -18977,7 +19106,51 @@ function speseContatoreHtml(lista) {
   return '<div class="pag-nota nota-riga">🏗️ In più ' + (lista.length === 1 ? '1 spesa' : lista.length + ' spese') + ' dell\'App Cantieri: ' + esc(somme) +
     (daFare ? ', di cui ' + daFare + ' da classificare' : '') + '. Non sono nel conteggio delle fatture e non si pagano da qui; nei costi del cantiere contano già.</div>'
 }
-function rigaSpesaElencoHtml(m) {
+// 104 — LA FATTURA DOPPIA: una spesa «Fattura fornitore» dell'App Cantieri e una fattura d'acquisto che sembrano lo stesso documento.
+// La regola: la STESSA CIFRA al centesimo e la stessa valuta (mai su cifre diverse), e in più almeno una di queste:
+// il numero della fattura si legge nella descrizione o nella nota della spesa; una parola del fornitore si legge lì;
+// le due date stanno entro 45 giorni. Meglio un avviso in più che uno in meno. È solo un avviso: non cambia nessun conteggio.
+var GIORNI_FATTURA_DOPPIA = 45
+var PAROLE_DITTA = { sagl: 1, gmbh: 1, ditta: 1, fratelli: 1, materiali: 1, costruzioni: 1, srl: 1, spa: 1 }
+function parolaDelFornitore(fornitore, testo) {
+  return String(fornitore || '').toLowerCase().split(/[^a-zàèéìòù0-9]+/).some(function (p) {
+    return p.length >= 4 && !PAROLE_DITTA[p] && testo.indexOf(p) !== -1
+  })
+}
+function eFatturaDoppia(m, a) {
+  if (!m || !a || tipoElencoSpesa(m) !== 'fatture' || a.tipo === 'nota_credito') return false
+  var imp = safeNum(a.importo)
+  if (imp == null || (m.valuta || 'CHF') !== (a.valuta || 'CHF')) return false
+  var cifre = [safeNum(m.importo), importoSpesa(m)]
+  if (!cifre.some(function (x) { return x != null && Math.abs(x - imp) < 0.005 })) return false
+  var testo = String((m.descrizione || '') + ' ' + (m.note_cantiere || '')).toLowerCase()
+  var nudo = testo.replace(/[^a-z0-9]/g, '')
+  var numero = String(a.numero_fornitore || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (numero.length >= 3 && nudo.indexOf(numero) !== -1) return true
+  if (parolaDelFornitore(a.fornitore, testo)) return true
+  if (!m.data || !a.data) return false
+  return Math.abs(new Date(m.data).getTime() - new Date(a.data).getTime()) <= GIORNI_FATTURA_DOPPIA * 86400000
+}
+// Le coppie, per id: vale sulle due righe.
+function legamiFattureDoppie(fatture, spese) {
+  var legami = {}
+  ;(spese || []).forEach(function (m) {
+    ;(fatture || []).forEach(function (a) {
+      if (!eFatturaDoppia(m, a)) return
+      ;(legami[m.origine_id] = legami[m.origine_id] || []).push({ id: a.id, testo: 'fattura d\'acquisto «' + (a.fornitore || '') + '» del ' + fmtDate(a.data) })
+      ;(legami[a.id] = legami[a.id] || []).push({ id: m.origine_id, testo: 'spesa dell\'App Cantieri «' + (m.descrizione || '') + '» del ' + fmtDate(m.data) })
+    })
+  })
+  return legami
+}
+function avvisoFatturaDoppiaHtml(legami, id) {
+  return (legami[id] || []).map(function (l) {
+    return '<div class="nota-riga avviso-doppia">⚠️ Forse è la stessa fattura: ' + esc(l.testo) + '. ' +
+      '<button type="button" class="link-btn" onclick="event.stopPropagation(); vaiARigaAcquisti(\'' + esc(l.id) + '\')">🔗 Vai all\'altra</button></div>'
+  }).join('')
+}
+
+function rigaSpesaElencoHtml(m, legami) {
   var bloccata = m._class && m._class.stato === 'bloccato'
   var azioni = bloccata ? '<span class="lock-tag" title="Periodo consegnato — sola lettura">🔒 Consegnato</span>'
     : '<button class="icon-btn classify" onclick="event.stopPropagation(); apriSpesaElenco(\'' + esc(m.origine_id) + '\')">' +
@@ -18987,7 +19160,7 @@ function rigaSpesaElencoHtml(m) {
     '<td><div class="mov-desc">' + esc(m.descrizione) + '</div>' +
       '<div>' + etichettaOrigineHtml(m) + '</div>' +
       (m._tipo_spesa ? '<div class="dim nota-riga">' + esc(m._tipo_spesa) + '</div>' : '') +
-      notaRigaSpesaHtml(m) + giustificativoRigaHtml(m, !!m._class) + '</td>' +
+      notaRigaSpesaHtml(m) + avvisoFatturaDoppiaHtml(legami || {}, m.origine_id) + giustificativoRigaHtml(m, !!m._class) + '</td>' +
     '<td class="dim">' + esc(m._tipo_doc || 'Scontrino') + '</td>' +
     '<td class="dim">' + esc(fmtDate(m.data)) + '</td>' +
     '<td class="num">' + fmtImporto(importoSpesa(m), m.valuta) + importoAppCantieriHtml(m) + '</td>' +
@@ -23010,6 +23183,8 @@ function boxPagamentiHtml(tabella, id, importoDoc, verso, nome) {
       (rimborsato > 0.005 ? rigaPagSegno('Rimborsato al cliente', rimborsato) : '') +
       (stralcio > 0.005 ? rigaPagSegno(sconto91 ? 'Sconto di cassa concesso' : 'Stralciato come perdita', -stralcio) : '') +   // 84 · 91
       rigaPagSegno('Residuo', residuo, true, '=') +
+      ((tabella === 'tm_conta_fatture' && residuo < -0.005)
+        ? '<div class="pag-nota conto-avviso">⚠️ Pagato in eccesso CHF ' + esc(fmtNumIt(-residuo)) + '. I pagamenti restano come sono: se serve, si restituisce al cliente.</div>' : '') +   // 104
       // 103 — una vendita chiusa si dice «Incassata».
       '<div class="pag-stato-riga">' + badge(e.cls, e.icona + ' ' + ((tabella === 'tm_conta_fatture' && e.testo === 'Incassato') ? 'Incassata' : e.testo)) + '</div>' +
     '</div>' +
@@ -23380,7 +23555,7 @@ function movimentoPerClassificare(tabella, doc) {
       codice_iva_id: doc.codice_iva_id || null,   // FASE 20 — vedi sopra
       descrizione: 'Acquisto ' + (doc.numero_fornitore || '') + ' — ' + (doc.fornitore || ''),
       ente: doc.fornitore || null,
-      _sorgente: 'Fatture acquisto', _tipo_label: 'Fattura acquisto', _icon: '📥'
+      _sorgente: 'Acquisti', _tipo_label: 'Fattura acquisto', _icon: '📥'
     }
   }
   return {
@@ -27523,6 +27698,12 @@ function formContrattoHtml(c, cantiereId) {
           ' value="' + (c && c.importo_contratto != null ? esc(String(c.importo_contratto)) : '') + '"' +
           ' onfocus="this.select()" oninput="onFirmatoContrattoInput()"></div>' +
     '</div>' +
+    '<div class="form-group" style="margin-top:10px">' +
+      '<label for="acc-c-arrot" class="form-label">Totale offerta arrotondato, IVA inclusa <span class="dim">(solo offerte nuove)</span></label>' +
+      '<input type="text" inputmode="decimal" id="acc-c-arrot" class="form-input num" placeholder="—"' +
+        ' value="' + (c && c.totale_offerta_arrotondato != null ? esc(fmtNumIt(safeNum(c.totale_offerta_arrotondato))) : '') + '" onfocus="this.select()">' +
+      '<div class="form-hint">Per difetto al franco intero, come sull\'offerta. Scritto qui, il saldo diventa questo totale meno le fatture già emesse. Vuoto: il saldo non si arrotonda.</div>' +
+    '</div>' +   // 104
     '<div class="form-hint conto-sconto" id="acc-c-nota-sconto">' +
       'Scrivi il <strong>totale di listino</strong> e una percentuale: il totale firmato si calcola da sé. ' +
       'Oppure scrivi il firmato a mano e la percentuale esce da sola.</div>' +
@@ -28651,7 +28832,12 @@ async function salvaContrattoCantiere(cantiereId) {
   // corregge niente.
   var rib = safeNum(getVal('acc-c-ribasso'))
   var sco = safeNum(getVal('acc-c-sconto'))
-  var campi = { importo_contratto: importo, data_contratto: getVal('acc-c-data') || null,
+  // 104 — vuoto: offerta vecchia o nessuna. Solo franchi interi.
+  var arrotOff = safeNum(getVal('acc-c-arrot'))
+  if (arrotOff != null && (arrotOff <= 0 || arrotOff !== Math.trunc(arrotOff))) {
+    showCantieriBanner('err', 'Il totale dell\'offerta arrotondato è per difetto al franco intero: scrivi una cifra senza centesimi, o lascialo vuoto.'); return
+  }
+  var campi = { totale_offerta_arrotondato: arrotOff, importo_contratto: importo, data_contratto: getVal('acc-c-data') || null,
                 rif_offerta: getVal('acc-c-rif') || null,
                 totale_listino: (listino != null && listino > 0) ? listino : null,
                 ribasso_pct: (rib != null && rib > 0 && rib <= 100) ? rib : null,
@@ -28976,6 +29162,7 @@ async function newFatturaDaAcconto(c, a) {
   if (el('fatture-edit-title')) el('fatture-edit-title').textContent = 'Nuova fattura d\'acconto'
   renderRigheEditor()
   mostraRifAcconto(c, a, prop.avviso)
+  try { await preparaSaldoEditor(c, a, null) } catch (eS) { showFattureBanner('fatture-edit-banner', 'warn', 'Saldo arrotondato non calcolato: ' + (eS.message || eS)) }   // 104
   moduloModificato('fattura')   // 75·5 — compilata dal programma: si può salvare subito
 }
 
@@ -29011,6 +29198,7 @@ function mostraRifAcconto(c, a, avvisoTesto) {
 // Riaprendo una bozza: se e' nata da una rata, lo si rivede.
 async function caricaAccontoDellaBozza(fatturaId) {
   editorAccontoId = null
+  editorSaldo = null; html('fatture-saldo-ref', ''); html('fatture-saldo-avviso', '')   // 104
   _avvisoAccontoBozza = null
   html('fatture-acconto-ref', '')
   try {
@@ -29020,6 +29208,7 @@ async function caricaAccontoDellaBozza(fatturaId) {
     editorAccontoId = t.a.id
     if (el('fatture-edit-title')) el('fatture-edit-title').textContent = 'Fattura d\'acconto (bozza)'
     mostraRifAcconto(t.c, t.a)
+    await preparaSaldoEditor(t.c, t.a, fatturaId)   // 104
   } catch (e) {
     console.warn('Rata della bozza non letta:', e.message || e)
   }

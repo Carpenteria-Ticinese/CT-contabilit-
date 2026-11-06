@@ -1090,7 +1090,7 @@ textarea.cell-desc {
 }
 /* La descrizione e' la colonna larga: le altre hanno una larghezza fissa in
    index.html, questa si prende quello che resta. */
-#fatture-righe td:first-child { min-width: 180px; }
+#fatture-righe td:nth-child(2) { min-width: 180px; }   /* 104 — era la prima colonna, che ora è il numero: al telefono la descrizione restava stretta */
 
 /* FASE 21 — la riga-titolo nell'editor: si deve riconoscere a colpo d'occhio
    che non e' una voce con l'importo dimenticato, ma un'altra cosa. */
@@ -1427,6 +1427,13 @@ textarea.cell-desc {
 .conto-storico-riga { padding: 4px 0; overflow-wrap: anywhere; }
 .conto-avviso { margin-bottom: 8px; }
 .nota-riga { font-size: 14px; margin-top: 3px; overflow-wrap: anywhere; }
+.avviso-doppia { color: var(--warn); font-weight: 600; }
+.testo-pronti { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.testo-pronti select { flex: 1 1 200px; min-width: 0; }
+#fatture-righe tr.riga-testo { background: var(--bg); }
+@media (max-width: 767px) { #fatture-righe tr.riga-testo textarea, #fatture-righe .testo-pronti { max-width: calc(100vw - 110px); } }
+.inv-table tbody tr.inv-riga-testo td { white-space: pre-wrap; overflow-wrap: anywhere; }
+.inv-tot .inv-arrotondamento { font-size: 11px; color: #555; }
 tr.riga-trovata { outline: 3px solid var(--primary); outline-offset: -3px; }
 /* 104 — l'elenco Acquisti al telefono: una scheda per riga, senza scorrere di lato. */
 @media (max-width: 700px) {
