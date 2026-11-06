@@ -1736,6 +1736,8 @@
         <!-- 62c - il riquadro del documento annullato: quando, e perche'. -->
         <!-- 103 - «Incassata» o «Annullata», in cima -->
         <div class="no-print" id="fatture-stato-vendita"></div>
+        <!-- 104 - il nome del conto: solo a schermo, mai in stampa -->
+        <div class="no-print" id="fatture-conto-schermo"></div>
         <div id="fatture-annullata"></div>
         <!-- 103 - da dove viene il numero, o a chi è passato -->
         <div class="no-print" id="fatture-riuso"></div>
@@ -2493,6 +2495,7 @@
         <div class="form-group">
           <label for="imp-iban" class="form-label">IBAN del conto preferito <span class="req" aria-hidden="true">*</span></label>
           <input type="text" id="imp-iban" class="form-input" maxlength="40" readonly placeholder="Si sceglie nella Rubrica dei conti" />
+          <div id="imp-iban-nome" class="form-hint"></div>
           <div class="form-hint">Si cambia nella Rubrica dei conti, più sotto in questa pagina.</div>
         </div>
         <div class="form-row">

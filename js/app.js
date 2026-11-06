@@ -7713,7 +7713,7 @@ async function emettiFatturaCorrente() {
     // FASE 18 — l'emissione e' il punto in cui l'errore diventa definitivo:
     // l'IBAN si legge per intero, a gruppi di 4.
     var ibanConf = resolveEditorIban() || (aziendaInfo && aziendaInfo.iban) || ''
-    sumRows.push(['IBAN', ibanConf ? ibanLeggibile(ibanConf) : '— predefinito —'])
+    sumRows.push(['IBAN', ibanConf ? contoConIban(ibanConf) : '— predefinito —'])
     sumRows = sumRows.concat(righeAvvisoEmissione(ibanConf, valoreCantiere('v')))   // 104
   }
   sumRows.push(['Totale', fmtNum2(tot) + ' ' + valuta, true])
@@ -7771,7 +7771,7 @@ async function emettiFatturaById(id) {
     // FASE 18 — stessa conferma, stesso IBAN per intero.
     if (f.tipo !== 'nota_credito') {
       var ibanConfId = (f.iban && String(f.iban).trim()) ? f.iban : ((aziendaInfo && aziendaInfo.iban) || '')
-      sumRows.push(['IBAN', ibanConfId ? ibanLeggibile(ibanConfId) : '— predefinito —'])
+      sumRows.push(['IBAN', ibanConfId ? contoConIban(ibanConfId) : '— predefinito —'])
       sumRows = sumRows.concat(righeAvvisoEmissione(ibanConfId, f.cantiere_id))   // 104
     }
     sumRows.push(['Totale', fmtNum2(safeNum(f.totale)) + ' ' + (f.valuta || 'CHF'), true])
@@ -8038,12 +8038,12 @@ function proponiIbanDaCommessa(cantiereId) {
     var scelto = ibanNudo(resolveEditorIban() || '')
     var atteso = conto ? ibanNudo(conto.iban) : ''
     html('f-fat-iban-conto', (atteso && scelto !== atteso)
-      ? '<div class="pag-nota">⚠️ Questa commessa incassa su «' + esc(conto.nome) + '». Sulla fattura è scelto un altro IBAN.</div>' : '')
+      ? '<div class="pag-nota">⚠️ Questa commessa incassa su «' + esc(conto.nome) + '» — ' + esc(ibanLeggibile(conto.iban)) + '. Sulla fattura è scelto un altro IBAN.</div>' : '')
     return
   }
   sel.value = conto ? conto.iban : ''
   html('f-fat-iban-conto', conto
-    ? '<div class="pag-nota">🏗️ Conto della commessa: <strong>' + esc(conto.nome) + '</strong></div>' : '')
+    ? '<div class="pag-nota">🏗️ Conto della commessa: <strong>' + esc(conto.nome) + '</strong> — ' + esc(ibanLeggibile(conto.iban)) + '</div>' : '')
   onIbanSelectChange()
 }
 
@@ -8053,14 +8053,41 @@ function righeAvvisoEmissione(iban, cantiereId) {
   if (!ibanNudo(iban)) fuori.push(['⚠️ IBAN', 'Manca: sulla fattura non si stampa nessun conto.'])
   else if (!ibanCifraGiusta(iban)) fuori.push(['⚠️ IBAN', 'La cifra di controllo non torna: rileggilo prima di emettere.'])
   var conto = cantiereId ? contoAssegnatoA(cantiereId) : null
-  if (conto && ibanNudo(iban) !== ibanNudo(conto.iban)) fuori.push(['⚠️ Conto', 'Questa commessa incassa su «' + conto.nome + '», la fattura va su un altro IBAN.'])
+  if (conto && ibanNudo(iban) !== ibanNudo(conto.iban)) fuori.push(['⚠️ Conto', 'Questa commessa incassa su «' + conto.nome + '» — ' + ibanLeggibile(conto.iban) + ', la fattura va su un altro IBAN.'])
+  var scelto = contoPerIban(iban)
+  if (scelto && !scelto.banca) fuori.push(['⚠️ Banca', 'Il conto «' + scelto.nome + '» non ha la banca: al cliente escono solo IBAN e intestatario. Scrivila nella Rubrica dei conti.'])
   return fuori
 }
 
 // ── I conti nei pagamenti ────────────────────────────────────────────────────
+// A schermo nome e IBAN stanno sempre insieme. Il nome è di Umberto: in stampa non esce mai (righeContoStampaHtml).
 function etichettaConto(c) {
-  var s = String(c.iban || '')
-  return c.nome + ' · ' + String(TIPI_CONTO[c.tipo] || c.tipo).replace(/^\S+\s/, '') + ' · ' + c.valuta + ' · …' + s.slice(-4)
+  return c.nome + ' · ' + String(TIPI_CONTO[c.tipo] || c.tipo).replace(/^\S+\s/, '') + ' · ' + c.valuta + ' · ' + ibanLeggibile(c.iban)
+}
+function contoConIban(iban) {
+  var n = ibanLeggibile(iban)
+  if (!n) return ''
+  var c = contoPerIban(iban)
+  return c ? c.nome + ' — ' + n : n
+}
+// Al cliente, su stampa e PDF: IBAN, banca, intestatario. Mai il nome del conto.
+// La banca la sa la Rubrica; l'intestatario è la ditta (tm_aziende.nome, aziendaNome()).
+function righeContoStampaHtml(iban) {
+  if (!iban) return ''
+  var c = contoPerIban(iban)
+  function riga(et, v) { return '<div class="inv-pay-row"><span class="inv-pay-lbl">' + et + '</span><span>' + esc(v) + '</span></div>' }
+  return riga('IBAN', ibanLeggibile(iban)) + ((c && c.banca) ? riga('Banca', c.banca) : '') + riga('Intestatario', aziendaNome())
+}
+// Sopra la fattura, solo a schermo (no-print): su quale conto si paga, col suo nome.
+function contoSchermoHtml(f) {
+  if (!f || f.tipo === 'nota_credito') return ''
+  var iban = (f.iban && String(f.iban).trim()) ? f.iban : (aziendaInfo && aziendaInfo.iban)
+  if (!iban) return ''
+  var c = contoPerIban(iban)
+  return '<div class="pag-nota conto-avviso">🏦 Si paga su: ' +
+    (c ? '<strong>' + esc(c.nome) + '</strong> — ' : '') + esc(ibanLeggibile(iban)) + ((c && c.banca) ? ' · ' + esc(c.banca) : '') +
+    (c ? '<div class="dim">Il nome del conto lo vedi solo tu: sulla stampa escono IBAN, banca e intestatario.</div>'
+       : '<div class="dim">Questo IBAN non è nella Rubrica dei conti.</div>') + '</div>'
 }
 function riempiTendinaConti(idSelect, valore) {
   var sel = el(idSelect)
@@ -8093,7 +8120,7 @@ function contoPropostoEntrata(f) {
 }
 function tagContoPagamento(p) {
   var c = p.conto_id ? contoDaId(p.conto_id) : null
-  return c ? ' <span class="pag-rata-tag">🏦 ' + esc(c.nome) + '</span>' : ''
+  return c ? ' <span class="pag-rata-tag">🏦 ' + esc(c.nome) + ' — ' + esc(ibanLeggibile(c.iban)) + '</span>' : ''
 }
 
 // ── Editor fattura: selezione IBAN ───────────────────────────────────────────
@@ -8101,7 +8128,8 @@ function buildEditorIbanOptions(currentIban) {
   var a = aziendaInfo || {}
   // FASE 18 — IBAN per intero: qui si SCEGLIE su quale conto farsi pagare, e
   // due conti che finiscono uguale erano indistinguibili.
-  var defMask = a.iban ? ' (' + ibanLeggibile(a.iban) + ')' : ' (non impostato)'
+  var pref = contoPrincipale()
+  var defMask = pref ? ': ' + pref.nome + ' — ' + ibanLeggibile(pref.iban) : (a.iban ? ' (' + ibanLeggibile(a.iban) + ')' : ' (non impostato)')
   var out = '<option value="">Conto preferito' + esc(defMask) + '</option>'
   var attive = (ibanRubrica || []).filter(function (x) { return x.attivo })
   for (var i = 0; i < attive.length; i++) {
@@ -8219,7 +8247,7 @@ function riquadroPreferitoHtml(lista) {
     (altri.length
       ? '<div class="conto-tasti"><select id="conto-preferito-scelta" class="form-input conto-preferito-scelta" aria-label="Nuovo conto preferito">' +
           '<option value="">— scegli il nuovo preferito —</option>' +
-          altri.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.nome + ' · ' + c.valuta + ' · …' + String(c.iban || '').slice(-4)) + '</option>' }).join('') +
+          altri.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.nome + ' · ' + c.valuta + ' · ' + ibanLeggibile(c.iban)) + '</option>' }).join('') +
         '</select>' +
         '<button type="button" class="btn-primary conto-tasto" onclick="cambiaContoPreferito()">⭐ Cambia il conto preferito</button></div>'
       : '<div class="dim">Per cambiarlo serve un altro conto attivo: creane uno con «➕ Nuovo conto».</div>') +
@@ -8240,6 +8268,8 @@ async function renderIbanRubrica() {
   var showClosed = el('iban-show-closed') && el('iban-show-closed').checked
   var list = (ibanRubrica || []).filter(function (x) { return showClosed || x.attivo })
   var avvisi = avvisiRubricaConti(ibanRubrica)
+  var prefNome = contoPrincipale()
+  html('imp-iban-nome', prefNome ? '⭐ ' + esc(prefNome.nome) : '')
   box.innerHTML =
     riquadroPreferitoHtml(ibanRubrica) +
     avvisi.map(function (t) { return '<div class="pag-nota conto-avviso">⚠️ ' + esc(t) + '</div>' }).join('') +
@@ -8674,6 +8704,7 @@ async function viewFattura(id) {
   html('fatture-print', loadingRow('Caricamento fattura…'))
   html('fatture-detail-actions', '')
   html('fatture-stato-vendita', '')   // 103
+  html('fatture-conto-schermo', '')   // 104
   try {
     const { data: f, error } = await sb.from('tm_conta_fatture').select('*').eq('id', id).eq('azienda_id', currentAziendaId).single()
     if (error) throw error
@@ -8682,6 +8713,8 @@ async function viewFattura(id) {
     currentDetailFattura = f
     await ensureContiIva()
     await loadAziendaInfo()
+    await loadIbanRubrica()   // 104 — la banca per la stampa, il nome del conto a schermo
+    html('fatture-conto-schermo', contoSchermoHtml(f))
     // FASE 19 — servono i giorni di pagamento del contatto per l'anteprima
     // della scadenza su una bozza. Cache condivisa: se e' gia' letta non costa
     // niente, e se fallisce la fattura si vede lo stesso.
@@ -9035,7 +9068,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
     var ibanShown = (f.iban && String(f.iban).trim()) ? f.iban : a.iban
     payHtml =
       '<div class="inv-pay">' +
-        (ibanShown ? '<div class="inv-pay-row"><span class="inv-pay-lbl">IBAN</span><span>' + esc(ibanLeggibile(ibanShown)) + '</span></div>' : '') +
+        righeContoStampaHtml(ibanShown) +
         // FASE 27 — «0 giorni» sembrava un errore del programma e «1 giorni»
         // era sbagliato: il testo lo decide testoTerminePagamento, in un posto
         // solo. Con zero giorni sparisce anche l'etichetta «Termine»: quello
@@ -20063,6 +20096,7 @@ async function htmlFatturaPerPdf(idFattura) {
   // 91 — lo sconto di cassa sta sulla rata: senza i contratti il PDF non lo
   // stamperebbe. Se non si leggono, il PDF non si fa (fallire chiuso).
   if (f.tipo !== 'nota_credito') await loadContrattiCantiere()
+  await loadIbanRubrica()   // 104 — la banca, come sulla stampa
   if (f.tipo === 'nota_credito' && f.rif_fattura_id) {
     const { data: rif } = await sb.from('tm_conta_fatture').select('numero, data_emissione')
       .eq('id', f.rif_fattura_id).eq('azienda_id', currentAziendaId).maybeSingle()
