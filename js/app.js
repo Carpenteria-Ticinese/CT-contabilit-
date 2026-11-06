@@ -388,35 +388,43 @@ function fmtImporto(importo, valuta) {
   return esc(fmtNumIt(n) + ' ' + (valuta || 'CHF'))
 }
 
-// Numero in formato italiano: 15.000,00 — punto migliaia, virgola decimali.
-// REGOLA FISSA del progetto: mai il formato svizzero 15'000.00.
-// Si passa da qui per ogni cifra mostrata nel cruscotto.
+// La cifra, in UN posto solo: 1'050.00 (Umberto, 6.11.2026): apostrofo per le migliaia, punto per i decimali.
+// Vale per ogni schermata e ogni stampa. Il nome resta per non toccare le 400 chiamate.
 function fmtNumIt(n) {
-  if (n == null || isNaN(n)) return '0,00'
-  // minimumGroupingDigits: 1 forza il punto anche sotto le cinque cifre.
-  // Senza, l'italiano scrive «1200,00» e mette il punto solo da 10.000 in su:
-  // due cifre uguali si leggerebbero in due modi diversi nella stessa colonna.
-  try {
-    return Number(n).toLocaleString('it-IT', {
-      minimumFractionDigits: 2, maximumFractionDigits: 2,
-      useGrouping: true, minimumGroupingDigits: 1
-    })
-  } catch (_) {
-    // Browser che non conosce minimumGroupingDigits: si ripiega sul raggruppamento
-    // predefinito, che resta leggibile.
-    return Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  }
+  var v = Number(n)
+  if (n == null || isNaN(v)) return '0.00'
+  var parti = Math.abs(v).toFixed(2).split('.')
+  // Lo zero non ha segno: -0.001 si legge 0.00.
+  var segno = (v < 0 && Number(parti.join('.')) !== 0) ? '-' : ''
+  return segno + parti[0].replace(/\B(?=(\d{3})+(?!\d))/g, "'") + '.' + parti[1]
 }
 
-// Converte in numero finito oppure null (mai NaN che si propaga nei calcoli)
+// Converte in numero finito oppure null (mai NaN che si propaga nei calcoli).
+// È anche la lettura dei campi: 1050.50, 1050,50, 1'050.50, 1.050,50, «1'050.50 CHF».
+// Un punto solo è sempre il decimale (1.200 è 1.2): per le migliaia c'è l'apostrofo.
 function safeNum(v) {
   if (v == null || v === '') return null
-  const n = parseFloat(v)
+  if (typeof v === 'number') return isNaN(v) ? null : v
+  var s = String(v).replace(/chf/ig, '').replace(/[\s'’]/g, '')
+  if (/^[-+]?[\d.,]+$/.test(s) && /\d/.test(s)) {
+    var p = s.lastIndexOf('.'), c = s.lastIndexOf(',')
+    if (p >= 0 && c >= 0) {
+      var dec = p > c ? '.' : ',', mil = dec === '.' ? ',' : '.'
+      s = s.split(mil).join('').replace(dec, '.')
+    } else if (c >= 0) {
+      s = s.split(',').length > 2 ? s.split(',').join('') : s.replace(',', '.')
+    } else if (p >= 0 && s.split('.').length > 2) {
+      s = s.split('.').join('')
+    }
+    var letto = Number(s)
+    if (isFinite(letto)) return letto
+  }
+  var n = parseFloat(v)
   return isNaN(n) ? null : n
 }
 
 // Formatta un numero a 2 decimali per la UI; '—' se non disponibile.
-// Passa da fmtNumIt: il formato italiano si decide in un posto solo.
+// Passa da fmtNumIt: il formato si decide in un posto solo.
 function fmtNum2(n) {
   if (n == null || isNaN(n)) return '—'
   return fmtNumIt(n)
@@ -2061,7 +2069,7 @@ function disegnaSceltaImporto() {
       ' <button type="button" class="btn-secondary" onclick="usaImportoClassifica(\'' + round2(dopo96.ora).toFixed(2) + '\')">↻ Usa la cifra nuova (' +
       esc(fmtNumIt(dopo96.ora)) + ')</button></div>' : '') +
     '<label for="cls-importo-man" class="form-label">Importo da classificare <span class="dim">(' + esc(m.valuta || 'CHF') + ')</span></label>' +
-    '<input type="number" step="0.01" id="cls-importo-man" class="form-input importo-man" value="' +
+    '<input type="text" inputmode="decimal" step="0.01" id="cls-importo-man" class="form-input importo-man" value="' +
       (attuale != null ? round2(attuale).toFixed(2) : '') + '" oninput="scriviImportoClassifica(this.value)" />' +
     '<div class="importo-app">🏗️ nell\'App Cantieri: <strong>' + esc(operaio != null ? fmtNumIt(operaio) : '—') + '</strong></div>' +
     '<div id="cls-importo-rapide">' + bottoniImportoRapideHtml(m, attuale) + '</div>' +
@@ -3273,7 +3281,7 @@ function disegnaDivisione() {
         '<div class="form-row">' +
           '<div class="form-group" style="flex:0 0 130px">' +
             '<label class="form-label" for="divimp' + i + '">Importo (CHF)</label>' +
-            '<input type="number" step="0.05" class="form-input" id="divimp' + i + '" ' +
+            '<input type="text" inputmode="decimal" step="0.05" class="form-input" id="divimp' + i + '" ' +
               'value="' + esc(String(r.importo)) + '" onfocus="this.select()" ' +
               'oninput="aggiornaRigaDivisione(' + i + ')">' +
           '</div>' +
@@ -5902,7 +5910,9 @@ function testoImporti(importi) {
     var n = safeNum(x)
     if (n == null) return ''
     var a = Math.abs(n)
-    return [String(n), n.toFixed(2), fmtNumIt(a), fmtNumIt(a).replace(/\./g, ''), a.toFixed(2).replace('.', ',')].join(' ')
+    // Anche le scritture di prima: chi cerca «1.200,50» o «1200,50» trova lo stesso.
+    return [String(n), n.toFixed(2), fmtNumIt(a), fmtNumIt(a).replace(/'/g, ''), a.toFixed(2).replace('.', ','),
+            fmtNumIt(a).replace(/\./, ',').replace(/'/g, '.')].join(' ')
   }).join(' ')
 }
 
@@ -5916,7 +5926,7 @@ function barraImportoDataHtml(k) {
           '<input type="text" id="' + id('testo') + '" class="form-input" placeholder="🔍 descrizione, fornitore, importo…" oninput="' + on + '" autocomplete="off" /></div>'
       : '') +
     '<div class="fid-campo"><label class="form-label" for="' + id('impda') + '">Importo da</label>' +
-      '<input type="text" inputmode="decimal" id="' + id('impda') + '" class="form-input num" placeholder="es. 1.200,50" oninput="' + on + '" autocomplete="off" /></div>' +
+      '<input type="text" inputmode="decimal" id="' + id('impda') + '" class="form-input num" placeholder="es. 1\'200.50" oninput="' + on + '" autocomplete="off" /></div>' +
     '<div class="fid-campo"><label class="form-label" for="' + id('impa') + '">Importo a</label>' +
       '<input type="text" inputmode="decimal" id="' + id('impa') + '" class="form-input num" placeholder="es. 1.300" oninput="' + on + '" autocomplete="off" /></div>' +
     '<div class="fid-campo"><label class="form-label" for="' + id('da') + '">Data da</label>' +
@@ -5957,7 +5967,7 @@ function leggiFiltroID(k) {
   var f = { impDa: impDa, impA: impA, da: v('da'), a: v('a'), modo: modo, testo: v('testo').toLowerCase() }
   f.attivo = f.impDa != null || f.impA != null || !!f.da || !!f.a
   var msg = el('fid-' + k + '-msg')
-  if (msg) msg.innerHTML = errori.length ? '⚠️ ' + esc(errori.join(' · ')) + ' — scrivilo come 1.200,50 o 1200.50.' : ''
+  if (msg) msg.innerHTML = errori.length ? '⚠️ ' + esc(errori.join(' · ')) + ' — scrivilo come 1\'200.50 o 1200,50.' : ''
   return f
 }
 
@@ -6626,11 +6636,12 @@ async function caricaVersioniDetail(f) {
   if (titolareCache !== true) return
   try {
     const { data, error } = await sb.from('tm_conta_fatture_versioni')
-      .select('id, versione, motivo, totale_prima, corretta_il, azione')
+      .select('id, versione, motivo, totale_prima, corretta_il, corretta_da, azione')
       .eq('fattura_id', f.id).eq('azienda_id', currentAziendaId)
       .order('versione')
     if (error) throw error
     versioniDetail = data || []
+    await leggiNomiVersioni(versioniDetail)
     html('fatture-versioni', boxVersioniHtml(f, versioniDetail))
   } catch (e) {
     // Fallire a voce alta: un riquadro che manca sembra «mai corretta».
@@ -6641,13 +6652,37 @@ async function caricaVersioniDetail(f) {
   }
 }
 
+// Chi ha cambiato: il nome da tm_utenti. Se non si legge, si dice l'inizio dell'id: mai vuoto.
+var nomiVersioni = {}
+async function leggiNomiVersioni(versioni) {
+  var ids = (versioni || []).map(function (v) { return v.corretta_da }).filter(Boolean)
+  if (!ids.length) return
+  try {
+    const { data, error } = await sb.from('tm_utenti').select('id, nome, cognome, email').in('id', ids)
+    if (error) throw error
+    ;(data || []).forEach(function (u) { nomiVersioni[u.id] = [u.nome, u.cognome].filter(Boolean).join(' ') || u.email })
+  } catch (e) { console.warn('Nomi dello storico:', e.message || e) }
+}
+function chiVersione(v) {
+  if (!v.corretta_da) return 'sistema'
+  return nomiVersioni[v.corretta_da] || ('utente ' + String(v.corretta_da).slice(0, 8))
+}
+// Il totale prima e dopo: il dopo è la versione seguente, o la fattura di oggi. Il documento intero si apre con «Vedi».
+function totalePrimaDopo(f, versioni, i) {
+  var v = versioni[i], prima = safeNum(v.totale_prima) || 0
+  if (v.azione && v.azione !== 'correzione') return fmtNumIt(prima) + ' CHF'
+  var dopo = versioni[i + 1] ? safeNum(versioni[i + 1].totale_prima) : safeNum(f && f.totale)
+  return fmtNumIt(prima) + ' → ' + fmtNumIt(dopo || 0) + ' CHF'
+}
+
 function boxVersioniHtml(f, versioni) {
   if (!versioni || !versioni.length) return ''
-  var righe = versioni.map(function (v) {
+  var righe = versioni.map(function (v, i) {
     return '<tr>' +
       '<td>Versione ' + esc(String(v.versione)) + '</td>' +
       '<td>' + esc(({ annullamento: 'annullata il ', cancellazione: 'messa nell\'archivio nascosto il ', riuso_numero: 'numero riusato il ' })[v.azione] || 'sostituita il ') + esc(fmtDateTime(v.corretta_il)) + '</td>' +
-      '<td class="num">' + esc(fmtNumIt(safeNum(v.totale_prima) || 0)) + ' CHF</td>' +
+      '<td>' + esc(chiVersione(v)) + '</td>' +
+      '<td class="num">' + esc(totalePrimaDopo(f, versioni, i)) + '</td>' +
       '<td>«' + esc(v.motivo) + '»</td>' +
       '<td><button type="button" class="btn-secondary" onclick="apriVersione(\'' + esc(v.id) + '\')">👁 Vedi</button></td>' +
     '</tr>'
@@ -7044,10 +7079,10 @@ function renderRigheEditor() {
           // valore gia' scritto (prezzo). Senza la selezione, la prima cifra si
           // ACCODA invece di sostituire: scrivere 150 sopra 0 dava 1500, ed e'
           // finito su una fattura vera.
-          '<td><input class="cell-input num" type="number" step="0.001" value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'quantita\',this.value)"></td>' +
-          '<td><input class="cell-input num" type="number" step="0.01" value="' + esc(r.prezzo_unitario == null ? '' : String(r.prezzo_unitario)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'prezzo_unitario\',this.value)"></td>' +
+          '<td><input class="cell-input num" type="text" inputmode="decimal" step="0.001" value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'quantita\',this.value)"></td>' +
+          '<td><input class="cell-input num" type="text" inputmode="decimal" step="0.01" value="' + esc(r.prezzo_unitario == null ? '' : String(r.prezzo_unitario)) + '" onfocus="this.select()" oninput="onRigaInput(' + i + ',\'prezzo_unitario\',this.value)"></td>' +
           // FASE 29 — lo sconto di riga, in percentuale. Vuoto = nessuno.
-          '<td><input class="cell-input num cell-sconto" type="number" min="0" max="100" step="0.5" placeholder="—"' +
+          '<td><input class="cell-input num cell-sconto" type="text" inputmode="decimal" min="0" max="100" step="0.5" placeholder="—"' +
             ' value="' + esc(r.sconto_pct == null ? '' : String(r.sconto_pct)) + '"' +
             ' onfocus="this.select()" oninput="onRigaInput(' + i + ',\'sconto_pct\',this.value)"></td>' +
           (ivaOn ? '<td><select class="cell-input" onchange="onRigaInput(' + i + ',\'codice_iva_id\',this.value)">' + buildIvaOptions(r.codice_iva_id) + '</select></td>' : '') +
@@ -7941,7 +7976,7 @@ async function loadIbanRubrica(force) {
   try {
     const { data, error } = await sb
       .from('tm_conta_rubrica_conti')
-      .select('id, nome, banca, iban, valuta, tipo, attivo')
+      .select('id, nome, banca, iban, qr_iban, valuta, tipo, attivo')
       .eq('azienda_id', currentAziendaId)
       .order('attivo', { ascending: false })
       .order('nome')
@@ -7974,6 +8009,13 @@ function ibanCifraGiusta(iban) {
     for (var k = 0; k < v.length; k++) resto = (resto * 10 + Number(v.charAt(k))) % 97
   }
   return resto === 1
+}
+// QR-IBAN: posizioni 5-9 fra 30000 e 31999. Il database rifiuta gli altri.
+function eQrIban(iban) {
+  var s = ibanNudo(iban)
+  if (!/^(CH|LI)\d{7}[A-Z0-9]{12}$/.test(s)) return false
+  var iid = Number(s.slice(4, 9))
+  return iid >= 30000 && iid <= 31999
 }
 function testoAvvisoIban(iban) {
   return '⚠️ La cifra di controllo di questo IBAN non torna: rileggilo. Puoi salvarlo lo stesso.'
@@ -8015,6 +8057,7 @@ function avvisiRubricaConti(lista) {
       fuori.push('Il conto «' + c.nome + '» si chiama principale, ma il preferito è un altro' + (pr ? ' («' + pr.nome + '»)' : '') + '. Controlla quale è giusto: il preferito è quello che si stampa sulle fatture senza un conto scelto.')
     }
     if (!ibanCifraGiusta(c.iban)) fuori.push('Il conto «' + c.nome + '»: la cifra di controllo dell\'IBAN non torna.')
+    if (eQrIban(c.iban)) fuori.push('Il conto «' + c.nome + '»: nel campo IBAN c\'è un QR-IBAN. Sulla fattura va l\'IBAN normale: spostalo nel campo QR-IBAN.')
   })
   att.forEach(function (c, i) {
     var altro = att.slice(0, i).filter(function (x) { return ibanNudo(x.iban) === ibanNudo(c.iban) })[0]
@@ -8220,6 +8263,7 @@ function rigaContoHtml(e) {
     '</div>' +
     // FASE 18 — per intero: è l'elenco da cui si sceglie quale conto cambiare, e sbagliare riga si paga caro.
     '<div class="iban-mask">' + esc(ibanLeggibile(e.iban)) + '</div>' +
+    (e.qr_iban ? '<div class="dim">QR-IBAN: ' + esc(ibanLeggibile(e.qr_iban)) + '</div>' : '') +
     (e.banca ? '<div class="dim">Banca: ' + esc(e.banca) + '</div>' : '') +
     commesse +
     '<div class="conto-tasti">' +
@@ -8277,19 +8321,25 @@ async function renderIbanRubrica() {
 }
 
 function controllaIbanForm() {
-  var iban = getVal('iban-form-iban')
-  html('iban-form-avviso', (iban && !ibanCifraGiusta(iban)) ? '<div class="pag-nota conto-avviso">' + esc(testoAvvisoIban(iban)) + '</div>' : '')
+  var iban = getVal('iban-form-iban'), qr = getVal('iban-form-qr')
+  html('iban-form-avviso',
+    ((iban && !ibanCifraGiusta(iban)) ? '<div class="pag-nota conto-avviso">' + esc(testoAvvisoIban(iban)) + '</div>' : '') +
+    ((iban && eQrIban(iban)) ? '<div class="pag-nota conto-avviso">⚠️ Questo è un QR-IBAN: qui va l\'IBAN normale, il QR-IBAN ha il suo campo.</div>' : ''))
+  html('iban-form-qr-avviso', (qr && !(eQrIban(qr) && ibanCifraGiusta(qr)))
+    ? '<div class="pag-nota conto-avviso">⚠️ Questo non è un QR-IBAN: non si salva. Le cifre 5-9 devono stare fra 30000 e 31999 e le cifre di controllo devono tornare.</div>' : '')
 }
 function riempiFormConto(e) {
   setVal('iban-form-etichetta', e ? (e.nome || '') : '')
   setVal('iban-form-banca', e ? (e.banca || '') : '')
   setVal('iban-form-iban', e ? ibanLeggibile(e.iban) : '')
+  setVal('iban-form-qr', (e && e.qr_iban) ? ibanLeggibile(e.qr_iban) : '')
   setVal('iban-form-valuta', e ? e.valuta : 'CHF')
   setVal('iban-form-tipo', e ? e.tipo : 'cantiere')
   var ePreferito = !!(e && e.tipo === 'principale' && e.attivo)
   if (el('iban-form-tipo')) el('iban-form-tipo').disabled = ePreferito
   html('iban-form-tipo-nota', ePreferito ? '<div class="form-hint">È il conto preferito. Per cambiarlo premi «⭐ Fai preferito» su un altro conto.</div>' : '')
   html('iban-form-avviso', '')
+  html('iban-form-qr-avviso', '')
   html('iban-banner', '')
   var f = el('iban-form'); if (f) f.style.display = 'block'
 }
@@ -8335,7 +8385,7 @@ async function saveIbanEntry() {
   var altro = contoPrincipale()
   var diventaPrincipale = tipo === 'principale' && !(prima && prima.tipo === 'principale' && prima.attivo)
   if (diventaPrincipale && altro && !window.confirm(testoCambioPreferito(altro.nome, nome))) return
-  var campi = { nome: nome, banca: getVal('iban-form-banca') || null, iban: iban, valuta: getVal('iban-form-valuta') || 'CHF',
+  var campi = { nome: nome, banca: getVal('iban-form-banca') || null, iban: iban, qr_iban: ibanNudo(getVal('iban-form-qr')) || null, valuta: getVal('iban-form-valuta') || 'CHF',
                 // Il passaggio a principale lo fa la funzione, tutto insieme: l'indice ne vuole uno solo.
                 tipo: diventaPrincipale ? ((prima && prima.tipo) || 'cantiere') : tipo }
   var btn = el('iban-form-save-btn'); if (btn) btn.disabled = true
@@ -8622,7 +8672,7 @@ async function togliAssegnazioneConto(cantiereId) {
 }
 
 // ── Lo storico di un conto: le commesse con le date, e i cambi ───────────────
-var CAMPI_CONTO = { creato: 'Creato', cancellato: 'Cancellato', nome: 'Nome', banca: 'Banca', iban: 'IBAN', valuta: 'Valuta', tipo: 'Tipo', attivo: 'Attivo' }
+var CAMPI_CONTO = { creato: 'Creato', cancellato: 'Cancellato', nome: 'Nome', banca: 'Banca', iban: 'IBAN', qr_iban: 'QR-IBAN', valuta: 'Valuta', tipo: 'Tipo', attivo: 'Attivo' }
 function storicoContoHtml(assegnazioni, modifiche) {
   var a = assegnazioni.map(function (x) {
     return '<div class="conto-storico-riga">🏗️ <strong>' + esc(cantiereLabel(x.cantiere_id)) + '</strong> · dal ' + esc(fmtDate(x.dal)) +
@@ -8630,7 +8680,8 @@ function storicoContoHtml(assegnazioni, modifiche) {
   }).join('')
   var m = modifiche.map(function (x) {
     var due = (x.prima != null ? esc(x.prima) : '—') + ' → ' + (x.dopo != null ? esc(x.dopo) : '—')
-    var conto = x.conto_iban ? ' · ' + esc(ibanLeggibile(x.conto_iban)) + (x.conto_banca ? ' · ' + esc(x.conto_banca) : '') : ''
+    var conto = x.conto_iban ? ' · ' + esc(ibanLeggibile(x.conto_iban)) + (x.conto_banca ? ' · ' + esc(x.conto_banca) : '') +
+      (x.conto_qr_iban ? ' · QR-IBAN ' + esc(ibanLeggibile(x.conto_qr_iban)) : '') : ''
     return '<div class="conto-storico-riga">✏️ ' + esc(fmtDateTime(x.quando)) + ' · ' + esc(CAMPI_CONTO[x.campo] || x.campo) + ': ' + due + conto + '</div>'
   }).join('')
   return '<div class="conto-storico">' +
@@ -8643,7 +8694,7 @@ async function mostraStoricoConto(id) {
   if (!box) return
   if (box.innerHTML) { box.innerHTML = ''; return }
   try {
-    const { data, error } = await sb.from('tm_conta_rubrica_modifiche').select('campo, prima, dopo, quando, conto_iban, conto_banca').eq('conto_id', id).order('quando', { ascending: false })
+    const { data, error } = await sb.from('tm_conta_rubrica_modifiche').select('campo, prima, dopo, quando, conto_iban, conto_banca, conto_qr_iban').eq('conto_id', id).order('quando', { ascending: false })
     if (error) throw error
     box.innerHTML = storicoContoHtml((contiAssegnazioni || []).filter(function (a) { return a.conto_id === id }), data || [])
   } catch (e) {
@@ -9582,8 +9633,8 @@ function renderDetailActions(f) {
     // Elimina SOLO sulle bozze (numero non ancora assegnato). Mai sulle emesse.
     a += '<button class="btn-secondary" onclick="deleteBozza(\'' + f.id + '\')">🗑️ Elimina</button>'
   } else if (f.stato === 'emessa') {
-    // Emessa → NON modificabile: si corregge con una nota di credito
-    a += '<span class="lock-tag" title="Documento definitivo">🔒 Emessa — sola lettura</span>'
+    // Emessa: si modifica solo col titolare, con la password (Riapri e correggi), e resta nello storico.
+    a += '<span class="lock-tag" title="Si modifica con «Riapri e correggi», con la password del titolare">🔒 Emessa — si modifica con la password</span>'
     // Il bottone dipende dall'INCASSO, non piu' dallo stato del documento:
     // una fattura incassata resta emessa, non diventa un'altra cosa.
     // FASE 8 — niente piu' «Segna incassata / non incassata»: un clic solo che
@@ -10494,19 +10545,19 @@ function renderRigheDescrittive(ctx) {
         '<td><textarea class="cell-input cell-desc" rows="1" placeholder="Descrizione"' +
           ' oninput="' + on + '\'descrizione\',this.value); autoGrowRiga(this)">' +
           '\n' + esc(r.descrizione || '') + '</textarea></td>' +
-        '<td><input class="cell-input num" type="number" step="0.001" placeholder="—"' +
+        '<td><input class="cell-input num" type="text" inputmode="decimal" step="0.001" placeholder="—"' +
           ' value="' + esc(r.quantita == null ? '' : String(r.quantita)) + '"' +
           ' onfocus="this.select()" oninput="' + on + '\'quantita\',this.value)"></td>' +
         '<td><input class="cell-input cell-unita" list="unita-suggerite" maxlength="16" placeholder="—"' +
           ' value="' + esc(r.unita || '') + '"' +
           ' oninput="' + on + '\'unita\',this.value)"></td>' +
-        '<td><input class="cell-input num" type="number" step="0.01" placeholder="—"' +
+        '<td><input class="cell-input num" type="text" inputmode="decimal" step="0.01" placeholder="—"' +
           ' value="' + esc(r.prezzo_listino == null ? '' : String(r.prezzo_listino)) + '"' +
           ' onfocus="this.select()" oninput="' + on + '\'prezzo_listino\',this.value)"></td>' +
-        '<td><input class="cell-input num cell-sconto" id="' + ctx.pref + '-sconto-' + i + '" type="number" min="0" max="100" step="0.5" placeholder="—"' +
+        '<td><input class="cell-input num cell-sconto" id="' + ctx.pref + '-sconto-' + i + '" type="text" inputmode="decimal" min="0" max="100" step="0.5" placeholder="—"' +
           ' value="' + esc(r.sconto_pct == null ? '' : String(r.sconto_pct)) + '"' +
           ' onfocus="this.select()" oninput="' + on + '\'sconto_pct\',this.value)"></td>' +
-        '<td><input class="cell-input num" id="' + ctx.pref + '-netto-' + i + '" type="number" step="0.01" placeholder="—"' +
+        '<td><input class="cell-input num" id="' + ctx.pref + '-netto-' + i + '" type="text" inputmode="decimal" step="0.01" placeholder="—"' +
           ' value="' + esc(calc.netto == null ? '' : String(calc.netto)) + '"' +
           ' onfocus="this.select()" oninput="' + on + '\'netto_unitario\',this.value)"></td>' +
         '<td class="num" id="' + ctx.pref + '-imp-' + i + '">' + importoRigaAcquistoTesto(calc.importo) + '</td>' +
@@ -11601,7 +11652,8 @@ async function handleInserimentoSubmit(event) {
     var dataVal    = el('f-data')       ? el('f-data').value              : ''
     var desc       = el('f-descrizione') ? el('f-descrizione').value.trim() : ''
     var ente       = el('f-ente')       ? el('f-ente').value.trim()       : ''
-    var importoVal = el('f-importo')    ? parseFloat(el('f-importo').value) : NaN
+    var importoLetto = el('f-importo') ? safeNum(el('f-importo').value) : null
+    var importoVal = importoLetto == null ? NaN : importoLetto
     var valuta     = el('f-valuta')     ? el('f-valuta').value            : 'CHF'
     var ricorrente = el('f-ricorrente') ? el('f-ricorrente').checked      : false
     var periodicita = ricorrente && el('f-periodicita') ? el('f-periodicita').value : null
@@ -16710,7 +16762,7 @@ function renderDifferenzaIva(p) {
         '<div class="iva-conto-et">\uD83D\uDCD0 Metodo dell&rsquo;aliquota saldo</div>' +
         '<div class="iva-conto-val dim">non calcolabile</div>' +
         '<div class="iva-conto-spieg">Manca l&rsquo;<strong>aliquota saldo</strong>. ' +
-          'Non &egrave; l&rsquo;8,1%: dipende dal ramo e la assegna l&rsquo;AFC quando ti ' +
+          'Non &egrave; l&rsquo;8.1%: dipende dal ramo e la assegna l&rsquo;AFC quando ti ' +
           'registri, e per la carpenteria &egrave; un&rsquo;altra. Non me la invento &mdash; ' +
           'scrivila in <button type="button" class="link-btn" ' +
           'onclick="apriImpostazioniIva()">Impostazioni ditta</button> ' +
@@ -16797,7 +16849,7 @@ async function salvaAliquoteIva() {
   var nOrd = safeNum(ord)
   if (ord !== '' && (nOrd == null || nOrd <= 0 || nOrd > 100)) {
     showFattureBanner('impostazioni-banner', 'err',
-      'L\u2019aliquota ordinaria deve essere una percentuale fra 0 e 100. Oggi in Svizzera \u00e8 8,1.')
+      'L\u2019aliquota ordinaria deve essere una percentuale fra 0 e 100. Oggi in Svizzera \u00e8 8.1.')
     return
   }
   // Vuota e' un valore legittimo, anzi e' quello di partenza: vuol dire «non
@@ -17947,7 +17999,7 @@ function validaData(v) {
 
 function validaImporto(v) {
   if (v == null || v === '') return null
-  var n = safeNum(typeof v === 'string' ? v.replace(/'/g, '').replace(/\s/g, '').replace(',', '.') : v)
+  var n = safeNum(v)
   if (n == null || n < 0) return null      // un importo negativo su una fattura non ha senso
   return n
 }
@@ -20816,7 +20868,7 @@ function boxRimborsiHtml(nota) {
           '<span class="pag-meta">' + esc([p.metodo, p.riferimento].filter(Boolean).join(' · ') || '—') + '</span>' +
           '<button type="button" class="azione-rapida" onclick="apriModificaPagamento(\'' + esc(p.id) + '\')">✏️ Modifica</button>' +
           '<button type="button" class="azione-rapida" onclick="eliminaPagamento(\'' + esc(p.id) + '\', \'' +
-            esc(fmtNumIt(p.importo)) + '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>' +
+            esc(String(p.importo)) + '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>' +
         '</div>'
       }).join('')
     : '<div class="cru-vuoto">Nessun rimborso registrato.</div>'
@@ -21555,7 +21607,7 @@ function elencoPagamentiHtml(tabella, id, verso, fermo) {
       '<button type="button" class="azione-rapida" ' +
         'onclick="apriModificaPagamento(\'' + esc(p.id) + '\')">✏️ Modifica</button>' +
       '<button type="button" class="azione-rapida" ' +
-        'onclick="eliminaPagamento(\'' + esc(p.id) + '\', \'' + esc(fmtNumIt(p.importo)) +
+        'onclick="eliminaPagamento(\'' + esc(p.id) + '\', \'' + esc(String(p.importo)) +
         '\', \'' + esc(fmtDate(p.data)) + '\')">🗑️ Elimina</button>') +
     '</div>'
   }).join('')
@@ -21629,7 +21681,7 @@ async function eliminaPagamento(idPagamento, importoTesto, dataTesto) {
   var contesto = quanti > 1
     ? '\n\nQuesto è l\'ultimo di ' + quanti + ' pagamenti registrati su questo documento: gli altri restano.'
     : ''
-  if (!window.confirm('Eliminare il pagamento di ' + importoTesto + ' CHF del ' + dataTesto + '?' + contesto + '\n\n' +
+  if (!window.confirm('Eliminare il pagamento di ' + fmtNumIt(importoTesto) + ' CHF del ' + dataTesto + '?' + contesto + '\n\n' +
       'Lo stato del documento viene ricalcolato: se era «pagato» torna a «pagato in parte» o «non pagato». ' +
       'Una rata collegata torna da pagare.')) return
   try {
@@ -21722,7 +21774,7 @@ function renderAnteprimaRate() {
       '<span class="rata-n">' + r.numero + '</span>' +
       '<input type="date" class="form-input rata-data" value="' + esc(r.data) + '" ' +
         'onchange="modificaRata(' + i + ', \'data\', this.value)" aria-label="Data rata ' + r.numero + '" />' +
-      '<input type="number" step="0.01" min="0" class="form-input rata-imp" value="' + esc(r.importo) + '" ' +
+      '<input type="text" inputmode="decimal" step="0.01" min="0" class="form-input rata-imp" value="' + esc(r.importo) + '" ' +
         'onchange="modificaRata(' + i + ', \'importo\', this.value)" aria-label="Importo rata ' + r.numero + '" />' +
       '<span class="rata-chf">CHF</span>' +
     '</div>'
@@ -22624,9 +22676,9 @@ async function salvaImpostazioniSolleciti() {
     if (tasso !== '' && (safeNum(tasso) == null || safeNum(tasso) < 0)) {
       throw new Error('il tasso di mora deve essere un numero maggiore o uguale a zero')
     }
-    await salvaImpostazioneConta(CHIAVI_SOLLECITO.spese, spese === '' ? '0' : spese,
+    await salvaImpostazioneConta(CHIAVI_SOLLECITO.spese, spese === '' ? '0' : String(safeNum(spese)),
       'Spese addebitate su un sollecito. 0 = non si addebitano.')
-    await salvaImpostazioneConta(CHIAVI_SOLLECITO.tasso, tasso === '' ? '5' : tasso,
+    await salvaImpostazioneConta(CHIAVI_SOLLECITO.tasso, tasso === '' ? '5' : String(safeNum(tasso)),
       'Tasso di mora annuo in percento. 5 = il tasso di legge (CO art. 104).')
     for (var l = 1; l <= 3; l++) {
       await salvaImpostazioneConta(CHIAVI_SOLLECITO.testo[l - 1],
@@ -23605,7 +23657,7 @@ function renderPerConto(p) {
       ? '<tr class="pc-nc"><td><em>Non classificato / senza importo</em> <span class="dim">— ' + nc.nDocs + (nc.nDocs === 1 ? ' documento' : ' documenti') + '</span></td>' +
         '<td class="num">' + esc(fmtNumIt(nc.netto)) + '</td><td class="num">' + esc(fmtNumIt(nc.iva)) + '</td>' +
         '<td class="num"><strong>' + esc(fmtNumIt(nc.tot)) + '</strong></td><td class="dim num">' + nc.nDocs + '</td></tr>'
-      : '<tr class="pc-nc"><td><em>Non classificato / senza importo</em></td><td class="num">0,00</td><td class="num">0,00</td><td class="num"><strong>0,00</strong></td><td></td></tr>'
+      : '<tr class="pc-nc"><td><em>Non classificato / senza importo</em></td><td class="num">0.00</td><td class="num">0.00</td><td class="num"><strong>0.00</strong></td><td></td></tr>'
     return '<div class="card-title" style="margin-top:14px">' + titolo + '</div>' +
       '<div class="table-wrap"><table class="pc-tabella">' +
       '<thead><tr><th>Conto</th><th class="num">Netto</th><th class="num">IVA</th><th class="num">Totale</th><th class="num">Doc.</th></tr></thead>' +
@@ -25600,7 +25652,7 @@ function mostraBottoneLettura(nuovo) {
 // Sotto il centesimo «0,00 CHF» non dice niente: si scrive che e' meno di
 // un centesimo, che e' l'informazione vera.
 function costoLeggibile(chf) {
-  return (chf > 0 && chf < 0.005) ? 'meno di 0,01 CHF' : fmtNumIt(chf) + ' CHF'
+  return (chf > 0 && chf < 0.005) ? 'meno di 0.01 CHF' : fmtNumIt(chf) + ' CHF'
 }
 
 function mostraCostoLettura(inputTokens, outputTokens, idBox) {
@@ -26278,7 +26330,7 @@ function rigaNuovaRataHtml(c, prossimo) {
       campiScontoRataHtml('acc-r-sc', null, 'onScontoNuovaRata()') +   // 91
       '<div id="acc-r-avviso" class="rata-avviso">' + (p.avviso ? '⚠️ ' + esc(p.avviso) : '') + '</div>' +
     '</td>' +
-    '<td><input type="number" id="acc-r-imp" class="cell-input num" step="0.01" min="0" placeholder="0.00" onfocus="this.select()" oninput="onScontoNuovaRata()"></td>' +
+    '<td><input type="text" inputmode="decimal" id="acc-r-imp" class="cell-input num" step="0.01" min="0" placeholder="0.00" onfocus="this.select()" oninput="onScontoNuovaRata()"></td>' +
     '<td></td>' +
     '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiAcconto(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
   '</tr>'
@@ -26409,7 +26461,7 @@ function condizioneScontoRata(a) {
   return null
 }
 // «2 %» o «2,5 %»: una percentuale non ha bisogno di due decimali.
-function fmtPctSconto(p) { return String(round2(p)).replace('.', ',') + ' %' }
+function fmtPctSconto(p) { return String(round2(p)) + ' %' }
 function descrizioneScontoRata(c) {
   return c.pct != null ? fmtPctSconto(c.pct) : 'CHF ' + fmtNumIt(c.importo)
 }
@@ -26645,7 +26697,7 @@ function campiScontoRataHtml(pre, a, onchange) {
   return '<div class="rata-sconto">Sconto di cassa: entro ' +
     '<input type="number" id="' + pre + '-g" class="cell-input num rata-giorni" min="1" max="365" step="1"' +
       ' value="' + esc(c ? String(c.giorni) : '') + '" placeholder="—" aria-label="Sconto di cassa: giorni" onchange="' + onchange + '"> giorni, ' +
-    '<input type="number" id="' + pre + '-v" class="cell-input num rata-sconto-val" min="0" step="0.01"' +
+    '<input type="text" inputmode="decimal" id="' + pre + '-v" class="cell-input num rata-sconto-val" min="0" step="0.01"' +
       ' value="' + esc(String(val)) + '" placeholder="—" aria-label="Sconto di cassa: valore" onchange="' + onchange + '"> ' +
     '<select id="' + pre + '-t" class="cell-input rata-sconto-tipo" aria-label="Percentuale o importo" onchange="' + onchange + '">' +
       '<option value="pct"' + (tipo === 'pct' ? ' selected' : '') + '>%</option>' +
@@ -27187,24 +27239,24 @@ function formContrattoHtml(c, cantiereId) {
       '<div class="form-group" style="flex:1; margin-bottom:0">' +
         '<label for="acc-c-listino" class="form-label">Totale listino offerta ' + IVA_ESCL +
           ' <span class="dim">(facoltativo)</span></label>' +
-        '<input type="number" id="acc-c-listino" class="form-input num" step="0.01" min="0"' +
+        '<input type="text" inputmode="decimal" id="acc-c-listino" class="form-input num" step="0.01" min="0"' +
           ' placeholder="somma dei prezzi di listino"' +
           ' value="' + (c && c.totale_listino != null ? esc(String(c.totale_listino)) : '') + '"' +
           ' onfocus="this.select()" oninput="onListinoContrattoInput()"></div>' +
       '<div class="form-group" style="flex:0 0 110px; margin-bottom:0">' +
         '<label for="acc-c-ribasso" class="form-label">Ribasso %</label>' +
-        '<input type="number" id="acc-c-ribasso" class="form-input num" step="0.01" min="0" max="100"' +
+        '<input type="text" inputmode="decimal" id="acc-c-ribasso" class="form-input num" step="0.01" min="0" max="100"' +
           ' placeholder="—" onfocus="this.select()" oninput="onScontiContrattoInput()"' +
           // 67·6 — riaperto, si rivede quello che era stato scritto.
           ' value="' + (c && c.ribasso_pct != null ? esc(String(c.ribasso_pct)) : '') + '"></div>' +
       '<div class="form-group" style="flex:0 0 110px; margin-bottom:0">' +
         '<label for="acc-c-sconto" class="form-label">Sconto %</label>' +
-        '<input type="number" id="acc-c-sconto" class="form-input num" step="0.01" min="0" max="100"' +
+        '<input type="text" inputmode="decimal" id="acc-c-sconto" class="form-input num" step="0.01" min="0" max="100"' +
           ' placeholder="—" onfocus="this.select()" oninput="onScontiContrattoInput()"' +
           ' value="' + (c ? esc(valorePctContratto(c)) : '') + '"></div>' +   // 67·6: lo sconto salvato, se c'e'
       '<div class="form-group" style="flex:1; margin-bottom:0">' +
         '<label for="acc-c-importo" class="form-label">Totale firmato ' + IVA_ESCL + '</label>' +
-        '<input type="number" id="acc-c-importo" class="form-input num forte" step="0.01" min="0"' +
+        '<input type="text" inputmode="decimal" id="acc-c-importo" class="form-input num forte" step="0.01" min="0"' +
           ' value="' + (c && c.importo_contratto != null ? esc(String(c.importo_contratto)) : '') + '"' +
           ' onfocus="this.select()" oninput="onFirmatoContrattoInput()"></div>' +
     '</div>' +
@@ -27248,7 +27300,7 @@ function variantiHtml(c) {
       '<tr class="acc-nuova">' +
         '<td><input type="date" id="acc-v-data" class="cell-input" value="' + esc(oggiISO()) + '"></td>' +
         '<td><input type="text" id="acc-v-desc" class="cell-input" maxlength="200" placeholder="Descrizione della variante"></td>' +
-        '<td><input type="number" id="acc-v-imp" class="cell-input num" step="0.01" placeholder="+ / −" onfocus="this.select()"></td>' +
+        '<td><input type="text" inputmode="decimal" id="acc-v-imp" class="cell-input num" step="0.01" placeholder="+ / −" onfocus="this.select()"></td>' +
         '<td class="cell-azioni"><button type="button" class="icon-btn classify" onclick="aggiungiVariante(\'' + esc(c.id) + '\')">➕ Aggiungi</button></td>' +
       '</tr></tbody></table></div>' +
     '<div class="cant-sub">Importo negativo = riduzione. Una variante cambia il totale aggiornato, non le rate. ' +
@@ -27375,7 +27427,7 @@ function rigaAccontoHtml(c, a) {
       ' onchange="modificaAcconto(\'' + esc(a.id) + '\', \'descrizione\', this.value)">' +
       cellaRataHtml(c, a, libera && !annullata) + '</td>' +   // 90 — tipo e termine
     '<td class="num">' + (libera
-      ? '<input type="number" class="cell-input num" step="0.01" min="0" value="' + esc(String(a.importo)) + '"' +
+      ? '<input type="text" inputmode="decimal" class="cell-input num" step="0.01" min="0" value="' + esc(String(a.importo)) + '"' +
         ' onfocus="this.select()" onchange="modificaAcconto(\'' + esc(a.id) + '\', \'importo\', this.value)">'
       : '<strong>' + esc(fmtNumIt(a.importo)) + '</strong>') + '</td>' +
     '<td>' + stato + '</td>' +
@@ -27540,16 +27592,11 @@ function scontoPercento(coef) {
   return (coef == null) ? null : round2((1 - coef) * 100)
 }
 
-// Quattro decimali, formato italiano. Il coefficiente si scrive con quattro
+// Quattro decimali. Il coefficiente si scrive con quattro
 // perche' con due (0,96) su 100'000 CHF si sbaglia di 400.
 function fmtCoefficiente(coef) {
   if (coef == null) return '—'
-  try {
-    return Number(coef).toLocaleString('it-IT',
-      { minimumFractionDigits: 4, maximumFractionDigits: 4, useGrouping: false })
-  } catch (_) {
-    return String(Math.round(coef * 10000) / 10000).replace('.', ',')
-  }
+  return Number(coef).toFixed(4)
 }
 
 // La riga del riquadro: coefficiente e sconto, con la spiegazione di cosa
@@ -27581,13 +27628,13 @@ function bloccoCoefficienteHtml(c) {
       '<div class="coef-calc">' +
         '<div class="coef-campo">' +
           '<label for="coef-listino" class="form-label">Prezzo di listino</label>' +
-          '<input type="number" id="coef-listino" class="form-input num" step="0.01" placeholder="0.00"' +
+          '<input type="text" inputmode="decimal" id="coef-listino" class="form-input num" step="0.01" placeholder="0.00"' +
             ' onfocus="this.select()" oninput="calcolaDaListino()">' +
         '</div>' +
         '<div class="coef-freccia" aria-hidden="true">×&nbsp;' + esc(fmtCoefficiente(coef)) + '&nbsp;⇄</div>' +
         '<div class="coef-campo">' +
           '<label for="coef-effettivo" class="form-label">Prezzo effettivo</label>' +
-          '<input type="number" id="coef-effettivo" class="form-input num" step="0.01" placeholder="0.00"' +
+          '<input type="text" inputmode="decimal" id="coef-effettivo" class="form-input num" step="0.01" placeholder="0.00"' +
             ' onfocus="this.select()" oninput="calcolaDaEffettivo()">' +
         '</div>' +
       '</div>' +

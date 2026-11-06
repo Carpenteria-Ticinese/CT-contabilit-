@@ -594,7 +594,7 @@
                   Importo <span class="req" aria-hidden="true">*</span>
                 </label>
                 <input
-                  type="number" id="f-importo" class="form-input"
+                  type="text" inputmode="decimal" id="f-importo" class="form-input"
                   required min="0.01" step="0.01"
                   placeholder="0.00"
                   onfocus="this.select()"
@@ -1264,7 +1264,7 @@
           </div>
           <div class="form-group" style="flex:1; margin-bottom:0">
             <label for="arch-imp-da" class="form-label">Importo da (CHF)</label>
-            <input type="text" inputmode="decimal" id="arch-imp-da" class="form-input num" placeholder="es. 1.200,50" oninput="onFiltroArchivio()" autocomplete="off" />
+            <input type="text" inputmode="decimal" id="arch-imp-da" class="form-input num" placeholder="es. 1'200.50" oninput="onFiltroArchivio()" autocomplete="off" />
           </div>
           <div class="form-group" style="flex:1; margin-bottom:0">
             <label for="arch-imp-a" class="form-label">Importo a (CHF)</label>
@@ -1645,7 +1645,7 @@
             <div class="ft-sconto-doc">
               <span class="ft-label">Sconto sul documento <span class="dim">(facoltativo)</span></span>
               <span class="ft-sconto-campi">
-                <input type="number" id="f-sconto-valore" class="form-input" min="0" step="0.01"
+                <input type="text" inputmode="decimal" id="f-sconto-valore" class="form-input" min="0" step="0.01"
                        placeholder="0" onfocus="this.select()" oninput="onScontoDocumentoInput()" />
                 <select id="f-sconto-tipo" class="form-input" onchange="onScontoDocumentoInput()">
                   <option value="pct">%</option>
@@ -1719,7 +1719,7 @@
             <button type="button" class="btn-secondary" onclick="fattureBackToList()">Annulla</button>
           </div>
           <div class="sql-tip" style="margin-top:12px">
-            «Emetti» assegna il numero progressivo e rende la fattura definitiva (sola lettura). La fattura emessa
+            «Emetti» assegna il numero progressivo. Dopo l'emissione la fattura si modifica solo con la password del titolare. La fattura emessa
             entra nel Registratore tra i movimenti «Da classificare» (lato ricavo).
           </div>
         </div>
@@ -1977,7 +1977,7 @@
             <button type="button" class="btn-secondary" onclick="addRigaOfferta()">➕ Aggiungi riga</button>
           </div>
           <div class="fattura-totali">
-            <div class="ft-grand"><span class="ft-label">Somma delle righe <span class="dim">(escl. IVA)</span></span> <span class="ft-val" id="offerte-tot">0,00</span></div>
+            <div class="ft-grand"><span class="ft-label">Somma delle righe <span class="dim">(escl. IVA)</span></span> <span class="ft-val" id="offerte-tot">0.00</span></div>
           </div>
 
           <!-- 57·3d — il totale com'e' stampato sul documento. Se non torna con
@@ -1986,7 +1986,7 @@
           <div class="form-row off-tot-stampato-riga" style="margin-top:12px;align-items:flex-end">
             <div class="form-group" style="flex:1.2;margin-bottom:0">
               <label for="off-tot-stampato" class="form-label">Totale stampato sul documento <span class="dim">(facoltativo)</span></label>
-              <input type="number" id="off-tot-stampato" class="form-input num" step="0.01" min="0" placeholder="es. 1352.25"
+              <input type="text" inputmode="decimal" id="off-tot-stampato" class="form-input num" step="0.01" min="0" placeholder="es. 1352.25"
                      oninput="avvisoTotaleStampato()" />
             </div>
             <div class="form-group" style="flex:1;margin-bottom:0">
@@ -1998,7 +1998,7 @@
             </div>
             <div class="form-group" id="off-tot-stampato-aliquota-box" style="flex:0.7;margin-bottom:0;display:none">
               <label for="off-tot-stampato-aliquota" class="form-label">Aliquota IVA %</label>
-              <input type="number" id="off-tot-stampato-aliquota" class="form-input num" step="0.1" min="0" max="100" placeholder="8.1"
+              <input type="text" inputmode="decimal" id="off-tot-stampato-aliquota" class="form-input num" step="0.1" min="0" max="100" placeholder="8.1"
                      oninput="avvisoTotaleStampato()" />
             </div>
           </div>
@@ -2215,7 +2215,7 @@
           <div class="form-row">
             <div class="form-group" style="flex:2">
               <label for="a-importo" class="form-label">Importo <span class="req" aria-hidden="true">*</span></label>
-              <input type="number" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" onfocus="this.select()" oninput="onAcquistoImportoChange(); avvisoSommaRighe()" />
+              <input type="text" inputmode="decimal" id="a-importo" class="form-input" min="0.01" step="0.01" placeholder="0.00" onfocus="this.select()" oninput="onAcquistoImportoChange(); avvisoSommaRighe()" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-valuta" class="form-label">Valuta</label>
@@ -2233,15 +2233,15 @@
           <div class="form-row">
             <div class="form-group" style="flex:1">
               <label for="a-imponibile" class="form-label">Imponibile</label>
-              <input type="number" id="a-imponibile" class="form-input" step="0.01" placeholder="—" onfocus="this.select()" oninput="onAcquistoIvaManual()" />
+              <input type="text" inputmode="decimal" id="a-imponibile" class="form-input" step="0.01" placeholder="—" onfocus="this.select()" oninput="onAcquistoIvaManual()" />
             </div>
             <div class="form-group" style="flex:1">
               <label for="a-iva" class="form-label">IVA</label>
-              <input type="number" id="a-iva" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoIvaManual()" />
+              <input type="text" inputmode="decimal" id="a-iva" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoIvaManual()" />
             </div>
             <div class="form-group" style="flex:1">   <!-- 102 — le assicurazioni: non è IVA -->
               <label for="a-tasse-legali" class="form-label">Tasse legali <span class="dim">(non IVA)</span></label>
-              <input type="number" id="a-tasse-legali" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoTasseChange()" />
+              <input type="text" inputmode="decimal" id="a-tasse-legali" class="form-input" step="0.01" placeholder="—" oninput="onAcquistoTasseChange()" />
             </div>
             <div class="form-group" style="flex:0 0 auto; display:flex; align-items:flex-end">
               <button type="button" class="btn-secondary" id="a-ricalcola-btn" onclick="recalcAcquistoIva()" title="Ricalcola imponibile e IVA dal totale">↻ Ricalcola</button>
@@ -2599,13 +2599,13 @@
         <div class="form-row">
           <div class="form-group" style="flex:1">
             <label for="imp-iva-ordinaria" class="form-label">Aliquota ordinaria (%)</label>
-            <input type="number" id="imp-iva-ordinaria" class="form-input"
+            <input type="text" inputmode="decimal" id="imp-iva-ordinaria" class="form-input"
                    min="0" max="100" step="0.1" placeholder="8.1" onfocus="this.select()" />
-            <div class="form-hint">Oggi 8,1%. &Egrave; qui e non nel codice perch&eacute; cambia.</div>
+            <div class="form-hint">Oggi 8.1%. &Egrave; qui e non nel codice perch&eacute; cambia.</div>
           </div>
           <div class="form-group" style="flex:1">
             <label for="imp-iva-saldo" class="form-label">Aliquota saldo (%)</label>
-            <input type="number" id="imp-iva-saldo" class="form-input"
+            <input type="text" inputmode="decimal" id="imp-iva-saldo" class="form-input"
                    min="0" max="100" step="0.1" placeholder="lasciala vuota se non la sai"
                    onfocus="this.select()" />
             <div class="form-hint">
@@ -2628,7 +2628,7 @@
             <div class="form-row">
               <div class="form-group" style="flex:1">
                 <label for="imp-sol-spese" class="form-label">Spese per sollecito (CHF)</label>
-                <input type="number" id="imp-sol-spese" class="form-input" min="0" step="1" placeholder="0" />
+                <input type="text" inputmode="decimal" id="imp-sol-spese" class="form-input" min="0" step="1" placeholder="0" />
                 <div class="form-hint">
                   <strong>0 = non si addebitano</strong>, ed è il valore di partenza.
                   Le spese si possono addebitare solo se erano pattuite: il programma
@@ -2637,7 +2637,7 @@
               </div>
               <div class="form-group" style="flex:1">
                 <label for="imp-sol-tasso" class="form-label">Tasso di mora (% all'anno)</label>
-                <input type="number" id="imp-sol-tasso" class="form-input" min="0" max="20" step="0.1" placeholder="5" />
+                <input type="text" inputmode="decimal" id="imp-sol-tasso" class="form-input" min="0" max="20" step="0.1" placeholder="5" />
                 <div class="form-hint">
                   Il 5 % è il tasso di legge in Svizzera (CO art. 104) quando non
                   è stato pattuito altro.
@@ -2694,7 +2694,7 @@
         <div class="form-group" style="max-width:260px">
           <label for="imp-costo-orario" class="form-label">Costo orario</label>
           <div class="form-row" style="align-items:center; gap:8px">
-            <input type="number" id="imp-costo-orario" class="form-input"
+            <input type="text" inputmode="decimal" id="imp-costo-orario" class="form-input"
                    min="0" max="500" step="0.01" placeholder="es. 52.00"
                    oninput="onCostoOrarioCambiato()" style="flex:1" />
             <span class="dim" style="white-space:nowrap">CHF/h</span>
@@ -2855,6 +2855,12 @@
             <input type="text" id="iban-form-iban" class="form-input" maxlength="42" placeholder="CH00 0000 0000 0000 0000 0" oninput="controllaIbanForm()" />
             <div id="iban-form-avviso"></div>
           </div>
+          <div class="form-group">
+            <label for="iban-form-qr" class="form-label">QR-IBAN <span class="dim">(facoltativo, solo se la banca te l'ha dato)</span></label>
+            <input type="text" id="iban-form-qr" class="form-input" maxlength="42" oninput="controllaIbanForm()" />
+            <div class="form-hint">Si usa solo col tagliando QR e il riferimento QR. Sulla fattura resta scritto l'IBAN normale.</div>
+            <div id="iban-form-qr-avviso"></div>
+          </div>
           <div class="form-row">
             <div class="form-group" style="flex:1">
               <label for="iban-form-valuta" class="form-label">Valuta</label>
@@ -2941,7 +2947,7 @@
           </div>
           <div class="form-group" style="flex:1">
             <label for="pag-importo" class="form-label">Importo <span class="dim">(CHF)</span></label>
-            <input type="number" id="pag-importo" class="form-input" step="0.01" min="0.01"
+            <input type="text" inputmode="decimal" id="pag-importo" class="form-input" step="0.01" min="0.01"
                    oninput="controllaImportoPagamento()" />
             <div class="form-hint">Proposto: il residuo. Correggilo se stai pagando meno.</div>
           </div>
@@ -3439,7 +3445,7 @@
         <div id="emit-confirm-summary" class="emit-summary"></div>
         <div class="fase-banner warn" style="margin-top:14px">
           <span class="icon" aria-hidden="true">⚠️</span>
-          <div class="msg">Dopo l'emissione la fattura non sarà più modificabile. Confermi?</div>
+          <div class="msg">Dopo l'emissione la fattura si modifica solo con la password del titolare. Ogni modifica resta nello storico.</div>
         </div>
       </div>
       <div class="modal-footer">
