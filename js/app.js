@@ -7926,6 +7926,13 @@ async function emettiFatturaCorrente() {
   }
   if (!el('f-cli-nome').value.trim()) { showFattureBanner('fatture-edit-banner', 'err', 'Il nome cliente è obbligatorio.'); return }
 
+  // 104 — prima del numero: il totale deve essere la somma di quello che si stamperà.
+  var hdr104 = collectFatturaHeader()
+  var conti104 = contiStampaTornano(hdr104, isSoggettoIva() || Math.abs(safeNum(hdr104.totale_iva) || 0) >= 0.005)
+  if (!conti104.torna) {
+    showFattureBanner('fatture-edit-banner', 'err', 'Non emessa: i conti non tornano (righe ' + fmtNumIt(conti104.somma) + ', totale ' + fmtNumIt(conti104.totale) + '). Ricarica la pagina e riprova; se resta, chiama chi segue il programma.')
+    return
+  }
   var ncChk = ncStornoCheck()
   if (ncChk.applicable && ncChk.exceeds) {
     showFattureBanner('fatture-edit-banner', 'err',
@@ -9139,12 +9146,26 @@ function rigaStampaScontoCassa(f, v) {
     '<span>' + fmtNum2(s.scontato) + ' ' + v + '</span></div>'
 }
 
+// 104 — la fattura dice da sola se ha l'IVA: conta quello che è stato emesso, non l'impostazione di oggi
+// (che può essere cambiata, o non ancora letta). Se l'IVA è nel totale, si stampa.
+function fatturaHaIva(f, righe) {
+  if (Math.abs(safeNum(f && f.totale_iva) || 0) >= 0.005) return true
+  return (righe || []).some(function (r) { return r.tipo_riga !== 'testo' && r.tipo_riga !== 'titolo' && Math.abs(safeNum(r.iva_riga) || 0) >= 0.005 })
+}
+// 104 — un documento non stampa mai un totale che non è la somma di quello che si vede:
+// imponibile + IVA (se si stampa) + arrotondamento = totale documento, al centesimo.
+function contiStampaTornano(f, ivaOn) {
+  var somma = round2((safeNum(f.totale_imponibile) || 0) + (ivaOn ? (safeNum(f.totale_iva) || 0) : 0) + (safeNum(f.arrotondamento) || 0))
+  var tot = round2(safeNum(f.totale) || 0)
+  return { torna: Math.abs(somma - tot) < 0.005, somma: somma, totale: tot }
+}
+
 function renderFatturaPrint(f, righe, rifInfo) {
   var a = aziendaInfo || {}
   var v = esc(f.valuta || 'CHF')
   var isNC = f.tipo === 'nota_credito'
   var titolo = isNC ? 'NOTA DI CREDITO' : 'FATTURA'
-  var ivaOn = isSoggettoIva()   // interruttore IVA: colonne/riepilogo/numero IVA solo se ON
+  var ivaOn = isSoggettoIva() || fatturaHaIva(f, righe)   // interruttore IVA: colonne/riepilogo/numero IVA solo se ON (104: o se la fattura ha l'IVA)
 
   // Righe (colonne IVA solo se soggetto IVA)
   // FASE 21 — la numerazione si calcola QUI, alla stampa, e non si salva:
@@ -9252,6 +9273,9 @@ function renderFatturaPrint(f, righe, rifInfo) {
     // 91 — lo sconto di cassa è una CONDIZIONE: il totale resta pieno, sotto si
     // legge quanto pagare entro il termine.
     rigaStampaScontoCassa(f, v) +
+    (contiStampaTornano(f, ivaOn).torna ? '' :
+      '<div class="inv-errore">⚠️ I conti non tornano: le righe sopra danno ' + fmtNum2(contiStampaTornano(f, ivaOn).somma) + ' ' + v +
+      ', il totale salvato è ' + fmtNum2(contiStampaTornano(f, ivaOn).totale) + ' ' + v + '. Questo documento non va mandato.</div>') +   // 104
     '</div>'
 
   // Logo: logo_url se presente, altrimenti img/logo.png; onerror → fallback → nascondi
@@ -9408,6 +9432,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
       '<div id="fatture-qrpage"></div>' +
     '</div>'
   )
+  return contiStampaTornano(f, ivaOn)   // 104 — chi fa il PDF lo guarda
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -20590,10 +20615,14 @@ async function htmlFatturaPerPdf(idFattura) {
       .eq('id', f.rif_fattura_id).eq('azienda_id', currentAziendaId).maybeSingle()
     rifInfo = rif || null
   }
+  // 104 — senza i dati della ditta il PDF usciva col nome di base e senza IVA: «Non soggetto IVA» sotto un totale con l'IVA dentro.
+  await loadAziendaInfo()
+  if (datiDittaMancanti()) throw new Error('i dati della ditta non si leggono: il PDF della fattura ' + (f.numero || '') + ' non è stato fatto')
   var box = el('fatture-print')
   var prima = box ? box.innerHTML : ''
   try {
-    renderFatturaPrint(f, righe || [], rifInfo)
+    var conti = renderFatturaPrint(f, righe || [], rifInfo)
+    if (conti && !conti.torna) throw new Error('nella fattura ' + (f.numero || '') + ' i conti non tornano (righe ' + fmtNumIt(conti.somma) + ', totale ' + fmtNumIt(conti.totale) + '): il PDF non è stato fatto')
     return box ? box.innerHTML : ''
   } finally {
     if (box) box.innerHTML = prima
