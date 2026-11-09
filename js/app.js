@@ -27782,6 +27782,7 @@ function bloccoContrattoHtml(cantiereId) {
   if (!c || contrattoInModifica) return '<div class="card cant-blocco">' + titolo + formContrattoHtml(c, cantiereId) + '</div>'
 
   var t = totaliContratto(c)
+  setTimeout(function () { caricaOffertaPreventivi(cantiereId) }, 0)   // 104 — dopo che la scheda è a schermo
   var testata =
     '<div class="pag-sommario">' +
       '<div class="pag-riga"><span>Contratto firmato' +
@@ -27798,6 +27799,8 @@ function bloccoContrattoHtml(cantiereId) {
     bloccoCoefficienteHtml(c) +
     // 67·6 — se ribasso e sconto non riproducono il firmato, lo si dice.
     avvisoScontiHtml(c) +
+    // 104 — il totale dell'offerta aggiornata, letto da Preventivi: si conferma con un tasto.
+    '<div id="acc-pv-' + esc(cantiereId) + '" class="acc-pv"></div>' +
     // 62j — la stampa che si usa davvero non è un bottone come gli altri: sta
     // per prima, in evidenza, e si chiama col nome della cosa che produce.
     // 62k — sono DUE fogli: quello per la cartella ha il coefficiente e i
@@ -29022,6 +29025,125 @@ async function salvaContrattoCantiere(cantiereId) {
     showCantieriBanner('ok', 'Contratto salvato alle ' + oraAdesso() + '.')
   } catch (e) {
     showCantieriBanner('err', 'Contratto NON salvato: ' + (e.message || e))
+  }
+}
+
+// 104 — IL TOTALE DELL'OFFERTA, DA PREVENTIVI. Umberto, 9.11: «Saldo con variante: il totale arrotondato lo prendi tu
+// dall'offerta aggiornata. Io vedo la cifra e confermo.»
+// Sola lettura di pv_offerte e pv_versioni (tabelle di Preventivi): numero, nome, stato, versione, totale e il segno arrotFranco.
+// Mai le tabelle riservate. Nessun SQL nuovo: il legame è il numero nel «Rif. offerta», o la scelta fatta qui (in tm_conta_impostazioni).
+// Quale offerta: 1) il numero AAMMGG-n scritto nel «Rif. offerta»; 2) quella scelta da elenco; 3) l'unica dello stesso cantiere.
+// Quale totale: l'offerta com'è se è inviata o accettata; se no (riaperta per una variante, ancora in bozza) l'ultima versione
+// inviata o accettata. Solo le offerte nuove (arrotFranco): un totale al franco intero. Le vecchie (Excel): il campo resta a mano.
+// totale_offerta_arrotondato si scrive solo col tasto «Conferma».
+var STATI_OFFERTA_VALIDI = ['inviata', 'accettata']
+function chiaveOffertaContratto(contrattoId) { return 'offerta_preventivi_contratto_' + contrattoId }
+function numeroOffertaInRif(rif) { var m = String(rif || '').match(/(\d{6}-\d+)/); return m ? m[1] : null }
+function preventiviAssente(e) { return /pv_offerte|pv_versioni|42P01|PGRST205|does not exist|schema cache/i.test(String((e && (e.code + ' ' + e.message)) || e)) }
+var COLONNE_OFFERTA_PV = 'id, numero, nome, stato, versione, totale_complessivo, archiviata, cantiere_id, arrot:dati->arrotFranco'
+
+// Quale offerta per questo contratto. Torna { offerta, elenco }: elenco pieno se ce n'è più d'una da scegliere.
+async function offertaDelContratto(c) {
+  var num = numeroOffertaInRif(c.rif_offerta)
+  if (num) {
+    const { data, error } = await sb.from('pv_offerte').select(COLONNE_OFFERTA_PV).eq('numero', num).limit(1)
+    if (error) throw error
+    if (data && data.length) return { offerta: data[0], elenco: [], come: 'numero ' + num + ' nel «Rif. offerta»' }
+  }
+  const { data: tutte, error: eT } = await sb.from('pv_offerte').select(COLONNE_OFFERTA_PV).eq('cantiere_id', c.cantiere_id).order('aggiornato_il', { ascending: false })
+  if (eT) throw eT
+  var vive = (tutte || []).filter(function (o) { return !o.archiviata })
+  var scelta = impostazione(chiaveOffertaContratto(c.id), null)
+  var trovata = scelta ? vive.filter(function (o) { return o.id === scelta })[0] : null
+  if (trovata) return { offerta: trovata, elenco: vive.length > 1 ? vive : [], come: 'scelta qui' }
+  if (vive.length === 1) return { offerta: vive[0], elenco: [], come: 'unica offerta del cantiere' }
+  return { offerta: null, elenco: vive, come: '' }
+}
+// Il totale che vale: { totale, arrot, da } oppure null (nessuna versione inviata o accettata).
+async function totaleOffertaValido(o) {
+  if (STATI_OFFERTA_VALIDI.indexOf(o.stato) !== -1) {
+    return { totale: safeNum(o.totale_complessivo), arrot: o.arrot === true, da: 'offerta ' + o.stato + ', versione ' + o.versione }
+  }
+  const { data, error } = await sb.from('pv_versioni').select('numero, stato, versione, totale_complessivo, creato_il, arrot:dati->arrotFranco')
+    .eq('offerta_id', o.id).in('stato', STATI_OFFERTA_VALIDI).order('numero', { ascending: false }).limit(1)
+  if (error) throw error
+  var v = (data || [])[0]
+  if (!v) return null
+  return { totale: safeNum(v.totale_complessivo), arrot: v.arrot === true,
+           da: 'versione ' + v.versione + ' ' + v.stato + (v.creato_il ? ' del ' + fmtDate(String(v.creato_il).slice(0, 10)) : '') + ' (oggi l\'offerta è «' + o.stato + '»)' }
+}
+// Il riquadro, puro: riceve quello che si è letto.
+function riquadroOffertaPreventiviHtml(c, letto) {
+  var ap = '<div class="nota-cruscotto" style="margin-top:10px"><span aria-hidden="true">📄</span><span>'
+  var ch = '</span></div>'
+  if (!letto) return ''
+  if (letto.errore) return ap + 'Offerta di Preventivi non letta: ' + esc(letto.errore) + '. Il totale arrotondato si scrive a mano.' + ch
+  if (!letto.offerta) {
+    if (!letto.elenco.length) return ''   // nessuna offerta di Preventivi: offerta vecchia, il campo resta a mano
+    return ap + '<strong>Offerte di Preventivi per questo cantiere:</strong> scegli quella del contratto.' +
+      '<select id="acc-pv-scelta" class="form-input" style="margin-top:6px">' + letto.elenco.map(function (o) {
+        return '<option value="' + esc(o.id) + '">' + esc((o.numero || 'senza numero') + ' — ' + (o.nome || '') + ' — ' + o.stato) + '</option>'
+      }).join('') + '</select>' +
+      '<button type="button" class="btn-secondary" style="margin-top:6px" onclick="scegliOffertaContratto(\'' + esc(c.id) + '\', \'' + esc(c.cantiere_id) + '\')">✅ È questa</button>' + ch
+  }
+  var o = letto.offerta
+  var nome = 'Offerta ' + esc(o.numero || '') + ' «' + esc(o.nome || '') + '»'
+  if (!letto.valido) return ap + nome + ' (' + esc(o.stato) + '): il totale vale quando l\'offerta è inviata o accettata.' + ch
+  var v = letto.valido
+  if (!v.arrot || v.totale == null || v.totale !== Math.trunc(v.totale)) {
+    return ap + nome + ': senza arrotondamento al franco (offerta vecchia). Il totale arrotondato resta a mano.' + ch
+  }
+  var inContratto = safeNum(c.totale_offerta_arrotondato)
+  var cifra = '<strong>Totale offerta aggiornata (da Preventivi): CHF ' + esc(fmtNumIt(v.totale)) + '</strong> — ' + nome + ', ' + esc(v.da) + '.'
+  var tasto = '<button type="button" class="btn-primary" style="margin-top:6px" onclick="confermaTotaleOfferta(\'' + esc(c.cantiere_id) + '\', ' + v.totale + ')">✅ Conferma</button>'
+  if (inContratto != null && Math.abs(inContratto - v.totale) < 0.005) return ap + cifra + ' ✅ Confermato nel contratto.' + ch
+  if (inContratto != null) {
+    return '<div class="nota-cruscotto avviso" style="margin-top:10px"><span aria-hidden="true">⚠️</span><span>' + cifra +
+      ' <strong>Il totale dell\'offerta è cambiato:</strong> nel contratto c\'è CHF ' + esc(fmtNumIt(inContratto)) + '. Conferma il nuovo.<br>' + tasto + ch
+  }
+  return ap + cifra + '<br>' + tasto + ch
+}
+async function caricaOffertaPreventivi(cantiereId) {
+  var box = el('acc-pv-' + cantiereId)
+  if (!box) return
+  var c = contrattoDi(cantiereId)
+  if (!c) return
+  var letto
+  try {
+    try { await loadImpostazioniConta() } catch (_) { /* senza: la scelta fatta qui non si ricorda, resta il numero o l'unica offerta */ }
+    var r = await offertaDelContratto(c)
+    letto = { offerta: r.offerta, elenco: r.elenco }
+    if (r.offerta) letto.valido = await totaleOffertaValido(r.offerta)
+  } catch (e) {
+    letto = preventiviAssente(e) ? null : { errore: e.message || String(e) }   // Preventivi non ancora attivo: niente riquadro
+  }
+  box = el('acc-pv-' + cantiereId)
+  if (box) box.innerHTML = riquadroOffertaPreventiviHtml(c, letto)
+}
+async function scegliOffertaContratto(contrattoId, cantiereId) {
+  var id = getVal('acc-pv-scelta')
+  if (!id) return
+  try {
+    await salvaImpostazioneConta(chiaveOffertaContratto(contrattoId), id, 'Offerta di Preventivi del contratto (104): da qui si legge il totale.')
+    await caricaOffertaPreventivi(cantiereId)
+  } catch (e) { showCantieriBanner('err', 'Scelta NON salvata: ' + (e.message || e)) }
+}
+async function confermaTotaleOfferta(cantiereId, totale) {
+  var c = contrattoDi(cantiereId)
+  if (!c) return
+  if (totale == null || totale <= 0 || totale !== Math.trunc(totale)) { showCantieriBanner('err', 'Il totale dell\'offerta non è al franco intero: non lo scrivo.'); return }
+  if (!window.confirm('Scrivere CHF ' + fmtNumIt(totale) + ' come totale dell\'offerta arrotondato nel contratto?\n\n' +
+      'Il saldo diventerà questo totale meno le fatture già emesse.' +
+      (c.totale_offerta_arrotondato != null ? '\nPrima c\'era CHF ' + fmtNumIt(safeNum(c.totale_offerta_arrotondato)) + '.' : ''))) return
+  try {
+    const { data, error } = await sb.from('tm_conta_cantiere_contratto').update({ totale_offerta_arrotondato: totale })
+      .eq('id', c.id).eq('azienda_id', currentAziendaId).select('id')
+    if (error) throw error
+    if (!data || !data.length) throw new Error('nessuna riga cambiata: il contratto non è accessibile')
+    await ricaricaContrattoERidisegna()
+    showCantieriBanner('ok', 'Totale dell\'offerta confermato: CHF ' + fmtNumIt(totale) + '.')
+  } catch (e) {
+    showCantieriBanner('err', 'Totale NON confermato: ' + (e.message || e))
   }
 }
 
