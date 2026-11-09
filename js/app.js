@@ -7366,7 +7366,7 @@ async function preparaSaldoEditor(c, a, fatturaId) {
   }
   editorSaldo = { offerta: offerta, emesse: round2(emesse), target: round2(offerta - emesse) }
   html('fatture-saldo-ref', '<div class="nota-cruscotto" style="margin-top:8px"><span aria-hidden="true">🧮</span><span><strong>Saldo</strong>: totale offerta arrotondato ' +
-    esc(fmtNumIt(offerta)) + ' − fatture già emesse ' + esc(fmtNumIt(emesse)) + ' = <strong>' + esc(fmtNumIt(editorSaldo.target)) + '</strong> CHF, IVA inclusa.</span></div>')
+    esc(fmtNumIt(offerta)) + ' − fatture già emesse ' + esc(fmtNumIt(emesse)) + ' = <strong>' + esc(fmtNumIt(editorSaldo.target)) + '</strong> CHF' + (isSoggettoIva() ? ', IVA inclusa' : '') + '.</span></div>')
   recalcFatturaTotals()
 }
 
@@ -9260,8 +9260,9 @@ function renderFatturaPrint(f, righe, rifInfo) {
       ? '<div><span>Subtotale</span><span>' + fmtNum2(subtotaleStampa) + ' ' + v + '</span></div>' +
         '<div><span>' + esc(scontoDocEtichetta) + '</span><span>\u2212 ' + fmtNum2(scontoDocImp) + ' ' + v + '</span></div>'
       : '') +
-    (ivaOn || scontoDocImp > 0
-      ? '<div><span>' + (ivaOn ? 'Totale imponibile' : 'Imponibile') + '</span><span>' + fmtNum2(safeNum(f.totale_imponibile)) + ' ' + v + '</span></div>'
+    // 104 — con l'arrotondamento si vede anche da dove parte: righe − arrotondamento = totale.
+    (ivaOn || scontoDocImp > 0 || Math.abs(safeNum(f.arrotondamento) || 0) >= 0.005
+      ? '<div><span>' + (ivaOn ? 'Totale imponibile' : scontoDocImp > 0 ? 'Imponibile' : 'Totale righe') + '</span><span>' + fmtNum2(safeNum(f.totale_imponibile)) + ' ' + v + '</span></div>'
       : '') +
     (ivaOn
       ? '<div><span>Totale IVA</span><span>' + fmtNum2(safeNum(f.totale_iva)) + ' ' + v + '</span></div>'
