@@ -9157,7 +9157,7 @@ function renderFatturaPrint(f, righe, rifInfo) {
   for (var i = 0; i < righe.length; i++) {
     var r = righe[i]
     if (r.tipo_riga === 'testo') {   // 104 — a capo su tutta la riga, senza numeri
-      righeHtml += '<tr class="inv-riga-testo"><td class="inv-desc" colspan="' + (colonneDopoDesc + 1) + '">' + esc(r.descrizione || '') + '</td></tr>'
+      righeHtml += '<tr class="inv-riga-testo"><td class="inv-desc" colspan="' + (colonneDopoDesc + 2) + '">' + esc(r.descrizione || '') + '</td></tr>'
       continue
     }
     if (r.tipo_riga === 'titolo') {
