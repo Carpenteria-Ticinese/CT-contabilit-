@@ -10325,10 +10325,11 @@ function avvisoScadenzaFornitore(scadenza, statoVero) {
   if (!scadenza || statoVero === 'pagato') return ''
   var d = diffGiorni(scadenza, oggiISO())
   if (d == null) return ''
+  // Regola di Umberto (9.11.2026): vale la scadenza scritta; «scaduta» solo dal giorno DOPO; prima «da pagare»
+  // (lo dice già lo stato); negli ultimi giorni di preavviso «⚠️ in scadenza fra N giorni»; il giorno stesso «⚠️ scade oggi».
   if (d < 0)   return badge('err',  '🔴 Scaduta e non pagata')
-  if (d === 0) return badge('warn', '🟠 Scade oggi')
-  if (d === 1) return badge('warn', '🟠 Scade domani')
-  if (d <= giorniPreavviso()) return badge('warn', '🟠 Scade tra ' + d + ' giorni')
+  if (d === 0) return badge('warn', '⚠️ Scade oggi')
+  if (d <= giorniPreavviso()) return badge('warn', '⚠️ In scadenza fra ' + d + (d === 1 ? ' giorno' : ' giorni'))
   return ''
 }
 
@@ -11572,6 +11573,15 @@ function toggleSoggettoIva(checked) {
 // NON si usa toISOString(): quella converte in UTC, e a mezzanotte locale in
 // Ticino (UTC+1/+2) restituisce il giorno PRIMA. Su una scadenza di pagamento
 // un giorno di scarto non e' un dettaglio.
+// Oggi a Bellinzona (Europe/Zurich), giorno di calendario: vale anche se il computer ha un altro fuso (9.11.2026).
+// Vuoto se il browser non conosce i fusi orari: allora vale la data del computer.
+function oggiZurigo() {
+  try {
+    var z = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Zurich', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+    return /^\d{4}-\d{2}-\d{2}$/.test(z) ? z : ''
+  } catch (_) { return '' }
+}
+
 function dataISO(d) {
   if (!d || isNaN(d.getTime())) return null
   var m = String(d.getMonth() + 1)
@@ -11580,7 +11590,7 @@ function dataISO(d) {
 }
 
 // La data di oggi, nel fuso di chi sta usando il programma.
-function oggiISO() { return dataISO(new Date()) }
+function oggiISO() { return (typeof oggiZurigo === 'function' && oggiZurigo()) || dataISO(new Date()) }   // 9.11.2026: il giorno di Zurigo
 
 // data 'YYYY-MM-DD' + giorni → 'YYYY-MM-DD' (scadenze di fatture e movimenti)
 function addDays(dateStr, days) {
@@ -17523,8 +17533,9 @@ function impostazione(chiave, seManca) {
 }
 
 function giorniPreavviso() {
-  var n = parseInt(impostazione('giorni_preavviso_scadenze', '7'), 10)
-  return (isNaN(n) || n < 0) ? 7 : n
+  // Umberto, 9.11.2026: «negli ultimi 5 giorni: in scadenza». 5 di base; l'impostazione resta.
+  var n = parseInt(impostazione('giorni_preavviso_scadenze', '5'), 10)
+  return (isNaN(n) || n < 0) ? 5 : n
 }
 
 function finestraScadenzeAttiva() {
@@ -17840,9 +17851,9 @@ function rigaScadenza(r, blocco) {
     if (dF != null) {
       q = { cls: q.cls, testo: dF < 0
         ? 'scaduta e non pagata (da ' + (-dF) + (dF === -1 ? ' giorno)' : ' giorni)')
-        : dF === 0 ? 'scade oggi'
-        : dF === 1 ? 'scade domani'
-        : 'scade tra ' + dF + ' giorni' }
+        : dF === 0 ? '⚠️ scade oggi'
+        : dF <= giorniPreavviso() ? '⚠️ in scadenza fra ' + dF + (dF === 1 ? ' giorno' : ' giorni')
+        : 'da pagare' }
     }
   }
   var e = etichettaPagamento(r.verso, 'pagato')     // «Pagato» o «Incassato»
@@ -17888,7 +17899,7 @@ function rigaScadenza(r, blocco) {
     // Nel blocco grigio l'icona resta neutra: li' non c'e' nessuna urgenza,
     // manca solo un dato. Un pallino rosso direbbe il contrario.
     '<span class="scad-riga-icona" aria-hidden="true">' +
-      (blocco === 'senzaData' ? '⚪' : (r.verso === 'entrata' ? '🔵' : '🔴')) + '</span>' +
+      (blocco === 'senzaData' ? '⚪' : blocco === 'inScadenza' ? '⚠️' : (r.verso === 'entrata' ? '🔵' : '🔴')) + '</span>' +   // 9.11.2026
     '<div class="scad-riga-main">' +
       '<div class="scad-nome">' + esc(r.controparte_nome || '—') + '</div>' +
       '<div class="scad-doc">' + esc(doc.join(' · ')) + '</div>' +
