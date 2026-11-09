@@ -3751,3 +3751,27 @@ tr.riga-bozza > td:first-child { box-shadow: inset 4px 0 0 #b45309; }
 .inv-tot .inv-sconto-cassa span:first-child { padding-right: 10px; }
 .inv-tot .inv-sconto-cassa span:last-child { white-space: nowrap; font-weight: 600; }
 .stralcio-box.sconto { border-left-color: #0f766e; }
+
+/* 104 — periodo veloce, totali e gruppi degli elenchi: tasti grandi, con la scritta */
+.periodo-barra, .totali-gruppi-barra { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 10px; }
+.periodo-titolo { font-weight: 600; margin-right: 4px; }
+.periodo-tasto, .gruppo-tasto { min-height: 44px; padding: 8px 14px; font-size: 15px; }
+.btn-secondary.periodo-tasto.attivo, .btn-secondary.gruppo-tasto.attivo { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 700; }
+.totali-elenco { margin-top: 14px; padding: 12px 14px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.tot-titolo { font-weight: 700; margin-bottom: 6px; }
+.tot-riga { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; font-size: 14px; padding: 2px 0; }
+.tot-riga.forte { font-size: 16px; }
+.tot-conta { min-width: 140px; color: var(--text2); }
+.tot-nota { font-size: 13px; margin: 4px 0; }
+.tot-gruppi { margin-top: 6px; }
+.tot-gruppo { border-top: 1px solid var(--border); padding: 6px 0; }
+.tot-gruppo > summary { cursor: pointer; display: list-item; list-style: disclosure-closed; padding: 6px 0; min-height: 44px; }
+.tot-gruppo-nome { font-weight: 700; font-size: 15px; margin-right: 10px; }
+.tot-gruppo-corpo { padding: 4px 0 8px 18px; }
+.tot-doc { display: grid; grid-template-columns: 92px 1fr auto auto; gap: 6px 12px; align-items: center; padding: 4px 0; font-size: 13px; border-bottom: 1px dashed var(--border); }
+@media (max-width: 767px) {
+  .tot-doc { grid-template-columns: 1fr auto; }
+  .tot-conta { min-width: 0; flex: 1 1 100%; }
+}
+.tot-gruppo[open] > summary { list-style: disclosure-open; }
+.tot-gruppo:not([open]) > .tot-gruppo-corpo { display: none; }

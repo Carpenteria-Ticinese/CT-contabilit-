@@ -5347,7 +5347,7 @@ async function loadFattureList() {
       // 62c — annullata_motivo serve al tooltip dell'elenco. La colonna arriva
       // con SQL_FASE62c_annullamento.sql: quello va applicato PRIMA di caricare
       // questa versione, altrimenti l'elenco non si carica e lo dice.
-      .select('id, numero, anno, data_emissione, cliente_nome, contatto_id, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, annullata_motivo')
+      .select('id, numero, anno, data_emissione, cliente_nome, contatto_id, totale, valuta, stato, stato_pagamento, data_scadenza, tipo, created_at, annullata_motivo, cantiere_id')   // 104 — cantiere_id per i totali
       .eq('azienda_id', currentAziendaId)
       .eq('archivio_nascosto', false)   // 103
       .order('created_at', { ascending: false }).order('id') })
@@ -6003,7 +6003,8 @@ function barraImportoDataHtml(k) {
   var c = FILTRI_ID[k]
   var id = function (x) { return 'fid-' + k + '-' + x }
   var on = 'onFiltroID(\'' + k + '\')'
-  return '<div class="fid-campi">' +
+  return ((typeof PERIODO_ELENCHI !== 'undefined' && PERIODO_ELENCHI[k]) ? '<div class="periodo-barra" id="periodo-' + k + '">' + tastiPeriodoHtml(k) + '</div>' : '') +   // 104
+    '<div class="fid-campi">' +
     (c.testo
       ? '<div class="fid-campo fid-testo"><label class="form-label" for="' + id('testo') + '">Cerca</label>' +
           '<input type="text" id="' + id('testo') + '" class="form-input" placeholder="🔍 descrizione, fornitore, importo…" oninput="' + on + '" autocomplete="off" /></div>'
@@ -6025,6 +6026,264 @@ function barraImportoDataHtml(k) {
     '<div class="fid-campo fid-azzera"><button type="button" class="btn-secondary" onclick="azzeraFiltroID(\'' + k + '\', true)">↺ Azzera</button></div>' +
   '</div>' +
   '<div class="fid-msg" id="' + id('msg') + '" role="status" aria-live="polite"></div>'
+}
+
+// ══ 104 · TOTALI, PERIODO E GRUPPI DEGLI ELENCHI (Umberto, 9.11.2026) ═══════════
+// «Ho cercato un fornitore e l'ho trovato. Ora voglio sapere quanto ho pagato.»
+// In fondo a ogni elenco filtrato: quante, totale, pagato, da pagare. Si rifà da sola a ogni filtro.
+// Periodo veloce sopra i filtri (Quest'anno di base). Raggruppa per fornitore/cliente, cantiere, conto: ogni gruppo si apre e si chiude.
+// Le cifre vengono dalle stesse funzioni della scheda: pagamenti, note di credito, stralci. Si legge solo quello che la pagina ha già letto.
+// Le quote per cantiere e per conto sono quelle della classificazione (un documento diviso finisce in più gruppi, con la sua parte);
+// un documento non classificato va nel gruppo «non classificato». Ogni documento si divide al centesimo: la somma dei gruppi è il totale.
+var PERIODO_ELENCHI = { fatture: true, acquisti: true, propri: true }
+var GRUPPI_ELENCO = {
+  acquisti: [['', '✖ Nessuno'], ['chi', '👥 Fornitore'], ['cantiere', '🏗️ Cantiere'], ['conto', '🏷️ Conto']],
+  propri:   [['', '✖ Nessuno'], ['chi', '👥 Fornitore'], ['cantiere', '🏗️ Cantiere'], ['conto', '🏷️ Conto']],
+  fatture:  [['', '✖ Nessuno'], ['chi', '👥 Cliente'], ['cantiere', '🏗️ Cantiere']]
+}
+var gruppoElenco = { acquisti: '', propri: '', fatture: '' }
+var gruppiAperti = {}
+
+function intervalloPeriodo(tipo, oggi) {
+  oggi = oggi || oggiISO()
+  var y = +oggi.slice(0, 4), m = oggi.slice(5, 7)
+  if (tipo === 'anno') return { da: y + '-01-01', a: y + '-12-31' }
+  if (tipo === 'annoScorso') return { da: (y - 1) + '-01-01', a: (y - 1) + '-12-31' }
+  if (tipo === 'mese') {
+    var ultimo = new Date(y, +m, 0).getDate()
+    return { da: y + '-' + m + '-01', a: y + '-' + m + '-' + (ultimo < 10 ? '0' : '') + ultimo }
+  }
+  return { da: '', a: '' }
+}
+function periodoAttivo(k) {
+  var e = function (x) { var n = el('fid-' + k + '-' + x); return n ? String(n.value || '') : '' }
+  var da = e('da'), a = e('a')
+  if (!da && !a) return 'tutto'
+  var tipi = ['anno', 'annoScorso', 'mese']
+  for (var i = 0; i < tipi.length; i++) { var r = intervalloPeriodo(tipi[i]); if (r.da === da && r.a === a) return tipi[i] }
+  return 'intervallo'
+}
+function tastiPeriodoHtml(k) {
+  var att = periodoAttivo(k)
+  return '<span class="periodo-titolo">Periodo:</span>' +
+    [['anno', '📅 Quest\'anno'], ['annoScorso', '📅 Anno scorso'], ['mese', '📅 Questo mese'], ['intervallo', '📅 Da… a…'], ['tutto', '♾️ Tutto']].map(function (p) {
+      return '<button type="button" class="btn-secondary periodo-tasto' + (att === p[0] ? ' attivo' : '') + '" aria-pressed="' + (att === p[0]) + '"' +
+        ' onclick="impostaPeriodo(\'' + k + '\', \'' + p[0] + '\')">' + p[1] + '</button>'
+    }).join('')
+}
+function impostaPeriodo(k, tipo, senzaDisegno) {
+  if (tipo === 'intervallo') {
+    var campo = el('fid-' + k + '-da')
+    if (campo) { campo.focus(); try { if (campo.showPicker) campo.showPicker() } catch (_) { /* il calendario si apre col tocco */ } }
+    aggiornaBarraPeriodo(k)
+    return
+  }
+  var r = intervalloPeriodo(tipo)
+  setVal('fid-' + k + '-da', r.da)
+  setVal('fid-' + k + '-a', r.a)
+  var m = el('fid-' + k + '-modo')
+  if (m && m.tagName === 'SELECT') m.value = 'documento'
+  // Il campo «Anno» non deve contraddire il periodo.
+  if (k === 'acquisti') setVal('acquisti-filtro-anno', '')
+  if (k === 'fatture') setVal('fatture-filtro-anno', '')
+  aggiornaBarraPeriodo(k)
+  if (!senzaDisegno) onFiltroID(k)
+}
+function aggiornaBarraPeriodo(k) { var b = el('periodo-' + k); if (b) b.innerHTML = tastiPeriodoHtml(k) }
+
+// Il box dei totali, subito dopo l'elenco: si crea la prima volta, senza toccare l'HTML della pagina.
+function boxDopo(idRif, idNuovo) {
+  var b = el(idNuovo)
+  if (b) return b
+  var rif = el(idRif)
+  if (!rif || !rif.parentNode) return null
+  b = document.createElement('div')
+  b.id = idNuovo
+  b.className = 'totali-elenco'
+  rif.parentNode.insertBefore(b, rif.nextSibling)
+  return b
+}
+
+// Le parti di un documento: per cantiere e per conto, dalla classificazione. Frazioni che sommano 1.
+function quoteDocumento(chiave, cantiereDoc, contoDoc) {
+  var q = classCantiereMap ? (classCantiereMap[chiave] || []) : []
+  var somma = q.reduce(function (t, x) { return t + (safeNum(x.quota) || 0) }, 0)
+  if (!q.length || somma <= 0.005) return [{ cantiere_id: cantiereDoc || (q[0] && q[0].cantiere_id) || null, conto_id: contoDoc || (q[0] && q[0].conto_id) || null, frazione: 1 }]
+  return q.map(function (x) { return { cantiere_id: x.cantiere_id || null, conto_id: x.conto_id || contoDoc || null, frazione: (safeNum(x.quota) || 0) / somma } })
+}
+// Divide una cifra sulle frazioni, al centesimo: l'ultima parte prende il resto, così la somma torna.
+function dividiCifra(cifra, frazioni) {
+  var fatto = 0
+  return frazioni.map(function (f, i) {
+    if (i === frazioni.length - 1) return round2(cifra - fatto)
+    var p = round2(cifra * f)
+    fatto = round2(fatto + p)
+    return p
+  })
+}
+
+// Con un cantiere scelto nel filtro, di un documento diviso conta solo la parte di quel cantiere ('__nessuno__' = la parte aziendale).
+function soloParteCantiere(righe, cantF) {
+  if (!cantF) return righe
+  var vuole = cantF === '__nessuno__' ? null : cantF
+  return righe.map(function (r) {
+    var mie = r.quote.filter(function (q) { return (q.cantiere_id || null) === vuole })
+    var fr = mie.reduce(function (t, q) { return t + q.frazione }, 0)
+    if (fr >= 0.99999) return r
+    var x = function (n) { return round2((n || 0) * fr) }
+    return Object.assign({}, r, { tot: x(r.tot), pag: x(r.pag), da: x(r.da), eccesso: x(r.eccesso), stralcio: x(r.stralcio), parte: true,
+      quote: mie.map(function (q) { return Object.assign({}, q, { frazione: fr > 0 ? q.frazione / fr : 0 }) }) })
+  }).filter(function (r) { return r.quote.length })
+}
+function righeTotaliAcquisti(list, spese, cantF) {
+  var righe = (list || []).map(function (a) {
+    var tot = round2(safeNum(a.importo) || 0)
+    var pag = round2(totalePagatoDi('tm_conta_fatture_acquisto', a.id))
+    return { id: a.id, chi: a.fornitore || '—', data: a.data, etichetta: a.numero_fornitore ? 'n. ' + a.numero_fornitore : '', tot: tot, pag: pag,
+             da: Math.max(0, round2(tot - pag)), eccesso: Math.max(0, round2(pag - tot)), valuta: a.valuta || 'CHF',
+             quote: quoteDocumento(chiaveClassificazione('acquisto', a.id), a.cantiere_id || null, null), apri: 'viewAcquisto(\'' + a.id + '\')' }
+  })
+  ;(spese || []).forEach(function (m) {
+    var tot = round2(importoSpesa(m) || 0)
+    righe.push({ id: m.origine_id, spesa: true, chi: 'Spese dell\'App Cantieri', data: m.data, etichetta: m.descrizione || '', tot: tot, pag: tot, da: 0, eccesso: 0,
+                 valuta: m.valuta || 'CHF', quote: quoteDocumento(chiaveClassificazione('spesa', m.origine_id), m.cantiere_id || null, null),
+                 apri: 'apriSpesaElenco(\'' + m.origine_id + '\')' })
+  })
+  return soloParteCantiere(righe, cantF)
+}
+function righeTotaliVendite(list) {
+  return (list || []).filter(function (f) { return f.stato === 'emessa' }).map(function (f) {
+    var nc = f.tipo === 'nota_credito'
+    var tot = round2((safeNum(f.totale) || 0) * (nc ? -1 : 1))
+    var pag = nc ? -rimborsiDiNota(f.id) : round2(totalePagatoDi('tm_conta_fatture', f.id))
+    var res = nc ? 0 : (residuoPronto() ? residuoDocumento('tm_conta_fatture', f.id, f.totale) : round2(tot - pag))
+    var stralcio = (!nc && cacheOk('stralci')) ? round2(importoStralcioAttivo(f.id)) : 0
+    return { id: f.id, nc: nc, chi: f.cliente_nome || '—', data: f.data_emissione, etichetta: (nc ? 'nota di credito ' : 'n. ') + (f.numero || ''), tot: tot, pag: pag,
+             da: Math.max(0, round2(res)), eccesso: Math.max(0, round2(-res)), stralcio: stralcio, valuta: f.valuta || 'CHF',
+             quote: [{ cantiere_id: f.cantiere_id || null, conto_id: null, frazione: 1 }], apri: 'viewFattura(\'' + f.id + '\')' }
+  })
+}
+function righeTotaliPropri(list) {
+  return (list || []).map(function (m) {
+    var tot = round2(safeNum(m.importo) || 0)
+    var pag = round2(totalePagatoDi('tm_conta_movimenti_propri', m.id))
+    var cls = (typeof classByKey !== 'undefined' && classByKey) ? classByKey['proprio:' + m.id] : null
+    return { id: m.id, chi: m.ente_fornitore || m.descrizione || '—', data: m.data, etichetta: m.descrizione || '', tot: tot, pag: pag,
+             da: Math.max(0, round2(tot - pag)), eccesso: Math.max(0, round2(pag - tot)), valuta: m.valuta || 'CHF',
+             quote: quoteDocumento(chiaveClassificazione('proprio', m.id), m.cantiere_id || null, cls ? cls.conto_id : null), apri: '' }
+  })
+}
+
+// Le somme, per valuta. Mai CHF e EUR nella stessa cifra.
+function sommaRighe(righe) {
+  var s = {}
+  ;(righe || []).forEach(function (r) {
+    var v = r.valuta || 'CHF'
+    if (!s[v]) s[v] = { n: 0, spese: 0, nc: 0, tot: 0, pag: 0, da: 0, eccesso: 0, stralcio: 0 }
+    var x = s[v]
+    if (r.spesa) x.spese++; else if (r.nc) x.nc++; else x.n++
+    x.tot = round2(x.tot + r.tot); x.pag = round2(x.pag + r.pag); x.da = round2(x.da + r.da)
+    x.eccesso = round2(x.eccesso + (r.eccesso || 0)); x.stralcio = round2(x.stralcio + (r.stralcio || 0))
+  })
+  return s
+}
+function parole(k) {
+  return k === 'fatture'
+    ? { tot: 'Fatturato', pag: 'Incassato', da: 'Da incassare', doc: ['fattura', 'fatture'], chi: 'cliente' }
+    : { tot: 'Totale', pag: 'Pagato', da: 'Da pagare', doc: k === 'propri' ? ['movimento', 'movimenti'] : ['fattura', 'fatture'], chi: 'fornitore' }
+}
+function rigaSommeHtml(k, s, forte) {
+  var P = parole(k)
+  return Object.keys(s).map(function (v) {
+    var x = s[v]
+    var conta = x.n + ' ' + (x.n === 1 ? P.doc[0] : P.doc[1]) +
+      (x.nc ? ' + ' + x.nc + (x.nc === 1 ? ' nota di credito' : ' note di credito') : '') +
+      (x.spese ? ' + ' + x.spese + (x.spese === 1 ? ' spesa' : ' spese') + ' dell\'App Cantieri' : '')
+    return '<div class="tot-riga' + (forte ? ' forte' : '') + '">' +
+      '<span class="tot-conta">' + esc(conta) + '</span>' +
+      '<span class="tot-cifra">' + esc(P.tot) + ' <strong>' + esc(fmtNumIt(x.tot)) + ' ' + esc(v) + '</strong></span>' +
+      '<span class="tot-cifra">' + esc(P.pag) + ' <strong>' + esc(fmtNumIt(x.pag)) + ' ' + esc(v) + '</strong></span>' +
+      '<span class="tot-cifra">' + esc(P.da) + ' <strong>' + esc(fmtNumIt(x.da)) + ' ' + esc(v) + '</strong></span>' +
+      (x.stralcio > 0.005 ? '<span class="tot-cifra">Stralciato <strong>' + esc(fmtNumIt(x.stralcio)) + ' ' + esc(v) + '</strong></span>' : '') +
+      (x.eccesso > 0.005 ? '<span class="tot-cifra">⚠️ Pagato in eccesso <strong>' + esc(fmtNumIt(x.eccesso)) + ' ' + esc(v) + '</strong></span>' : '') +
+    '</div>'
+  }).join('')
+}
+// I gruppi: per ogni riga, la sua parte in ogni gruppo (al centesimo).
+function raggruppaRighe(righe, per) {
+  var gruppi = {}
+  ;(righe || []).forEach(function (r) {
+    var quote = per === 'chi' ? [{ frazione: 1 }] : r.quote
+    var fr = quote.map(function (q) { return q.frazione })
+    var parti = { tot: dividiCifra(r.tot, fr), pag: dividiCifra(r.pag, fr), da: dividiCifra(r.da, fr), eccesso: dividiCifra(r.eccesso || 0, fr), stralcio: dividiCifra(r.stralcio || 0, fr) }
+    quote.forEach(function (q, i) {
+      var chiave, nome
+      if (per === 'chi') { chiave = String(r.chi || '—').trim().toLowerCase(); nome = r.chi || '—' }
+      else if (per === 'cantiere') { chiave = q.cantiere_id || ''; nome = q.cantiere_id ? cantiereLabel(q.cantiere_id) : '— nessun cantiere (aziendale) —' }
+      else { chiave = q.conto_id || ''; nome = q.conto_id ? contoLabel(q.conto_id) : '— non classificato —' }
+      if (!gruppi[chiave]) gruppi[chiave] = { chiave: chiave, nome: nome, righe: [] }
+      gruppi[chiave].righe.push(Object.assign({}, r, { tot: parti.tot[i], pag: parti.pag[i], da: parti.da[i], eccesso: parti.eccesso[i], stralcio: parti.stralcio[i], parte: !!r.parte || quote.length > 1 }))
+    })
+  })
+  return Object.keys(gruppi).map(function (k) { var g = gruppi[k]; g.somme = sommaRighe(g.righe); return g })
+    .sort(function (a, b) {
+      var ta = Object.keys(a.somme).reduce(function (t, v) { return t + a.somme[v].tot }, 0)
+      var tb = Object.keys(b.somme).reduce(function (t, v) { return t + b.somme[v].tot }, 0)
+      return tb - ta || String(a.nome).localeCompare(String(b.nome))
+    })
+}
+function totaliElencoHtml(k, righe) {
+  var P = parole(k)
+  var s = sommaRighe(righe)
+  var per = gruppoElenco[k] || ''
+  var tasti = (GRUPPI_ELENCO[k] || []).map(function (g) {
+    return '<button type="button" class="btn-secondary gruppo-tasto' + (per === g[0] ? ' attivo' : '') + '" aria-pressed="' + (per === g[0]) + '"' +
+      ' onclick="scegliGruppoElenco(\'' + k + '\', \'' + g[0] + '\')">' + g[1] + '</button>'
+  }).join('')
+  var unaParte = (righe || []).some(function (r) { return r.parte })
+  var testa = '<div class="tot-titolo">📊 Totali dell\'elenco qui sopra</div>' +
+    (unaParte && k === 'acquisti' && getVal('acquisti-filtro-cantiere') ? '<div class="dim tot-nota">Col cantiere scelto, di una fattura divisa conta solo la parte di quel cantiere.</div>' : '') +
+    (Object.keys(s).length ? rigaSommeHtml(k, s, true) : '<div class="tot-riga forte"><span class="tot-conta">0 ' + esc(P.doc[1]) + '</span></div>') +
+    (k === 'acquisti' && Object.keys(s).some(function (v) { return s[v].spese }) ? '<div class="dim tot-nota">Le spese dell\'App Cantieri contano come già pagate: non si pagano da qui.</div>' : '') +
+    '<div class="totali-gruppi-barra"><span class="periodo-titolo">Raggruppa per:</span>' + tasti + '</div>'
+  if (!per) return testa
+  var gruppi = raggruppaRighe(righe, per)
+  return testa + '<div class="tot-gruppi">' + gruppi.map(function (g) {
+    var id = k + '|' + per + '|' + g.chiave
+    var aperto = !!gruppiAperti[id]
+    var elenco = g.righe.slice(0, 300).map(function (r) {
+      return '<div class="tot-doc">' +
+        '<span class="dim">' + esc(r.data ? fmtDate(r.data) : '') + '</span>' +
+        '<span>' + esc(per === 'chi' ? r.etichetta : (r.chi + (r.etichetta ? ' · ' + r.etichetta : ''))) + (r.parte ? ' <span class="dim">(una parte)</span>' : '') + '</span>' +
+        '<span class="num"><strong>' + esc(fmtNumIt(r.tot)) + ' ' + esc(r.valuta) + '</strong>' + (r.da > 0.005 ? ' <span class="dim">· ' + esc(P.da.toLowerCase()) + ' ' + esc(fmtNumIt(r.da)) + '</span>' : '') + '</span>' +
+        (r.apri ? '<button type="button" class="link-btn" onclick="' + r.apri + '">👁 Apri</button>' : '<span></span>') +
+      '</div>'
+    }).join('') + (g.righe.length > 300 ? '<div class="dim">… e altri ' + (g.righe.length - 300) + '</div>' : '')
+    return '<details class="tot-gruppo"' + (aperto ? ' open' : '') + ' ontoggle="segnaGruppoAperto(\'' + esc(id).replace(/'/g, '') + '\', this.open)">' +
+      '<summary><span class="tot-gruppo-nome">' + esc(g.nome) + '</span>' + rigaSommeHtml(k, g.somme, false) + '</summary>' +
+      '<div class="tot-gruppo-corpo">' + elenco + '</div>' +
+    '</details>'
+  }).join('') + '</div>'
+}
+async function scegliGruppoElenco(k, per) {
+  gruppoElenco[k] = per
+  // Per conto servono i nomi dei conti: se la pagina non li ha ancora letti, si leggono adesso.
+  if (per === 'conto' && (!contiCache || !contiCache.length)) { try { await ensureContiIva() } catch (_) { /* resta il codice del conto */ } }
+  var fn = window[FILTRI_ID[k].render]
+  if (typeof fn === 'function') fn()
+}
+function segnaGruppoAperto(id, aperto) { if (aperto) gruppiAperti[id] = true; else delete gruppiAperti[id] }
+function disegnaTotaliElenco(k, idRif, righe) {
+  var b = boxDopo(idRif, k + '-totali')
+  if (b) b.innerHTML = totaliElencoHtml(k, righe)
+  aggiornaBarraPeriodo(k)
+}
+// Con il periodo di base (quest'anno) le fatture aperte degli anni prima non si vedono: si dice quante, con il tasto.
+function avvisoApertePrimaHtml(k, aperte) {
+  var da = el('fid-' + k + '-da') ? el('fid-' + k + '-da').value : ''
+  if (!da || !aperte.length) return ''
+  return '<div class="chiusi-nascosti">⚠️ ' + aperte.length + (aperte.length === 1 ? ' fattura ancora aperta è' : ' fatture ancora aperte sono') +
+    ' prima del periodo scelto — <button type="button" class="link-btn" onclick="impostaPeriodo(\'' + k + '\', \'tutto\')">♾️ mostra tutto</button></div>'
 }
 
 function installaFiltriImportoData() {
@@ -6103,16 +6362,16 @@ function azzeraFiltroID(k, ridisegna) {
 // ieri farebbe credere che dei documenti siano spariti (come l'Elenco codici, 68).
 function azzeraFiltriElenco(pageId) {
   if (pageId === 'fatture') {
-    azzeraFiltroID('fatture'); setVal('fatture-search', ''); setVal('fatture-filtro-anno', '')
+    azzeraFiltroID('fatture'); setVal('fatture-search', ''); setVal('fatture-filtro-anno', ''); if (typeof impostaPeriodo === 'function') impostaPeriodo('fatture', 'anno', true)   // 104 — di base quest'anno
     statoFiltroDefault('fatture-filtro-stato')
     if (typeof vistaFattureScadute !== 'undefined') vistaFattureScadute = false
   } else if (pageId === 'acquisti') {
-    azzeraFiltroID('acquisti'); setVal('acquisti-search', ''); setVal('acquisti-filtro-anno', ''); setVal('acquisti-filtro-cantiere', ''); setVal('acquisti-filtro-tipo', '')
+    azzeraFiltroID('acquisti'); if (typeof impostaPeriodo === 'function') impostaPeriodo('acquisti', 'anno', true); setVal('acquisti-search', '');   // 104 setVal('acquisti-filtro-anno', ''); setVal('acquisti-filtro-cantiere', ''); setVal('acquisti-filtro-tipo', '')
     statoFiltroDefault('acquisti-filtro-stato')
   } else if (pageId === 'offerte') {
     azzeraFiltroID('offerte'); setVal('offerte-search', '')
     statoFiltroDefault('offerte-filtro-stato')
-  } else if (pageId === 'inserimento') { azzeraFiltroID('propri')
+  } else if (pageId === 'inserimento') { azzeraFiltroID('propri'); if (typeof impostaPeriodo === 'function') impostaPeriodo('propri', 'anno', true)   // 104
   } else if (pageId === 'movimenti') { azzeraFiltroID('daclass')
   } else if (pageId === 'scadenze') { azzeraFiltroID('scadenze')
   } else if (pageId === 'archivio') {
@@ -6126,9 +6385,11 @@ function azzeraFiltriElenco(pageId) {
 // 85 — la ricerca delle fatture di vendita, usata dall'elenco e dalla vista
 // «Scadute»: testo (numero, cliente, importi in ogni forma, pagamenti) +
 // importo e data. null = nessun filtro.
-function predicatoFiltriFatture() {
+function predicatoFiltriFatture(senzaPeriodo) {
   var q = el('fatture-search') ? el('fatture-search').value.trim().toLowerCase() : ''
   var fid = leggiFiltroID('fatture')
+  // 104 — la vista «Scadute» non segue il periodo: una scaduta dell'anno scorso si deve vedere.
+  if (senzaPeriodo) { fid = Object.assign({}, fid, { da: '', a: '' }); fid.attivo = fid.impDa != null || fid.impA != null }
   if (!q && !fid.attivo) return null
   return function (f) {
     var pag = pagamentiDi('tm_conta_fatture', f.id)
@@ -6160,6 +6421,7 @@ function renderFattureTable() {
 
   // 61g — la vista «Scadute»: un'altra tabella, non un filtro di questa.
   html('fatture-scadute-barra', barraScaduteHtml())
+  if (typeof disegnaTotaliElenco === 'function') disegnaTotaliElenco('fatture', 'fatture-table', vistaFattureScadute ? [] : righeTotaliVendite(list))   // 104
   if (vistaFattureScadute) {
     html('fatture-contatore', '')
     html('fatture-table', tabellaFattureScaduteHtml())
@@ -6173,7 +6435,9 @@ function renderFattureTable() {
     { sing: 'fattura', plur: 'fatture' },
     function (f) { return f.stato },
     { emessa: { sing: 'emessa', plur: 'emesse' }, bozza: { sing: 'bozza', plur: 'bozze' },
-      annullata: { sing: 'annullata', plur: 'annullate' } }))
+      annullata: { sing: 'annullata', plur: 'annullate' } }) +
+    (typeof avvisoApertePrimaHtml !== 'function' ? '' : avvisoApertePrimaHtml('fatture', (function () { var daF = leggiFiltroID('fatture').da; return daF ? fattureList.filter(function (f) {   // 104
+      return f.stato === 'emessa' && f.tipo !== 'nota_credito' && f.data_emissione && String(f.data_emissione) < daF && !venditaChiusa(f) }) : [] })())))
 
   if (!list.length) {
     var filtroAttivo = q || (stato && stato !== 'tutti') || anno || leggiFiltroID('fatture').attivo   // 85, 89·1
@@ -10495,13 +10759,15 @@ function renderAcquistiTable() {
   list = divisoA.list
   // 104 — le spese dell'App Cantieri, con gli stessi filtri. Contate a parte.
   var spese = speseDaMostrare({ stato: stato, anno: anno, cantiere: cantF, tipo: tipoF, testo: qv, id: fidA }).list
+  if (typeof disegnaTotaliElenco === 'function') disegnaTotaliElenco('acquisti', 'acquisti-table', righeTotaliAcquisti(list, spese, cantF))   // 104 — col cantiere scelto, solo la sua parte
 
   // 59·B — quante, e come stanno a pagamento.
   html('acquisti-contatore', rigaChiusiNascostiHtml(divisoA.nascosti) + contatoreElencoHtml(divisoA.universo, list,
     { sing: 'fattura d\'acquisto', plur: 'fatture d\'acquisto' },
     function (a) { return a.stato_pagamento || 'aperto' },
     { aperto: { sing: 'da pagare', plur: 'da pagare' }, parziale: { sing: 'pagata in parte', plur: 'pagate in parte' },
-      pagato: { sing: 'pagata', plur: 'pagate' } }) + speseContatoreHtml(spese))
+      pagato: { sing: 'pagata', plur: 'pagate' } }) + speseContatoreHtml(spese) +
+    (typeof avvisoApertePrimaHtml !== 'function' ? '' : avvisoApertePrimaHtml('acquisti', acquistiList.filter(function (a) { return a.stato_pagamento !== 'pagato' && a.data && fidA.da && String(a.data) < fidA.da }))))   // 104
 
   if (!list.length && !spese.length) {
     var attivo = qv || (stato && stato !== 'tutti') || anno || cantF || tipoF || fidA.attivo   // 85, 89·1
@@ -12183,6 +12449,7 @@ function renderMovimentiPropri() {
       date: { documento: m.data, registrazione: m.created_at }, pagamenti: pag })
   })
   var data = trovati.slice(0, PROPRI_MASSIMO)
+  if (typeof disegnaTotaliElenco === 'function') disegnaTotaliElenco('propri', 'inserimento-recenti', righeTotaliPropri(trovati))   // 104 — su tutti quelli trovati, non solo i mostrati
   var nTot = propriTutti.length
   html('inserimento-contatore', '<div class="elenco-contatore-riga">' + (cercando
     ? '<strong>' + trovati.length + '</strong> ' + (trovati.length === 1 ? 'trovato' : 'trovati') + ' su ' + nTot + ' movimenti propri' +
@@ -19249,6 +19516,7 @@ function mappaQuoteDa(righe) {
     if (!mappa[k]) mappa[k] = []
     mappa[k].push({
       cantiere_id: c.cantiere_id || null,
+      conto_id: c.conto_id || null,   // 104 — per i totali per conto
       // La quota e' imponibile + IVA, cioe' la fetta di TOTALE assegnata a
       // questa riga. Non l'imponibile da solo: Umberto non e' soggetto IVA,
       // e per lui l'IVA sugli acquisti e' costo a tutti gli effetti.
@@ -19265,7 +19533,7 @@ async function loadMappaCantieri(force) {
   await richiediAccesso('loadMappaCantieri')   // 52·B1: mai un elenco vuoto per silenzio
   await loadCantiereDocumenti(force)
   try {
-    const { data, error } = await leggiClassificazioniConOrigine('origine_tipo, origine_id, cantiere_id, imponibile, iva_importo')   // 96
+    const { data, error } = await leggiClassificazioniConOrigine('origine_tipo, origine_id, cantiere_id, conto_id, imponibile, iva_importo')   // 96
     if (error) throw error
     classCantiereMap = mappaQuoteDa(data)   // 88 — la stessa mappa di «Da classificare»
   } catch (e) {
@@ -23210,7 +23478,7 @@ function mostraFattureScadute(si) {
 
 function tabellaFattureScaduteHtml() {
   var oggi = oggiISO()
-  var pf = predicatoFiltriFatture()   // 85 — la vista «Scadute» rispetta la stessa ricerca
+  var pf = predicatoFiltriFatture(true)   // 85 — la vista «Scadute» rispetta la stessa ricerca (104: non il periodo)
   var list = fattureScadute(oggi).filter(function (f) { return !pf || pf(f) })
   if (!list.length) {
     return '<div class="dim" style="padding:10px 0">✅ Nessuna fattura scaduta: non c\'è niente da sollecitare.</div>'
