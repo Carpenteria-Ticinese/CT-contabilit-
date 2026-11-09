@@ -5368,6 +5368,7 @@ async function loadFattureList() {
     // 61g — i solleciti: senza, la vista «Scadute» direbbe «nessun sollecito»
     // su fatture gia' sollecitate tre volte. Meglio un elenco che lo dichiara.
     try { await loadSolleciti(true) } catch (eS) { contorno.push('solleciti non letti: ' + (eS.message || eS)) }
+    await loadRate(true)   // 104 — con un piano rateale la fattura scade per rata (se non si leggono: la scadenza della fattura)
     try { await loadImpostazioniConta() } catch (_) { /* i testi hanno un ripiego */ }
     try { await loadAllegati() } catch (eA) { contorno.push('allegati: ' + (eA.message || eA)) }
     renderFattureTable()
@@ -7340,12 +7341,12 @@ function computeCurrentTotale() {
 // Vale solo sulla fattura di una rata di tipo Saldo, se sul contratto è scritto il totale dell'offerta arrotondato:
 // vuoto vuol dire offerta vecchia o nessuna offerta, e il saldo non si tocca. Le fatture già emesse non cambiano.
 var editorSaldo = null   // { offerta, emesse, target } oppure { fisso } su una fattura che ha già la sua riga
-var SOGLIA_ARROTONDAMENTO = 2   // oltre, non è un arrotondamento: si avvisa e non si scrive niente
+// Solo per difetto, meno di un franco: fra −0.99 e 0, come vuole il database (CONT_104, 14). Fuori, si avvisa e non si scrive niente.
 function arrotondamentoSaldo(totale) {
   if (!editorSaldo) return 0
   if (editorSaldo.fisso != null) return editorSaldo.fisso
   var d = round2(editorSaldo.target - totale)
-  return Math.abs(d) < SOGLIA_ARROTONDAMENTO ? d : 0
+  return (d <= 0 && d >= -0.99) ? d : 0
 }
 function testoArrotondamento(n) {
   return (n < 0 ? '\u2212' : '') + fmtNumIt(Math.abs(n))
@@ -9893,7 +9894,7 @@ function renderDetailActions(f) {
       // 103 — solo il titolare (titolareCache è letto da viewFattura). Si chiede la password.
       if (f.tipo !== 'nota_credito' && titolareCache === true) {
         a += '<button class="btn-secondary" onclick="riapriPerCorreggere(\'' + esc(f.id) + '\')" ' +
-             'title="Solo il titolare, dopo la password. Stesso numero e stessa data di emissione. Solo senza pagamenti né note di credito; la versione di adesso va nello storico con il motivo.">' +
+             'title="Solo il titolare, dopo la password. Stesso numero e stessa data di emissione. I pagamenti restano; stralcio e sconto di cassa si tolgono prima. La versione di adesso va nello storico con il motivo.">' +
              '✏️ Modifica (riapri e correggi)</button>'
       }
       // 62c — annullare: il numero resta, il documento esce da tutte le somme.
@@ -17638,9 +17639,11 @@ function calcolaScadenze(righe, oggi, preavviso) {
     var rate = rateDi(r.tabella_origine, r.id_origine)
     var nonPagate = rate.filter(function (x) { return !x.pagamento_id })
     if (nonPagate.length) {
-      var pross = nonPagate.slice().sort(function (x, y) {
+      // 104 — solo le rate con una data scadono; se le altre hanno solo il testo, la riga va fra quelle senza data.
+      var pross = nonPagate.filter(function (x) { return !!x.data_prevista }).sort(function (x, y) {
         return String(x.data_prevista).localeCompare(String(y.data_prevista))
       })[0]
+      if (!pross) { b.senzaData.righe.push(r); b.senzaData.somma += imp; continue }
       // Si usa una COPIA della riga: la vista non va modificata, la stanno
       // leggendo anche il cruscotto e i cantieri.
       var rr = Object.assign({}, r, {
@@ -20958,7 +20961,7 @@ async function loadRate(force) {
   await richiediAccesso('loadRate')   // 52·B1: mai un elenco vuoto per silenzio
   try {
     const { data, error } = await leggiTutto(function () { return sb.from('tm_conta_rate')
-      .select('id, tabella_origine, id_origine, numero_rata, data_prevista, importo_previsto, pagamento_id, note')
+      .select('id, tabella_origine, id_origine, numero_rata, data_prevista, importo_previsto, pagamento_id, note, scadenza_testo')   // 104
       .eq('azienda_id', currentAziendaId)
       .order('numero_rata').order('id') })
     if (error) throw error
@@ -21582,8 +21585,8 @@ async function apriRegistraPagamento(tabella, id, importoDoc, verso, nome, opzio
   if (sel) {
     sel.innerHTML = '<option value="">— nessuna rata —</option>' +
       nonPagate.map(function (r) {
-        return '<option value="' + esc(r.id) + '">Rata ' + r.numero_rata + ' del ' +
-               esc(fmtDate(r.data_prevista)) + ' — ' + esc(fmtNumIt(r.importo_previsto)) + ' CHF</option>'
+        return '<option value="' + esc(r.id) + '">Rata ' + r.numero_rata + ' — ' + esc(quandoRata(r)) +
+               ' — ' + esc(fmtNumIt(r.importo_previsto)) + ' CHF</option>'   // 104
       }).join('')
     if (opzioni && opzioni.rata) sel.value = opzioni.rata   // 94 — dalle Scadenze: la rata che si salda
   }
@@ -22170,12 +22173,27 @@ let docRateCorrente = null
 async function apriPianoRateale(tabella, id, importoDoc, nome) {
   docRateCorrente = { tabella: tabella, id: id, importo: safeNum(importoDoc) || 0, nome: nome || '' }
   await loadRate(true)
+  try { if (tabella === 'tm_conta_fatture') await loadContrattiCantiere() } catch (_) { /* la percentuale si fa sulla fattura */ }
   html('rate-riepilogo', rigaPag('Importo da ripartire', docRateCorrente.importo, true))
   setVal('rate-numero', '4')
   setVal('rate-prima', oggiISO())
   setVal('rate-ogni', 'mese')
   html('rate-banner', '')
-  generaAnteprimaRate()
+  // 104 — su una fattura: una rata per ogni riga, con importo e descrizione della riga (la fattura unica con tutte le rate).
+  html('rate-da-righe', tabella === 'tm_conta_fatture'
+    ? '<button type="button" class="btn-secondary" onclick="rateDaRigheFattura()">📋 Una rata per ogni riga della fattura</button>' : '')
+  // 104 — il piano che c'è si riapre com'è: le rate pagate restano ferme, le altre si cambiano.
+  var esistenti = rateDi(tabella, id)
+  if (esistenti.length) {
+    rateBozza = esistenti.map(function (r) {
+      return { numero: r.numero_rata, data: r.data_prevista || '', testo: r.scadenza_testo || '',
+               importo: safeNum(r.importo_previsto) || 0, nota: r.note || '', pagata: !!r.pagamento_id }
+    })
+    renderAnteprimaRate()
+  } else {
+    rateBozza = []
+    generaAnteprimaRate()
+  }
   var ov = el('rate-overlay')
   if (ov) ov.style.display = 'flex'
   registraAperturaModale('rate-overlay')
@@ -22191,21 +22209,25 @@ function chiudiPianoRateale() {
 // La ripartizione: importo / numero rate, a 2 decimali. La DIFFERENZA di
 // arrotondamento va sull'ULTIMA rata, cosi' la somma torna esatta.
 // 100 in 3 rate -> 33,33 + 33,33 + 33,34 = 100,00
+// 104 — le rate già pagate restano: si ripartisce solo quello che manca.
 function generaAnteprimaRate() {
   if (!docRateCorrente) return
   var n = parseInt(getVal('rate-numero'), 10)
   var prima = getVal('rate-prima')
   var ogni = getVal('rate-ogni') || 'mese'
-  if (!n || n < 1 || n > 60) { html('rate-anteprima', '<div class="cru-vuoto">Indica un numero di rate fra 1 e 60.</div>'); rateBozza = []; return }
-  if (!prima || !validaData(prima)) { html('rate-anteprima', '<div class="cru-vuoto">Indica la data della prima scadenza.</div>'); rateBozza = []; return }
+  if (!n || n < 1 || n > 60) { html('rate-anteprima', '<div class="cru-vuoto">Indica un numero di rate fra 1 e 60.</div>'); rateBozza = (rateBozza || []).filter(function (r) { return r.pagata }); return }
+  if (!prima || !validaData(prima)) { html('rate-anteprima', '<div class="cru-vuoto">Indica la data della prima scadenza.</div>'); rateBozza = (rateBozza || []).filter(function (r) { return r.pagata }); return }
 
-  var tot = docRateCorrente.importo
+  var pagate = (rateBozza || []).filter(function (r) { return r.pagata })
+  var giaPagato = pagate.reduce(function (t, r) { return t + (safeNum(r.importo) || 0) }, 0)
+  var tot = round2(docRateCorrente.importo - giaPagato)
   var base = Math.round((tot / n) * 100) / 100
-  rateBozza = []
+  var nuove = []
   for (var i = 0; i < n; i++) {
     var imp = (i === n - 1) ? Math.round((tot - base * (n - 1)) * 100) / 100 : base
-    rateBozza.push({ numero: i + 1, data: dataRata(prima, i, ogni), importo: imp })
+    nuove.push({ numero: pagate.length + i + 1, data: dataRata(prima, i, ogni), testo: '', importo: imp, nota: '', pagata: false })
   }
+  rateBozza = pagate.concat(nuove)
   renderAnteprimaRate()
 }
 
@@ -22230,40 +22252,109 @@ function dataRata(prima, indice, ogni) {
   return dataISO(d)
 }
 
+// 104 — una rata per ogni riga della fattura: importo e descrizione della riga, la data (o il testo) la scrive Umberto.
+async function rateDaRigheFattura() {
+  var d = docRateCorrente
+  if (!d || d.tabella !== 'tm_conta_fatture') return
+  if ((rateBozza || []).some(function (r) { return r.pagata })) {
+    html('rate-banner', '<div class="fase-banner warn"><span class="icon" aria-hidden="true">⚠️</span><div class="msg">Ci sono rate già pagate: restano come sono. Cambia a mano le altre.</div></div>')
+    return
+  }
+  try {
+    const { data, error } = await sb.from('tm_conta_fatture_righe').select('descrizione, tipo_riga, totale_riga, ordine')
+      .eq('fattura_id', d.id).order('ordine')
+    if (error) throw error
+    var voci = (data || []).filter(function (r) { return (r.tipo_riga || 'voce') === 'voce' && (safeNum(r.totale_riga) || 0) > 0 })
+    if (!voci.length) throw new Error('la fattura non ha righe con un importo')
+    rateBozza = voci.map(function (r, i) {
+      return { numero: i + 1, data: '', testo: '', importo: round2(safeNum(r.totale_riga) || 0), nota: String(r.descrizione || '').trim(), pagata: false }
+    })
+    html('rate-banner', '<div class="fase-banner ok"><span class="icon" aria-hidden="true">📋</span><div class="msg">' + voci.length +
+      ' rate, una per riga. Per ognuna scrivi la data, oppure il testo se la data non si sa ancora.</div></div>')
+    renderAnteprimaRate()
+  } catch (e) {
+    html('rate-banner', '<div class="fase-banner err"><span class="icon" aria-hidden="true">❌</span><div class="msg">Righe non lette: ' + esc(e.message || e) + '</div></div>')
+  }
+}
+
+// 104 — la percentuale di una rata: sul totale del contratto, se la fattura è di un cantiere con un contratto; se no sulla fattura.
+// Il contratto è IVA esclusa: si porta allo stesso modo della fattura (totale / imponibile), così 23.7 % resta 23.7 % anche con l'IVA.
+function basePercentualeRate(tabella, id, importoDoc) {
+  var doc = { base: safeNum(importoDoc) || 0, etichetta: 'della fattura' }
+  if (tabella !== 'tm_conta_fatture') return Object.assign(doc, { etichetta: 'del documento' })
+  var f = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura : null
+  if (!f || !f.cantiere_id || !contrattiCache) return doc
+  var c = contrattoDi(f.cantiere_id)
+  if (!c) return doc
+  var aggiornato = totaliContratto(c).aggiornato
+  var imp = safeNum(f.totale_imponibile) || 0
+  var fattore = imp > 0.005 ? (safeNum(f.totale) || 0) / imp : 1
+  return aggiornato > 0.005 ? { base: aggiornato * fattore, etichetta: 'del contratto' } : doc
+}
+function testoPercentualeRata(importo, base) {
+  if (!base || !base.base) return ''
+  return fmtNumIt(round2((safeNum(importo) || 0) / base.base * 100)) + ' % ' + base.etichetta
+}
+// Quando si paga: la data, o il testo finché la data non c'è.
+function quandoRata(r) {
+  var data = r.data_prevista || r.data
+  var testo = r.scadenza_testo != null ? r.scadenza_testo : r.testo
+  if (data) return fmtDate(data) + (testo ? ' (' + testo + ')' : '')
+  return (testo || '—') + ' — data da fissare'
+}
+
 function renderAnteprimaRate() {
   var somma = rateBozza.reduce(function (s, r) { return s + (safeNum(r.importo) || 0) }, 0)
   var tot = docRateCorrente ? docRateCorrente.importo : 0
   var torna = Math.abs(somma - tot) < 0.005
+  var base = docRateCorrente ? basePercentualeRate(docRateCorrente.tabella, docRateCorrente.id, tot) : null
+  var senzaScadenza = rateBozza.filter(function (r) { return !r.pagata && !r.data && !String(r.testo || '').trim() }).length
 
   var righe = rateBozza.map(function (r, i) {
+    if (r.pagata) {
+      return '<div class="rata-riga rata-pagata">' +
+        '<span class="rata-n">' + r.numero + '</span>' +
+        '<span class="rata-ferma">✅ pagata · ' + esc(quandoRata(r)) + ' · <strong>' + esc(fmtNumIt(r.importo)) + ' CHF</strong>' +
+          (r.nota ? ' · ' + esc(r.nota) : '') + '</span>' +
+        '<span class="rata-pct">' + esc(testoPercentualeRata(r.importo, base)) + '</span>' +
+      '</div>'
+    }
     return '<div class="rata-riga">' +
       '<span class="rata-n">' + r.numero + '</span>' +
-      '<input type="date" class="form-input rata-data" value="' + esc(r.data) + '" ' +
+      '<input type="date" class="form-input rata-data" value="' + esc(r.data || '') + '" ' +
         'onchange="modificaRata(' + i + ', \'data\', this.value)" aria-label="Data rata ' + r.numero + '" />' +
+      '<input type="text" class="form-input rata-testo" value="' + esc(r.testo || '') + '" placeholder="oppure: entro 10 gg prima dell’inizio dei lavori" ' +
+        'onchange="modificaRata(' + i + ', \'testo\', this.value)" aria-label="Scadenza scritta, rata ' + r.numero + '" />' +
       '<input type="text" inputmode="decimal" step="0.01" min="0" class="form-input rata-imp" value="' + esc(r.importo) + '" ' +
         'onchange="modificaRata(' + i + ', \'importo\', this.value)" aria-label="Importo rata ' + r.numero + '" />' +
       '<span class="rata-chf">CHF</span>' +
+      '<span class="rata-pct">' + esc(testoPercentualeRata(r.importo, base)) + '</span>' +
+      '<input type="text" class="form-input rata-nota" value="' + esc(r.nota || '') + '" placeholder="Descrizione (facoltativa)" ' +
+        'onchange="modificaRata(' + i + ', \'nota\', this.value)" aria-label="Descrizione rata ' + r.numero + '" />' +
     '</div>'
   }).join('')
 
   html('rate-anteprima', righe +
-    '<div class="rata-totale' + (torna ? ' ok' : ' err') + '">' +
+    '<div class="rata-totale' + (torna && !senzaScadenza ? ' ok' : ' err') + '">' +
       '<span>Totale delle rate</span>' +
       '<span>' + esc(fmtNumIt(somma)) + ' CHF</span>' +
       '<span>' + (torna
         ? '✅ corrisponde all\'importo del documento'
         : '❌ non corrisponde: mancano ' + esc(fmtNumIt(tot - somma)) + ' CHF') + '</span>' +
+      (senzaScadenza ? '<span>❌ ' + senzaScadenza + (senzaScadenza === 1 ? ' rata senza' : ' rate senza') + ' data né testo</span>' : '') +
     '</div>')
 
   // Qui bloccare e' giusto: un piano che non somma e' un piano sbagliato, e
   // salvarlo significherebbe portarsi dietro un errore in ogni scadenza futura.
   var btn = el('rate-salva-btn')
-  if (btn) btn.disabled = !torna || !rateBozza.length
+  if (btn) btn.disabled = !torna || !rateBozza.length || senzaScadenza > 0
 }
 
 function modificaRata(i, campo, valore) {
-  if (!rateBozza[i]) return
+  if (!rateBozza[i] || rateBozza[i].pagata) return
   if (campo === 'importo') rateBozza[i].importo = safeNum(valore) || 0
+  else if (campo === 'testo') rateBozza[i].testo = String(valore || '').trim()
+  else if (campo === 'nota') rateBozza[i].nota = String(valore || '').trim()
   else rateBozza[i].data = valore
   renderAnteprimaRate()
 }
@@ -22277,14 +22368,31 @@ async function salvaPianoRateale() {
     if (Math.abs(somma - d.importo) > 0.005) {
       throw new Error('Le rate sommano ' + fmtNumIt(somma) + ' CHF invece di ' + fmtNumIt(d.importo) + ' CHF.')
     }
-    for (var i = 0; i < rateBozza.length; i++) {
-      if (!validaData(rateBozza[i].data)) throw new Error('La data della rata ' + rateBozza[i].numero + ' non è valida.')
-      if ((safeNum(rateBozza[i].importo) || 0) <= 0) throw new Error('L\'importo della rata ' + rateBozza[i].numero + ' deve essere maggiore di zero.')
+    var daScrivere = rateBozza.filter(function (r) { return !r.pagata })
+    for (var i = 0; i < daScrivere.length; i++) {
+      var r0 = daScrivere[i]
+      if (r0.data && !validaData(r0.data)) throw new Error('La data della rata ' + r0.numero + ' non è valida.')
+      if (!r0.data && !String(r0.testo || '').trim()) throw new Error('La rata ' + r0.numero + ' non ha né la data né il testo della scadenza.')
+      if ((safeNum(r0.importo) || 0) <= 0) throw new Error('L\'importo della rata ' + r0.numero + ' deve essere maggiore di zero.')
     }
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvataggio…' }
 
     // Si sostituisce il piano: si tolgono solo le rate NON pagate, quelle gia'
     // saldate restano perche' sono collegate a un pagamento vero.
+    // 104 — i numeri delle pagate restano; le altre prendono i numeri liberi, nell'ordine in cui si vedono.
+    var usati = {}
+    rateBozza.forEach(function (r) { if (r.pagata) usati[r.numero] = true })
+    var prossimo = 1
+    var righe = daScrivere.map(function (r) {
+      while (usati[prossimo]) prossimo++
+      usati[prossimo] = true
+      return {
+        azienda_id: currentAziendaId,
+        tabella_origine: d.tabella, id_origine: d.id,
+        numero_rata: prossimo, data_prevista: r.data || null, importo_previsto: r.importo,
+        scadenza_testo: String(r.testo || '').trim() || null, note: String(r.nota || '').trim() || null
+      }
+    })
     const { error: eDel } = await sb.from('tm_conta_rate')
       .delete()
       .eq('tabella_origine', d.tabella).eq('id_origine', d.id)
@@ -22292,14 +22400,10 @@ async function salvaPianoRateale() {
       .is('pagamento_id', null)
     if (eDel) throw eDel
 
-    const { error } = await sb.from('tm_conta_rate').insert(rateBozza.map(function (r) {
-      return {
-        azienda_id: currentAziendaId,
-        tabella_origine: d.tabella, id_origine: d.id,
-        numero_rata: r.numero, data_prevista: r.data, importo_previsto: r.importo
-      }
-    })).select()
-    if (error) throw error
+    if (righe.length) {
+      const { error } = await sb.from('tm_conta_rate').insert(righe).select()
+      if (error) throw error
+    }
 
     invalidaCachePagamenti()
     chiudiPianoRateale()
@@ -22318,17 +22422,29 @@ function elencoRateHtml(tabella, id) {
   var lista = rateDi(tabella, id)
   if (!lista.length) return ''
   var pag = pagamentiCache || []
+  var oggi = oggiISO()
+  var importoDoc = (currentDetailFattura && currentDetailFattura.id === id) ? currentDetailFattura.totale : lista.reduce(function (t, r) { return t + (safeNum(r.importo_previsto) || 0) }, 0)
+  var base = basePercentualeRate(tabella, id, importoDoc)
+  var aperte = lista.filter(function (r) { return !r.pagamento_id })
+  var prossima = aperte[0] || null   // in ordine di numero: è la prossima da incassare
+  var pagate = lista.length - aperte.length
   return '<div class="rate-elenco">' + lista.map(function (r) {
     var p = r.pagamento_id ? pag.filter(function (x) { return x.id === r.pagamento_id })[0] : null
-    return '<div class="rata-elenco-riga">' +
+    var scaduta = !p && r.data_prevista && r.data_prevista < oggi
+    return '<div class="rata-elenco-riga' + (scaduta ? ' rata-scaduta' : '') + '">' +
       '<span class="rata-n">' + r.numero_rata + '</span>' +
-      '<span class="rata-data-txt">' + esc(fmtDate(r.data_prevista)) + '</span>' +
+      '<span class="rata-data-txt">' + esc(quandoRata(r)) + '</span>' +
       '<span class="rata-imp-txt">' + esc(fmtNumIt(r.importo_previsto)) + ' CHF</span>' +
+      '<span class="rata-pct">' + esc(testoPercentualeRata(r.importo_previsto, base)) + '</span>' +
       '<span class="rata-stato">' + (p
         ? '✅ pagata il ' + esc(fmtDate(p.data))
-        : '⏳ da pagare') + '</span>' +
+        : scaduta ? '🔴 scaduta e non pagata' : '⏳ da pagare') + '</span>' +
+      (r.note ? '<span class="rata-nota-txt">' + esc(r.note) + '</span>' : '') +
     '</div>'
-  }).join('') + '</div>'
+  }).join('') +
+  '<div class="rata-prossima">' + pagate + ' di ' + lista.length + (lista.length === 1 ? ' rata pagata' : ' rate pagate') +
+    (prossima ? ' · <strong>Prossima rata: n. ' + prossima.numero_rata + ', ' + esc(fmtNumIt(prossima.importo_previsto)) + ' CHF, ' + esc(quandoRata(prossima)) + '</strong>' : ' · tutte pagate') +
+  '</div></div>'
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -22618,9 +22734,27 @@ function prossimoLivelloSollecito(fatturaId) {
 
 // ── Il ritardo e il nuovo termine ───────────────────────────────────────────
 // Giorni di ritardo: dalla scadenza a oggi. Zero o meno = non e' in ritardo.
+// 104 — RATE DENTRO UNA FATTURA. Con un piano rateale la fattura è aperta, non scaduta: scade la RATA con la data passata e non pagata.
+// Una rata con la scadenza scritta come testo («entro 10 gg prima dell'inizio dei lavori») non scade finché non ha una data.
+// Senza rate lette (cache non riuscita) vale la scadenza della fattura, come prima.
+function scadenzaFattura(f) {
+  if (!f) return null
+  if (cacheOk('rate')) {
+    var rate = rateDi('tm_conta_fatture', f.id)
+    if (rate.length) {
+      var aperte = rate.filter(function (r) { return !r.pagamento_id && r.data_prevista })
+        .sort(function (x, y) { return String(x.data_prevista).localeCompare(String(y.data_prevista)) })
+      return aperte.length ? aperte[0].data_prevista : null
+    }
+  }
+  return f.data_scadenza || null
+}
+function haRate(f) { return !!f && cacheOk('rate') && rateDi('tm_conta_fatture', f.id).length > 0 }
+
 function giorniRitardo(f, oggi) {
-  if (!f || !f.data_scadenza) return null
-  var g = diffGiorni(oggi || oggiISO(), f.data_scadenza)
+  var sc = scadenzaFattura(f)
+  if (!sc) return null
+  var g = diffGiorni(oggi || oggiISO(), sc)
   return (g != null && g > 0) ? g : 0
 }
 
@@ -22639,7 +22773,8 @@ function fattureScadute(oggi) {
   oggi = oggi || oggiISO()
   return (fattureList || []).filter(function (f) {
     if (f.stato !== 'emessa' || f.tipo === 'nota_credito') return false
-    if (!f.data_scadenza || f.data_scadenza >= oggi) return false
+    var sc = scadenzaFattura(f)   // 104 — con le rate: quella della rata più vecchia non pagata
+    if (!sc || sc >= oggi) return false
     return residuoDocumento('tm_conta_fatture', f.id, f.totale) > 0.005
   }).sort(function (a, b) {
     // 95 — prima la data che si aspetta da piu' tempo: il termine del
@@ -22675,7 +22810,7 @@ function statoSollecitoFattura(fatturaId, oggi) {
 
 // La data che si aspetta: serve solo a ORDINARE (il ritardo resta sulla scadenza).
 function dataAttesaFattura(f, oggi) {
-  return statoSollecitoFattura(f.id, oggi).termine || f.data_scadenza
+  return statoSollecitoFattura(f.id, oggi).termine || scadenzaFattura(f)
 }
 
 // Il termine passato: cosa viene dopo. Niente, se c'e' ancora un sollecito da spedire.
@@ -22690,7 +22825,7 @@ function testoTermineScaduto(st) {
 function testoScadutaIl(f, oggi) {
   var gg = giorniRitardo(f, oggi)
   if (!gg) return ''
-  return 'scaduta il ' + fmtDate(f.data_scadenza) + ' (' + (gg === 1 ? '1 giorno fa' : gg + ' gg fa') + ')'
+  return (haRate(f) ? 'rata scaduta il ' : 'scaduta il ') + fmtDate(scadenzaFattura(f)) + ' (' + (gg === 1 ? '1 giorno fa' : gg + ' gg fa') + ')'
 }
 
 // I solleciti in fila, e in fondo cosa viene dopo. Il nuovo termine si scrive

@@ -2875,6 +2875,16 @@ tr.riga-fuori-cantiere td {
 .rata-data { flex: 1; min-width: 130px; }
 .rata-imp  { width: 110px; text-align: right; }
 .rata-chf  { color: var(--text2); font-size: 12px; }
+/* 104 — la scadenza scritta, la descrizione, la percentuale: la riga va a capo al telefono */
+.rata-riga { flex-wrap: wrap; border-bottom: 1px solid var(--border); padding: 8px 0; }
+.rata-testo { flex: 2 1 200px; min-width: 0; }
+.rata-nota  { flex: 1 1 100%; min-width: 0; }
+.rata-pct   { color: var(--text2); font-size: 12px; min-width: 80px; }
+.rata-ferma { flex: 1; font-size: 13px; }
+.rata-pagata { background: var(--ok-bg); }
+.rata-elenco-riga.rata-scaduta { background: var(--err-bg); }
+.rata-nota-txt { flex: 1 1 100%; color: var(--text2); font-size: 12px; }
+.rata-prossima { margin-top: 8px; font-size: 13px; }
 
 /* Il totale delle rate: verde se torna, rosso se no. Con la parola scritta,
    non il solo colore: un piano che non somma e un piano sbagliato. */
