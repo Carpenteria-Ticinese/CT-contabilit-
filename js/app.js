@@ -3853,10 +3853,22 @@ async function startEditMovimento(id) {
     var sbtn = el('inserimento-submit-btn'); if (sbtn) sbtn.textContent = '💾 Salva modifiche'
     html('inserimento-banner', '')
     moduloPulito('movimento')   // 75·5 — aperto in modifica, niente ancora cambiato
+    // 104.1 — «✏️ Modifica» dall'elenco qui sotto non faceva niente a vista (stessa causa della Rubrica dei conti):
+    // il modulo si riempiva in cima alla pagina, fuori dallo schermo. Ora si porta lì e il cursore va nella descrizione.
+    portaAlModulo('inserimento-card-title', 'f-descrizione')
   } catch (e) {
     showPage('inserimento')
     showInserimentoBanner('err', 'Impossibile aprire il movimento', e.message)
   }
+}
+
+// 104.1 — Porta il modulo davanti agli occhi (la cima del riquadro sotto la barra) e mette il cursore nel campo.
+// Serve quando il tasto sta più in basso del modulo che riempie: senza, il clic sembra non fare niente.
+function portaAlModulo(idTesta, idCampo) {
+  var t = el(idTesta), c = el(idCampo)
+  var riquadro = (t && t.closest) ? (t.closest('.card') || t) : t
+  if (riquadro && typeof riquadro.scrollIntoView === 'function') { try { riquadro.scrollIntoView({ block: 'start' }) } catch (_) { riquadro.scrollIntoView() } }
+  if (c && typeof c.focus === 'function') { try { c.focus({ preventScroll: true }) } catch (_) { c.focus() } }
 }
 
 function onAnnullaClick() {
@@ -4849,6 +4861,15 @@ function setPeriodoModo(modo) {
   if (el('exp-mese-group'))      el('exp-mese-group').style.display      = (modo === 'mese') ? 'block' : 'none'
   if (modo === 'custom') updateExportPreview()
   else applicaPeriodoRapido()
+}
+
+// 104.1 — «✏️ Personalizzato» (Situazione ed Export): il cursore va nel campo «Da», così si vede dove scrivere.
+// Solo dal tasto: quando si cambia una data a mano, il cursore resta dov'è.
+function cursoreIn(id) {
+  var c = el(id)
+  if (!c || typeof c.focus !== 'function') return
+  try { c.scrollIntoView({ block: 'center' }) } catch (_) { /* niente */ }
+  try { c.focus({ preventScroll: true }) } catch (_) { c.focus() }
 }
 
 function applicaPeriodoRapido() {
@@ -6044,29 +6065,53 @@ var GRUPPI_ELENCO = {
 var gruppoElenco = { acquisti: '', propri: '', fatture: '' }
 var gruppiAperti = {}
 
+// 104.1 (Umberto, 10.11.2026): al posto di «Anno scorso» l'anno vero, «2026», «2025»… 'anno' = l'anno in corso
+// (il periodo di base); 'anno-2025' = un anno intero qualsiasi.
 function intervalloPeriodo(tipo, oggi) {
   oggi = oggi || oggiISO()
   var y = +oggi.slice(0, 4), m = oggi.slice(5, 7)
   if (tipo === 'anno') return { da: y + '-01-01', a: y + '-12-31' }
-  if (tipo === 'annoScorso') return { da: (y - 1) + '-01-01', a: (y - 1) + '-12-31' }
+  var an = /^anno-(\d{4})$/.exec(String(tipo || ''))
+  if (an) return { da: an[1] + '-01-01', a: an[1] + '-12-31' }
   if (tipo === 'mese') {
     var ultimo = new Date(y, +m, 0).getDate()
     return { da: y + '-' + m + '-01', a: y + '-' + m + '-' + (ultimo < 10 ? '0' : '') + ultimo }
   }
   return { da: '', a: '' }
 }
+// Gli anni dei tasti: l'anno in corso sempre, poi gli anni prima SOLO se l'elenco ha un documento con quella data.
+// Dai dati che la pagina ha già letto: nessuna lettura in più. Un anno che viene (data sbagliata, scadenza) non fa tasto.
+function anniConDati(k, oggi) {
+  var y = +String(oggi || oggiISO()).slice(0, 4), visti = {}
+  visti[y] = true
+  function metti(d) { var a = +String(d || '').slice(0, 4); if (a >= 1990 && a < y) visti[a] = true }
+  function da(lista, campo) { (lista || []).forEach(function (x) { if (x) metti(x[campo]) }) }
+  if (k === 'fatture') da(typeof fattureList !== 'undefined' ? fattureList : [], 'data_emissione')
+  if (k === 'acquisti') { da(typeof acquistiList !== 'undefined' ? acquistiList : [], 'data'); da(typeof speseElenco !== 'undefined' ? speseElenco : [], 'data') }
+  if (k === 'propri') da(typeof propriTutti !== 'undefined' ? propriTutti : [], 'data')
+  return Object.keys(visti).map(Number).sort(function (a, b) { return b - a })
+}
+function tipoAnno(anno, oggi) { return anno === +String(oggi || oggiISO()).slice(0, 4) ? 'anno' : 'anno-' + anno }
 function periodoAttivo(k) {
   var e = function (x) { var n = el('fid-' + k + '-' + x); return n ? String(n.value || '') : '' }
   var da = e('da'), a = e('a')
   if (!da && !a) return 'tutto'
-  var tipi = ['anno', 'annoScorso', 'mese']
-  for (var i = 0; i < tipi.length; i++) { var r = intervalloPeriodo(tipi[i]); if (r.da === da && r.a === a) return tipi[i] }
+  var r = intervalloPeriodo('mese')
+  if (r.da === da && r.a === a) return 'mese'
+  // Un anno intero è un tasto anche se l'elenco non ha (più) dati di quell'anno: il tasto scelto resta acceso.
+  var an = /^(\d{4})-01-01$/.exec(da)
+  if (an && a === an[1] + '-12-31') return tipoAnno(+an[1])
   return 'intervallo'
 }
 function tastiPeriodoHtml(k) {
   var att = periodoAttivo(k)
+  var anni = anniConDati(k)
+  // L'anno scelto a mano (fuori dai dati) ha il suo tasto acceso: si vede cosa si sta guardando.
+  var scelto = /^anno-(\d{4})$/.exec(att)
+  if (scelto && anni.indexOf(+scelto[1]) === -1) anni = anni.concat([+scelto[1]]).sort(function (a, b) { return b - a })
   return '<span class="periodo-titolo">Periodo:</span>' +
-    [['anno', '📅 Quest\'anno'], ['annoScorso', '📅 Anno scorso'], ['mese', '📅 Questo mese'], ['intervallo', '📅 Da… a…'], ['tutto', '♾️ Tutto']].map(function (p) {
+    anni.map(function (y) { return [tipoAnno(y), '📅 ' + y] })
+    .concat([['mese', '📅 Questo mese'], ['intervallo', '📅 Da… a…'], ['tutto', '♾️ Tutto']]).map(function (p) {
       return '<button type="button" class="btn-secondary periodo-tasto' + (att === p[0] ? ' attivo' : '') + '" aria-pressed="' + (att === p[0]) + '"' +
         ' onclick="impostaPeriodo(\'' + k + '\', \'' + p[0] + '\')">' + p[1] + '</button>'
     }).join('')
@@ -8716,7 +8761,21 @@ async function maybeSaveNewIbanToRubrica() {
   } catch (e) { console.warn('Salvataggio conto in rubrica:', e.message) }
 }
 
-// ── Rubrica dei conti in ⚙️ Impostazioni ditta ───────────────────────────────
+// ── Rubrica dei conti: la pagina 🏦 Conti della ditta (104.1; prima in fondo a ⚙️ Impostazioni ditta) ──
+// Stesse funzioni e stessi permessi di prima: la Contabilità intera è solo del titolare (CONT_103).
+async function initContiPage() {
+  if (!currentAziendaId) { showFattureBanner('iban-banner', 'err', 'Azienda non trovata: rieffettua il login.'); return }
+  closeIbanForm()
+  html('iban-list', loadingRow('Caricamento dei conti…'))
+  await loadIbanRubrica(true)
+  await renderIbanRubrica()
+}
+// Il tasto «🏦 Apri Conti della ditta» delle Impostazioni: stessa strada del menu, così anche Indietro torna alle Impostazioni.
+function apriContiDitta() {
+  showPage('conti')
+  initContiPage()
+  try { window.scrollTo(0, 0) } catch (_) { /* niente */ }
+}
 function rigaContoHtml(e) {
   var aperte = commesseApertePerConto(e.id)
   var commesse = aperte.map(function (a) {
@@ -8810,7 +8869,18 @@ function riempiFormConto(e) {
   html('iban-form-avviso', '')
   html('iban-form-qr-avviso', '')
   html('iban-banner', '')
+  if (el('iban-form-titolo')) el('iban-form-titolo').textContent = e ? '✏️ Modifica del conto «' + (e.nome || '') + '»' : '➕ Nuovo conto'   // 104.1
   var f = el('iban-form'); if (f) f.style.display = 'block'
+  mostraModuloConto()
+}
+// 104.1 — «Modifica» non faceva niente (Umberto, 10.11.2026): il modulo si apriva in cima alla pagina, fuori dallo schermo,
+// sopra il conto cliccato più in basso. Ora si scorre fino al modulo e il cursore va nel primo campo.
+function mostraModuloConto() {
+  var f = el('iban-form')
+  if (!f || typeof f.scrollIntoView !== 'function') return
+  try { f.scrollIntoView({ block: 'start', behavior: 'auto' }) } catch (_) { f.scrollIntoView() }
+  var primo = el('iban-form-etichetta')
+  if (primo && typeof primo.focus === 'function') { try { primo.focus({ preventScroll: true }) } catch (_) { primo.focus() } }
 }
 function openIbanForm() {
   editingIbanId = null
@@ -9031,10 +9101,10 @@ async function mostraRegistroLetture() {
     box.innerHTML = '<div class="pag-nota conto-avviso">❌ Non riesco a leggere il registro: ' + esc(e.message || e) + '</div>'
   }
 }
-// Dall'avviso: si apre Impostazioni ditta e si va al registro.
+// Dall'avviso: si apre Conti della ditta e si va al registro.
 async function apriRegistroLetture() {
-  showPage('impostazioni')
-  try { await initImpostazioniPage() } catch (_) { /* la pagina si apre lo stesso: il registro si legge a parte */ }
+  showPage('conti')   // 104.1
+  try { await initContiPage() } catch (_) { /* la pagina si apre lo stesso: il registro si legge a parte */ }
   await mostraRegistroLetture()
   var b = el('conti-registro')
   if (b && b.scrollIntoView) b.scrollIntoView({ block: 'center' })
@@ -11905,9 +11975,10 @@ async function initImpostazioniPage() {
     aziendaInfo = data || {}
     fillImpostazioniForm(aziendaInfo)
     html('impostazioni-banner', '')
-    closeIbanForm()
+    // 104.1 — la Rubrica dei conti ha la sua pagina (🏦 Conti della ditta): qui solo il nome del preferito accanto all'IBAN.
     await loadIbanRubrica(true)
-    renderIbanRubrica()
+    var prefImp = contoPrincipale()
+    html('imp-iban-nome', prefImp ? '⭐ ' + esc(prefImp.nome) : '')
     var missing = impostazioniMancanti(aziendaInfo)
     if (missing.length) {
       showFattureBanner('impostazioni-banner', 'warn', 'Per fatture complete mancano: ' + missing.join(', ') + '. Puoi compilarli e salvare.')
@@ -19852,11 +19923,21 @@ function apriAnagrafiche(frammento, confermaSeStessaScheda) {
   var url = URL_ANAGRAFICHE + frammento
   var w = null
   try { w = window.open(url, NOME_FINESTRA_ANAGRAFICHE) } catch (e) { w = null }
-  if (w) { anagraficheAperta = true; return true }
+  if (w) { anagraficheAperta = true; try { w.focus() } catch (_) { /* niente */ } controllaAnagraficheDavanti(url); return true }
   if (confermaSeStessaScheda && !window.confirm(
       'Il browser ha bloccato la finestra nuova.\n\nSe vai ad Anagrafiche in questa scheda, quello che stai scrivendo e non hai salvato va perso.\n\nVuoi andare lo stesso?')) return false
   window.location.href = url      // finestra bloccata dal browser: stessa scheda
   return false
+}
+
+// 104.1 — Mai un clic che non fa niente (stessa regola dell'Hub, 9.11.2026). Se Anagrafiche era già aperta in
+// un'altra finestra o come app installata, il browser non la porta davanti e qui non cambia niente: «Modifica in
+// Anagrafiche» sembrava morto. Se dopo un attimo questa pagina è ancora davanti, Anagrafiche si apre in una scheda nuova.
+function controllaAnagraficheDavanti(url) {
+  setTimeout(function () {
+    if (typeof document === 'undefined' || document.visibilityState !== 'visible' || !document.hasFocus()) return   // Anagrafiche è davanti: a posto
+    try { var n = window.open(url, '_blank'); if (n) n.focus() } catch (_) { /* bloccata: resta la finestra di prima */ }
+  }, 700)
 }
 
 function apriCantiereInAnagrafiche() { apriAnagrafiche(frammentoCommessa(cantiereApertoId)) }
@@ -23885,6 +23966,7 @@ function caricaPagina(pageId) {
     if (pageId === 'scadenze')    { initScadenzePage() }
     if (pageId === 'cantieri')    { initCantieriPage() }
     if (pageId === 'impostazioni'){ initImpostazioniPage() }
+    if (pageId === 'conti')       { initContiPage() }   // 104.1
   } catch (e) { console.warn('Caricamento pagina ' + pageId + ':', e.message || e) }
 }
 
@@ -25979,7 +26061,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '104'
+var VERSIONE = '104.1'
 
 function controllaVersionePagina() {
   try {
@@ -26001,6 +26083,43 @@ function controllaVersionePagina() {
       '</div></div>'
   } catch (e) { console.warn('Controllo versione:', e.message || e) }
 }
+
+// ── 104.1 · La fascia «🔄 Nuova versione: aggiorna» (aggiorna.js) ──────────────
+// aggiorna.js è lo stesso file in tutte le app e non si tocca. Qui solo una cosa:
+// con dei dati non salvati il tasto prima chiede, con la finestra dell'app
+// «Hai dati non salvati: salvali prima» (Resta qui / Aggiorna lo stesso).
+// Esc e Invio = Resta qui: la scelta prudente.
+function datiNonSalvati() {
+  try {
+    var m = (typeof modaleAperta === 'function') ? modaleAperta() : null
+    if (m && FINESTRE[m] && FINESTRE[m].protetta && modaleModificata(m)) return true
+    for (var k in MODULI_SALVA) {
+      if (!Object.prototype.hasOwnProperty.call(MODULI_SALVA, k)) continue
+      var c = el(MODULI_SALVA[k].contenitore)
+      if (c && c.offsetParent !== null && moduliIntatti[k] === false) return true
+    }
+    // Il modulo di un conto (Conti della ditta) ha il suo Salva: aperto = qualcosa a metà.
+    var f = el('iban-form')
+    if (f && f.style.display === 'block' && f.offsetParent !== null) return true
+  } catch (e) { console.warn('Dati non salvati:', e.message || e) }
+  return false
+}
+var aggiornaPassa = false
+document.addEventListener('click', function (ev) {
+  var tasto = ev.target && ev.target.closest ? ev.target.closest('#ct-aggiorna-tasto') : null
+  if (!tasto || aggiornaPassa || !datiNonSalvati()) return
+  ev.stopImmediatePropagation(); ev.preventDefault()
+  var risposta = chiediDueScelte('Hai dati non salvati: salvali prima',
+    'C\'è una versione nuova del programma. Se aggiorni adesso, quello che hai scritto e non hai salvato si perde.',
+    '🔄 Aggiorna lo stesso', '↩️ Resta qui')
+  var ovs = document.querySelectorAll('.modal-overlay'), resta = ovs.length ? ovs[ovs.length - 1].querySelector('button[data-risposta="no"]') : null
+  if (resta) resta.focus()
+  risposta.then(function (si) {
+    if (!si) return
+    aggiornaPassa = true
+    try { tasto.click() } finally { aggiornaPassa = false }
+  })
+}, true)
 
 function ricaricaPagina() {
   // location.reload() e location.reload(true) NON bastano: il secondo e'
@@ -27635,6 +27754,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (pageId === 'scadenze')    { initScadenzePage() }
       if (pageId === 'cantieri')    { initCantieriPage() }
       if (pageId === 'impostazioni'){ initImpostazioniPage() }
+      if (pageId === 'conti')       { initContiPage() }   // 104.1
       if (pageId === 'setup')       { /* già caricata */ }
     })
   })

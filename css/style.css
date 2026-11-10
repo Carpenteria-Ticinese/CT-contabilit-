@@ -1427,6 +1427,9 @@ textarea.cell-desc {
 .conto-storico { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .conto-storico-riga { padding: 4px 0; overflow-wrap: anywhere; }
 .conto-avviso { margin-bottom: 8px; }
+/* 104.1 — il modulo del conto dice cosa si sta facendo, e si porta sotto gli occhi (scroll-margin: non resta sotto la barra in alto) */
+.conto-form-titolo { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+#iban-form, #page-inserimento .card { scroll-margin-top: 70px; }
 .nota-riga { font-size: 14px; margin-top: 3px; overflow-wrap: anywhere; }
 .avviso-doppia { color: var(--warn); font-weight: 600; }
 .testo-pronti { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
