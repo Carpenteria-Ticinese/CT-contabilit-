@@ -3760,7 +3760,7 @@ tr.riga-bozza > td:first-child { box-shadow: inset 4px 0 0 #b45309; }
 .periodo-titolo { font-weight: 600; margin-right: 4px; }
 .periodo-tasto, .gruppo-tasto { min-height: 44px; padding: 8px 14px; font-size: 15px; }
 .btn-secondary.periodo-tasto.attivo, .btn-secondary.gruppo-tasto.attivo { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 700; }
-.totali-elenco { margin-top: 14px; padding: 12px 14px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.totali-elenco { margin-top: 14px; margin-bottom: 14px; padding: 12px 14px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .tot-titolo { font-weight: 700; margin-bottom: 6px; }
 .tot-riga { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; font-size: 14px; padding: 2px 0; }
 .tot-riga.forte { font-size: 16px; }

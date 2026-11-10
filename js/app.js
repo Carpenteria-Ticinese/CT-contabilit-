@@ -6286,7 +6286,7 @@ function totaliElencoHtml(k, righe) {
       ' onclick="scegliGruppoElenco(\'' + k + '\', \'' + g[0] + '\')">' + g[1] + '</button>'
   }).join('')
   var unaParte = (righe || []).some(function (r) { return r.parte })
-  var testa = '<div class="tot-titolo">📊 Totali dell\'elenco qui sopra</div>' +
+  var testa = '<div class="tot-titolo">📊 Totali dell\'elenco qui sotto</div>' +
     (unaParte && k === 'acquisti' && getVal('acquisti-filtro-cantiere') ? '<div class="dim tot-nota">Col cantiere scelto, di una fattura divisa conta solo la parte di quel cantiere.</div>' : '') +
     (Object.keys(s).length ? rigaSommeHtml(k, s, true) : '<div class="tot-riga forte"><span class="tot-conta">0 ' + esc(P.doc[1]) + '</span></div>') +
     (k === 'acquisti' && Object.keys(s).some(function (v) { return s[v].spese }) ? '<div class="dim tot-nota">Le spese dell\'App Cantieri contano come già pagate: non si pagano da qui.</div>' : '') +
@@ -6318,8 +6318,12 @@ async function scegliGruppoElenco(k, per) {
   if (typeof fn === 'function') fn()
 }
 function segnaGruppoAperto(id, aperto) { if (aperto) gruppiAperti[id] = true; else delete gruppiAperti[id] }
+// 104.2 (Umberto, 10.11.2026): i totali stanno SOPRA l'elenco, subito sotto i filtri, insieme a «Raggruppa per»:
+// si vedono senza scorrere fino in fondo. idRif (l'elenco) resta solo come ripiego, se la barra dei filtri manca.
 function disegnaTotaliElenco(k, idRif, righe) {
-  var b = boxDopo(idRif, k + '-totali')
+  // 104.2 — id proprio «totali-elenco-…»: con «fatture-totali» (v104, v104.1) il riquadro prendeva il posto dei totali
+  // del modulo della fattura (index.html, id="fatture-totali"): spariva il campo «Sconto sul documento» e il totale del modulo.
+  var b = boxDopo(el('fid-' + k) ? 'fid-' + k : idRif, 'totali-elenco-' + k)
   if (b) b.innerHTML = totaliElencoHtml(k, righe)
   aggiornaBarraPeriodo(k)
 }
@@ -26061,7 +26065,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '104.1'
+var VERSIONE = '104.2'
 
 function controllaVersionePagina() {
   try {
