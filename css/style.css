@@ -3778,3 +3778,18 @@ tr.riga-bozza > td:first-child { box-shadow: inset 4px 0 0 #b45309; }
 }
 .tot-gruppo[open] > summary { list-style: disclosure-open; }
 .tot-gruppo:not([open]) > .tot-gruppo-corpo { display: none; }
+
+/* 104.3 (Umberto e Direttore, 10.11.2026) — ogni voce del menu: il nome e, sotto, una riga che dice cosa c'è dentro.
+   Tutte e due almeno 14 px, anche al telefono e nel menu «☰». Le righe vanno a capo: il menu scorre. */
+#sidebar { width: 256px; }
+.nav-item { align-items: flex-start; font-size: 15px; line-height: 1.25; padding-top: 8px; padding-bottom: 8px; }
+.nav-item > span[aria-hidden="true"] { flex: 0 0 auto; width: 22px; text-align: center; }
+.nav-testo { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.nav-nome { font-size: 15px; font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
+.nav-sotto { font-size: 14px; font-weight: 400; color: var(--sidebar-text); opacity: .85; white-space: normal; overflow-wrap: anywhere; margin-top: 1px; }
+.nav-item.active .nav-sotto { color: #fff; opacity: .9; }
+.nav-item .nav-badge { align-self: center; }
+@media (max-width: 900px) {
+  #sidebar { width: 290px; }
+  .nav-item { padding-top: 11px; padding-bottom: 11px; }
+}

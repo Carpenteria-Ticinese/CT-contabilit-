@@ -833,7 +833,7 @@ async function loadCanalA() {
         note_cantiere: s.note || null,          // 104 — la nota dell'operaio: qui si legge e basta
         _destinazione: s.destinazione || null,  // 104 — dove va la spesa quando non c'è una commessa
         _tipo_spesa:  s.tipo_spesa || null,     // 104 — per il consiglio
-        _icon:        '📦',
+        _icon:        '👷',
         _match_field: 'desc',
         _match_value: s.descrizione || null
       })
@@ -1149,7 +1149,7 @@ async function loadDaClassificare() {
   var canalAMuto = errori.some(function (x) { return String(x).indexOf('Canale A') === 0 })
   html('movimenti-sorgenti',
     '<div class="grid-3" style="margin-bottom:20px">' +
-      statCard('📦 Spese', canalAMuto ? '?' : speseCnt,
+      statCard('👷 Spese', canalAMuto ? '?' : speseCnt,
                canalAMuto ? 'App Cantieri — non ha risposto' : 'App Cantieri — Canale A') +
       statCard('🔧 Regia', canalAMuto ? '?' : regiaCnt,
                canalAMuto ? 'App Cantieri — non ha risposto' : 'App Cantieri — Canale A') +
@@ -2043,7 +2043,7 @@ async function usaCifraNuova(j) {
   var m = classificatiList[j]
   if (!m) return
   if (m._class && m._class.stato === 'bloccato') {
-    alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «Export & consegna» per riclassificare.')
+    alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «🤝 Consegna al commercialista» per riclassificare.')
     return
   }
   return openSingleClassify(m, m._class, { cifraNuova: true })
@@ -3026,7 +3026,7 @@ async function openRiclassifica(idx) {
   var m = classificatiList[idx]
   if (!m) return
   if (m._class && m._class.stato === 'bloccato') {
-    alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «Export & consegna» per riclassificare.')
+    alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «🤝 Consegna al commercialista» per riclassificare.')
     return
   }
   return openSingleClassify(m, m._class)
@@ -3808,7 +3808,7 @@ function renderMovimentoAllegatoCorrente() {
 async function startEditMovimento(id) {
   if (!currentAziendaId) return
   if (isBloccato('proprio', id)) {
-    alert('Questo movimento è in un periodo consegnato (bloccato). Sbloccalo dalla pagina «Export & consegna» per modificarlo.')
+    alert('Questo movimento è in un periodo consegnato (bloccato). Sbloccalo dalla pagina «🤝 Consegna al commercialista» per modificarlo.')
     return
   }
   try {
@@ -3897,7 +3897,7 @@ async function deleteMovimento(id, descrizione) {
   var motivoNo = await motivoPerNonEliminare('tm_conta_movimenti_propri', id)   // 77·2
   if (motivoNo) { avvisoNonEliminabile('Questo movimento', motivoNo); return }
   if (isBloccato('proprio', id)) {
-    alert('Questo movimento è in un periodo consegnato (bloccato). Sbloccalo dalla pagina «Export & consegna» per eliminarlo.')
+    alert('Questo movimento è in un periodo consegnato (bloccato). Sbloccalo dalla pagina «🤝 Consegna al commercialista» per eliminarlo.')
     return
   }
   var ok = window.confirm('Sicuro? Non si può annullare.\n\nMovimento: «' + (descrizione || '') + '»\nVerrà eliminato insieme alla sua eventuale classificazione.')
@@ -4973,7 +4973,7 @@ async function updateExportPreview() {
     for (var i = 0; i < d.classificatiTutti.length; i++) if (d.classificatiTutti[i].cls.stato === 'bloccato') nBlocc++
 
     prev.innerHTML =
-      riga(sez.vendite,  '📤 Fatture di vendita', d.vendite.length,  t.vendite) +
+      riga(sez.vendite,  '📃 Fatture ai clienti', d.vendite.length,  t.vendite) +
       riga(sez.note,     '↩️ Note di credito',    d.note.length,     t.note) +
       riga(sez.acquisti, '📥 Fatture d\'acquisto', d.acquisti.length, t.acquisti) +
       riga(sez.spese,    '🧾 Spese e movimenti',  docsDistinti(d.spese), t.spese) +
@@ -5638,7 +5638,7 @@ var TIPI_ARCHIVIO = {
   nota:      { et: 'Nota di credito',    ic: '↩️' },
   acquisto:  { et: 'Fattura d\'acquisto', ic: '📥' },
   movimento: { et: 'Movimento manuale',  ic: '🏢' },
-  conferma:  { et: 'Conferma d\'ordine', ic: '📦' },
+  conferma:  { et: 'Conferma d\'ordine', ic: '🖊' },
   spesa:     { et: 'Spesa App Cantieri', ic: '🏗️' }   // 96bis
 }
 
@@ -5954,7 +5954,7 @@ async function apriSpesaDaArchivio(id) {
   var m = trova(classificatiTutti)
   if (m) {
     if (m._class && m._class.stato === 'bloccato') {
-      alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «Export & consegna» per riclassificare.')
+      alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «🤝 Consegna al commercialista» per riclassificare.')
       return
     }
     return openSingleClassify(m, m._class)
@@ -8482,7 +8482,7 @@ function ibanLeggibile(iban) {
 // I conti della ditta: tm_conta_rubrica_conti. La vecchia tm_conta_iban non si scrive più. Solo il titolare.
 // Lo storico delle assegnazioni si scrive solo con tm_conta_assegna_conto: un periodo si chiude, non si sovrascrive.
 // Nel database il tipo si chiama 'principale'; a schermo «conto preferito», la parola di Umberto.
-var TIPI_CONTO = { principale: '⭐ Preferito', uscite: '📤 Uscite', cantiere: '🏗️ Cantiere' }
+var TIPI_CONTO = { principale: '⭐ Preferito', uscite: '💸 Uscite', cantiere: '🏗️ Cantiere' }
 var contiAssegnazioni = []     // righe di tm_conta_rubrica_assegnazioni
 var ibanRubricaErrore = null   // lettura fallita: si dice a schermo, mai un elenco vuoto per silenzio
 var contoInAssegnazione = null
@@ -12195,7 +12195,7 @@ function showBucketInfo(evt) {
   }
 }
 
-// Tutto quello che serve alla pagina «Inserimento manuale» quando si apre.
+// Tutto quello che serve alla pagina «➕ Spese della ditta» quando si apre.
 // Prima non esisteva: la pagina si limitava a caricare gli ultimi movimenti,
 // e i menu che vanno riempiti da JavaScript restavano vuoti.
 async function initInserimentoPage() {
@@ -14234,7 +14234,7 @@ var ALIQUOTA_IVA_PREDEFINITA = 8.1   // l'aliquota normale svizzera, per il tota
 
 // 57 — stati della conferma d'ordine, nell'ordine in cui si susseguono.
 var STATI_CONFERMA = {
-  ordinato:         { et: 'Ordinato',            ic: '📦', cls: 'info' },
+  ordinato:         { et: 'Ordinato',            ic: '🛒', cls: 'info' },
   consegnato_parte: { et: 'Consegnato in parte', ic: '🚚', cls: 'warn' },
   consegnato:       { et: 'Consegnato',          ic: '✅',       cls: 'ok'   },
   fatturato:        { et: 'Fatturato',           ic: '🧾', cls: 'gold' }
@@ -14247,7 +14247,7 @@ var STATI_OFFERTA = {
   rifiutata:   { et: 'Rifiutata',   ic: '✖️', cls: 'err'  }
 }
 var TIPI_DOCUMENTO_OFF = {
-  conferma_ordine: { et: 'Conferma d’ordine', etPl: 'Conferme d’ordine', ic: '📦',
+  conferma_ordine: { et: 'Conferma d’ordine', etPl: 'Conferme d’ordine', ic: '🖊',
                      stati: STATI_CONFERMA, statoIniziale: 'ordinato' },
   offerta:         { et: 'Offerta', etPl: 'Offerte', ic: '📋',
                      stati: STATI_OFFERTA, statoIniziale: 'da_valutare' }
@@ -16165,7 +16165,7 @@ function renderContattiList() {
              ' onkeydown="if(event.key===\'Enter\'){apriContatto(\'' + c.id + '\')}">' +
              '<div class="contatto-main">' +
                '<div class="contatto-nome">' + esc(nome) +
-                 (c.attivo === false ? ' ' + badge('warn', '📦 Archiviato') : '') + '</div>' +
+                 (c.attivo === false ? ' ' + badge('warn', '🗄 Archiviato') : '') + '</div>' +
                // FASE 18 — nella scheda «Tutti» clienti e fornitori sono
                // mescolati: senza dire chi è chi l'elenco non si legge.
                (rubricaTab === 'tutti'
@@ -16223,7 +16223,7 @@ function contattoLetturaHtml(c) {
     riga('Categoria', esc(contattoSchedeTesto(c))) +
     riga('Ragione sociale', esc(c.ragione_sociale || '')) +
     riga('Nome e cognome', esc([c.nome, c.cognome].filter(Boolean).join(' '))) +
-    (c.attivo === false ? riga('Stato', badge('warn', '📦 Archiviato')) : '') +
+    (c.attivo === false ? riga('Stato', badge('warn', '🗄 Archiviato')) : '') +
     '<div class="ro-sep"></div>' +
     '<div class="ro-section">Dove</div>' +
     riga('Indirizzo', esc(c.indirizzo || '')) +
@@ -17176,7 +17176,7 @@ function renderRiquadri(t) {
 
   html('cru-riquadri',
     boxCruscotto('cru-box-speso',       'uscita',        '💸', 'Speso',        t.speso) +
-    boxCruscotto('cru-box-incassato',   'entrata',       '💰', 'Incassato',    t.incassato) +
+    boxCruscotto('cru-box-incassato',   'entrata',       '🪙', 'Incassato',    t.incassato) +
     boxCruscotto('cru-box-dapagare',    'attesa-uscita', '⏳', 'Da pagare',    t.daPagare, notaPagare) +
     boxCruscotto('cru-box-daincassare', 'attesa-entrata','🔵', 'Da incassare', t.daIncassare, notaIncassare)
   )
@@ -17596,7 +17596,7 @@ function apriElencoCruscotto(quale, param) {
     righe = t.speso.righe;       titolo = '💸 Speso nel periodo'
     sotto = 'Documenti il cui pagamento è avvenuto fra il ' + fmtDate(p.da) + ' e il ' + fmtDate(p.a) + '.'
   } else if (quale === 'cru-box-incassato') {
-    righe = t.incassato.righe;   titolo = '💰 Incassato nel periodo'
+    righe = t.incassato.righe;   titolo = '🪙 Incassato nel periodo'
     sotto = 'Documenti incassati fra il ' + fmtDate(p.da) + ' e il ' + fmtDate(p.a) + '.'
   } else if (quale === 'cru-box-dapagare') {
     righe = t.daPagare.righe;    titolo = '⏳ Da pagare'
@@ -17607,7 +17607,7 @@ function apriElencoCruscotto(quale, param) {
   } else if (quale === 'gruppo') {
     var g = calcolaGruppi(t.speso.righe).filter(function (x) { return (x.codice || '') === (param || '') })[0]
     righe = g ? g.righe : []
-    titolo = '📦 ' + nomeGruppo(param || null)
+    titolo = '🏷️ ' + nomeGruppo(param || null)
     sotto = 'Spese pagate nel periodo che appartengono a questo gruppo.'
   }
 
@@ -19364,7 +19364,7 @@ function cantiereSpesaTesto(s) {
 // Gli interni si trovano per codice_interno, mai per nome. Attrezzature e Altro: nessun cantiere, si dice cosa ha scelto l'operaio.
 var DESTINAZIONI_CANTIERI = {
   ditta_ufficio: { etichetta: '🏢 Spese ditta e ufficio', codice: 'ditta' },
-  magazzino:     { etichetta: '📦 Magazzino', codice: 'magazzino' },
+  magazzino:     { etichetta: '🏭 Magazzino', codice: 'magazzino' },
   attrezzature:  { etichetta: '🛠️ Attrezzature e macchinari', codice: null },
   altro:         { etichetta: '❓ Altro (da sistemare in ufficio)', codice: null }
 }
@@ -19555,7 +19555,7 @@ function apriSpesaElenco(id) {
   var m = (speseElenco || []).filter(function (x) { return String(x.origine_id) === String(id) })[0]
   if (!m) return
   if (m._class && m._class.stato === 'bloccato') {
-    window.alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «Export & consegna» per riclassificare.')
+    window.alert('Periodo consegnato (bloccato). Riaprilo dalla pagina «🤝 Consegna al commercialista» per riclassificare.')
     return
   }
   return openSingleClassify(m, m._class || null)
@@ -20211,7 +20211,7 @@ function renderSchedaCantiere() {
   }
 
   // ── ENTRATE
-  var entrate = '<div class="card cant-blocco"><div class="card-title">💰 Entrate</div>' +
+  var entrate = '<div class="card cant-blocco"><div class="card-title">🪙 Entrate</div>' +
     rigaClic('fatturato',   'Fatturato',    k.fatturato.importo,   k.fatturato.righe.length) +
     // 91 — gli sconti di cassa concessi: sotto il fatturato, che resta quello emesso.
     (k.sconti.importo > 0.005
@@ -20331,7 +20331,7 @@ function apriElencoCantiere(chiave) {
   var righe = [], titolo = '', tipo = 'flusso'
 
   if (chiave === 'fatturato')   { righe = k.fatturato.righe;   titolo = '💰 Fatturato' }
-  else if (chiave === 'incassato')   { righe = k.incassato.righe;   titolo = '💰 Incassato' }
+  else if (chiave === 'incassato')   { righe = k.incassato.righe;   titolo = '🪙 Incassato' }
   else if (chiave === 'rimborsato')  { righe = k.rimborsato.righe;  titolo = '↩️ Rimborsato al cliente' }
   else if (chiave === 'daIncassare') { righe = k.daIncassare.righe; titolo = '🔵 Da incassare' }
   else if (chiave === 'fornitori')   { righe = k.fornitori.righe;   titolo = '💸 Fatture fornitori' }
@@ -20907,7 +20907,7 @@ async function generaPacchetto() {
     bannerPacchetto('err', esc(e.message || String(e)))
   } finally {
     pacchettoInCorso = false
-    if (btn) { btn.disabled = false; btn.textContent = '📦 Genera pacchetto completo (ZIP)' }
+    if (btn) { btn.disabled = false; btn.textContent = '🗜️ Genera pacchetto completo (ZIP)' }
     if (btnAnn) btnAnn.style.display = 'none'
     if (pacchettoAnnullato) mostraProgressoPacchetto('', 0)
   }
@@ -24074,7 +24074,7 @@ function movimentoPerClassificare(tabella, doc) {
       descrizione: (doc.tipo === 'nota_credito' ? 'Nota di credito ' : 'Fattura ') +
                    (doc.numero || '') + ' — ' + (doc.cliente_nome || ''),
       ente: doc.cliente_nome || null,
-      _sorgente: 'Fatture vendita', _tipo_label: 'Fattura di vendita', _icon: '📤'
+      _sorgente: 'Fatture ai clienti', _tipo_label: 'Fattura di vendita', _icon: '📃'
     }
   }
   if (tabella === 'tm_conta_fatture_acquisto') {
@@ -24111,7 +24111,7 @@ function boxClassificazioneHtml(tabella, doc) {
     azione = '<button type="button" class="btn-secondary" disabled ' +
       'title="Il periodo e stato consegnato al commercialista">🔒 Periodo consegnato</button>' +
       '<div class="form-hint" style="margin-top:6px">' +
-        'Periodo consegnato — sblocca da «Export &amp; consegna» per modificare.</div>'
+        'Periodo consegnato — sblocca da «🤝 Consegna al commercialista» per modificare.</div>'
   } else {
     azione = '<button type="button" class="btn-secondary" ' +
       'onclick="riclassificaDocumento(\'' + esc(tabella) + '\', \'' + esc(doc.id) + '\')">' +
@@ -24164,7 +24164,7 @@ async function riclassificaDocumento(tabella, idDoc) {
     var m = movimentoPerClassificare(tabella, doc)
 
     if (isBloccato(m.origine_tipo, m.origine_id)) {
-      window.alert('Periodo consegnato (bloccato).\n\nRiaprilo dalla pagina «Export & consegna» per riclassificare.')
+      window.alert('Periodo consegnato (bloccato).\n\nRiaprilo dalla pagina «🤝 Consegna al commercialista» per riclassificare.')
       return
     }
     classifyMode = 'single'
@@ -26065,7 +26065,7 @@ function salvaAcquistoComunque() {
 // modulo perde il lavoro. Lo dice, e lascia premere.
 // ══════════════════════════════════════════════════════════════════════════════
 
-var VERSIONE = '104.2'
+var VERSIONE = '104.3'
 
 function controllaVersionePagina() {
   try {
@@ -26880,7 +26880,7 @@ function daFareAcquistiHtml(lista) {
         '«📄 Ricevuta cartacea in ufficio» con il posto dove sta.</small></div></div>'
   }
   if (c.ordini.length) {
-    out += '<div class="fase-banner warn da-fare-voce" role="status"><span class="icon" aria-hidden="true">📤</span><div class="msg">' +
+    out += '<div class="fase-banner warn da-fare-voce" role="status"><span class="icon" aria-hidden="true">💳</span><div class="msg">' +
       '<strong>' + (c.ordini.length === 1 ? '1 ordine di pagamento con la data passata' : c.ordini.length + ' ordini di pagamento con la data passata') +
       '</strong><ul class="da-fare-lista">' + c.ordini.map(function (a) {
         return '<li>L\'ordine del <strong>' + esc(fmtDate(a.ordine_pagamento_data)) + '</strong> per ' + rigaDocAcquisto(a) +
@@ -26893,7 +26893,7 @@ function daFareAcquistiHtml(lista) {
   if (c.vecchie.length) {
     // 89 — non diventano bozze (i totali non cambiano da soli, e alcune sono
     // già consegnate): si dicono, con la data della consegna se c'era.
-    out += '<div class="fase-banner warn da-fare-voce" role="status"><span class="icon" aria-hidden="true">🗂️</span><div class="msg">' +
+    out += '<div class="fase-banner warn da-fare-voce" role="status"><span class="icon" aria-hidden="true">🗄</span><div class="msg">' +
       '<strong>' + c.vecchie.length + (c.vecchie.length === 1 ? ' fattura registrata prima della 89 senza giustificativo'
         : ' fatture registrate prima della 89 senza giustificativo') + '</strong> — contano ancora nei totali: ' +
       'allega il file o segna la ricevuta cartacea dalla scheda.' +
@@ -27105,18 +27105,18 @@ function usaCantiereProposto() {
 function badgeOrdine(a) {
   if (!a || !a.ordine_pagamento_data || a.stato_pagamento === 'pagato') return ''
   return ordinePassato(a)
-    ? badge('warn', '📤 Ordine del ' + fmtDate(a.ordine_pagamento_data) + ' passato: addebitato?')
-    : badge('info', '📤 Ordine di pagamento creato · addebito il ' + fmtDate(a.ordine_pagamento_data))
+    ? badge('warn', '💳 Ordine del ' + fmtDate(a.ordine_pagamento_data) + ' passato: addebitato?')
+    : badge('info', '💳 Ordine di pagamento creato · addebito il ' + fmtDate(a.ordine_pagamento_data))
 }
 function testoOrdineScheda(a) {
   if (!a.ordine_pagamento_data) return ''
-  return '📤 Ordine di pagamento creato' + (a.ordine_pagamento_creato_il ? ' il ' + fmtDateTime(a.ordine_pagamento_creato_il) : '') +
+  return '💳 Ordine di pagamento creato' + (a.ordine_pagamento_creato_il ? ' il ' + fmtDateTime(a.ordine_pagamento_creato_il) : '') +
     ' · addebito previsto il ' + fmtDate(a.ordine_pagamento_data)
 }
 function bottoniOrdineHtml(a) {
   if (a.stato_pagamento === 'pagato') return ''
   if (!a.ordine_pagamento_data) {
-    return '<button class="btn-secondary" onclick="segnaOrdinePagamento(\'' + esc(a.id) + '\')">📤 Ordine di pagamento creato</button>'
+    return '<button class="btn-secondary" onclick="segnaOrdinePagamento(\'' + esc(a.id) + '\')">💳 Ordine di pagamento creato</button>'
   }
   return '<button class="btn-primary" onclick="ordineAddebitato(\'' + esc(a.id) + '\')">✅ Addebitato: registra il pagamento</button>' +
     '<button class="btn-secondary" onclick="ordineNonPartito(\'' + esc(a.id) + '\')">❌ L\'ordine non è partito</button>'
@@ -27145,7 +27145,7 @@ async function dopoOrdine(id, tipo, msg) {
   else showFattureBanner('acquisti-list-banner', tipo, msg)
 }
 async function segnaOrdinePagamento(id) {
-  var r = chiediDataOrdine('📤 Ordine di pagamento creato in banca.\n\nIn che data dovrebbe essere addebitato? (gg.mm.aaaa)',
+  var r = chiediDataOrdine('💳 Ordine di pagamento creato in banca.\n\nIn che data dovrebbe essere addebitato? (gg.mm.aaaa)',
     fmtDate(addDays(oggiISO(), 1)))
   if (r.annullato || r.vuoto) return
   try {
